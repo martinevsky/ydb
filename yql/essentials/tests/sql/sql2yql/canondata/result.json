@@ -2491,6 +2491,13 @@
             "uri": "https://{canondata_backend}/1937150/ec0019724df75083b0e89cab22f57e10ef36744e/resource.tar.gz#test_sql2yql.test_column_order-values_/sql.yql"
         }
     ],
+    "test_sql2yql.test[combine-smoke]": [
+        {
+            "checksum": "2487f7b67805fb52f8a35c9bd4c93a22",
+            "size": 2384,
+            "uri": "https://{canondata_backend}/1809005/0d62ac6967306c34309b20882273b25cee75d6fb/resource.tar.gz#test_sql2yql.test_combine-smoke_/sql.yql"
+        }
+    ],
     "test_sql2yql.test[compute_range-adjacent_to_point]": [
         {
             "checksum": "dea8f74783e68956db131e994f2805a0",
@@ -13691,6 +13698,11 @@
     "test_sql_format.test[column_order-values]": [
         {
             "uri": "file://test_sql_format.test_column_order-values_/formatted.sql"
+        }
+    ],
+    "test_sql_format.test[combine-smoke]": [
+        {
+            "uri": "file://test_sql_format.test_combine-smoke_/formatted.sql"
         }
     ],
     "test_sql_format.test[compute_range-adjacent_to_point]": [
