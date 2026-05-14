@@ -21,7 +21,6 @@ ydb/core/kqp/ut/indexes KqpIndexes.OnlineDuplicatesStage4
 ydb/core/kqp/ut/olap/indexes KqpOlapIndexes.ChunkDetailsMinMax
 ydb/core/kqp/ut/olap/indexes KqpOlapIndexes.VerifyBloomFilterIndexSpeedsUpQueriesInAppropriateScenarios-QueryService
 ydb/core/kqp/ut/olap/indexes KqpOlapIndexes.VerifyBloomFilterIndexSpeedsUpQueriesInAppropriateScenarios-SchemeQuery
-ydb/core/kqp/ut/scheme KqpScheme.CreateDropTableMultipleTime
 ydb/core/kqp/ut/scheme KqpScheme.StreamingQueriesOnServerless
 ydb/core/kqp/ut/tli KqpTli.BasicDataQuery
 ydb/core/kqp/ut/tli KqpTli.MultipleKeys
@@ -62,7 +61,6 @@ ydb/services/ydb/ut TRegisterNodeOverDiscoveryService.ServerWithCertVerification
 ydb/tests/compatibility test_bloom_filter_index.py.TestBloomFilterIndex.test_bloom_filter_survives_version_change[restart_prestable-26-2_to_prestable-26-2]
 ydb/tests/compatibility test_bloom_filter_index.py.TestBloomFilterIndex.test_bloom_filter_survives_version_change[restart_stable-25-4-1_to_stable-26-1-1]
 ydb/tests/compatibility/federated_queries py3test.[test_external_data_source_secret.py */*] chunk
-ydb/tests/fq/yds test_recovery_mz.py.TestRecovery.test_recovery[v1]
 ydb/tests/functional/backup_collection basic_user_scenarios.py.TestFullCycleLocalBackupRestoreWIncr.test_full_cycle_local_backup_restore_with_incrementals
 ydb/tests/functional/backup_collection basic_user_scenarios.py.TestFullCycleLocalBackupRestoreWIncrComplSchemaChange.test_full_cycle_local_backup_restore_with_incrementals_complex_schema_changes
 ydb/tests/functional/config test_distconf.py.TestKiKiMRDistConfBasic.test_dynamic_node_start_with_seed_nodes
