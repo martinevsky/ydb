@@ -846,6 +846,10 @@ TKqpCounters::TKqpCounters(const ::NMonitoring::TDynamicCounterPtr& counters, co
     StreamLookupIteratorTotalQuotaBytesExceeded = KqpGroup->GetCounter("IteratorReads/StreamLookupIteratorTotalQuotaBytesExceeded", true);
     
     SentLocks = KqpGroup->GetCounter("PessimisticLocks/SentLocks", true);
+    LockLatencyHistogram = KqpGroup->GetHistogram("PessimisticLocks/LockLatencyMs", NMonitoring::ExponentialHistogram(20, 2, 1));
+    ModifiedRowsCount = KqpGroup->GetCounter("PessimisticLocks/ModifiedRowsCount", true);
+    LockedRowsCount = KqpGroup->GetCounter("PessimisticLocks/LockedRowsCount", true);
+    MaxInFlightLockTimeOnExit = KqpGroup->GetHistogram("PessimisticLocks/MaxInFlightLockTimeOnExitMs", NMonitoring::ExponentialHistogram(20, 2, 1));
 
     /* sink writes */
     WriteActorsShardResolve = KqpGroup->GetCounter("SinkWrites/WriteActorShardResolve", true);
