@@ -440,5 +440,3 @@ ydb/tests/olap/column_compression/fast test_incorrect.py.TestIncorrectCompressio
 ydb/tests/stress/reconfig_state_storage_workload/tests test_board_workload.py.TestReconfigStateStorageBoardWorkload.test_state_storage_board
 ydb/tests/stress/result_set_format/tests test_arrow_workload.py.TestResultSetArrowWorkload.test
 ydb/tests/stress/topic/tests test_workload_topic.py.TestYdbTopicWorkload.test_0
-ydb/tests/stress/topic/tests test_workload_topic.py.TestYdbTopicWorkload.test_1
-ydb/tests/stress/topic/tests test_workload_topic.py.TestYdbTopicWorkload.test_2
