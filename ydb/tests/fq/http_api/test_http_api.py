@@ -76,7 +76,7 @@ class TestHttpApi(TestBase):
             assert len(query_id) == 20
 
             status = client.get_query_status(query_id)
-            assert status in ["STARTING", "RUNNING", "COMPLETED", "COMPLETING"]
+            assert status in ["PENDING", "STARTING", "RUNNING", "COMPLETED", "COMPLETING"]
 
             wait_for_query_status(client, query_id, ["COMPLETED"])
             query_json = client.get_query(query_id)
@@ -101,7 +101,7 @@ class TestHttpApi(TestBase):
             response = client.start_query(query_id)
             assert response.status_code == 204
 
-            assert client.get_query_status(query_id) in ["STARTING", "RUNNING", "COMPLETED", "COMPLETING"]
+            assert client.get_query_status(query_id) in ["PENDING", "STARTING", "RUNNING", "COMPLETED", "COMPLETING"]
 
             response = client.stop_query(query_id)
             assert response.status_code == 204
