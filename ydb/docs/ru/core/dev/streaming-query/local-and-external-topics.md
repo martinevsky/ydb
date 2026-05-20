@@ -22,7 +22,27 @@ INSERT INTO output_topic SELECT ...;
 
 **Внешние топики** — топики, расположенные **в другой базе** {{ ydb-short-name }}.
 
-Доступ к ним из потокового запроса выполняется только через заранее созданный [внешний источник данных](../../concepts/datamodel/external_data_source.md) с типом источника YDB. Создание объекта — команда [CREATE EXTERNAL DATA SOURCE](../../yql/reference/syntax/create-external-data-source.md); при необходимости аутентификации используются [секреты](../../yql/reference/syntax/create-secret.md).
+Доступ к ним из потокового запроса выполняется только через заранее созданный [внешний источник данных](../../concepts/datamodel/external_data_source.md) с `SOURCE_TYPE = "Ydb"`. Создание объекта — команда [CREATE EXTERNAL DATA SOURCE](../../yql/reference/syntax/create-external-data-source.md#ydb); при необходимости аутентификации используются [секреты](../../yql/reference/syntax/create-secret.md).
+
+### Создание внешнего источника {#create-ydb-source}
+
+```yql
+CREATE EXTERNAL DATA SOURCE ext_source WITH (
+    SOURCE_TYPE = "Ydb",
+    LOCATION = "cluster.example.com:2135",
+    DATABASE_NAME = "/production/events",
+    USE_TLS = "TRUE",
+    AUTH_METHOD = "NONE"
+);
+```
+
+`LOCATION` и `DATABASE_NAME` должны указывать на кластер и базу, где созданы топики. В локальной разработке часто используют `localhost:2136` и `/local` — см. [быстрый старт](../../recipes/streaming_queries/topics.md).
+
+### Совместное чтение (SHARED_READING) {#shared-reading}
+
+Если несколько потоковых запросов читают один и тот же внешний топик в форматах `json_each_row` или `raw`, добавьте `SHARED_READING = "TRUE"` при создании источника — это снижает нагрузку на кластер-источник.
+
+### Обращение к топикам {#external-topic-syntax}
 
 После создания источника, например с именем `ext_source`, обращение к топику `input_topic` во внешней базе записывается так:
 

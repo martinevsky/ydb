@@ -30,3 +30,4 @@ The following data sources can be used:
 - [ClickHouse](../query_execution/federated_query/clickhouse.md)
 - [PostgreSQL](../query_execution/federated_query/postgresql.md)
 - [Connections to S3 ({{ objstorage-name }})](../query_execution/federated_query/s3/external_data_source.md)
+- **{{ ydb-short-name }}** (`SOURCE_TYPE = "Ydb"`) — access topics in another database from [streaming queries](../streaming-query.md); see [{#T}](../../dev/streaming-query/local-and-external-topics.md) and [CREATE EXTERNAL DATA SOURCE](../../yql/reference/syntax/create-external-data-source.md#ydb)

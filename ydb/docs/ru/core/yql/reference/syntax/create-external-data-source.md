@@ -104,13 +104,9 @@ CREATE EXTERNAL DATA SOURCE TestDataSource WITH (
 
 - в поле `SOURCE_TYPE` значение `ObjectStorage`;
 - в поле `LOCATION` сетевой путь к бакету;
-- в поле `AUTH_METHOD` значение `NONE`.
+- в поле `AUTH_METHOD` значение `NONE` (публичный бакет), `AWS` или `SERVICE_ACCOUNT` (приватный бакет).
 
-{% note info %}
-
-В настоящий момент поддерживается работа только с бакетами, не защищенными аутентификацией.
-
-{% endnote %}
+Подробные примеры с секретами и параметрами AWS — в разделе [чтение из бакетов S3](../../../concepts/query_execution/federated_query/s3/external_data_source.md).
 
 Подключение возможно к любым источникам данных с протоколом доступа [AWS S3](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html). Возможно указание любых URL к системам, поддерживающим этот протокол.
 
@@ -130,5 +126,44 @@ CREATE EXTERNAL DATA SOURCE TestDataSource WITH (
   SOURCE_TYPE="ObjectStorage",
   LOCATION="http://s3.amazonaws.com/bucket/folder/",
   AUTH_METHOD="NONE"
+);
+```
+
+## Подключение к {{ ydb-short-name }} (топики в другой базе) {#ydb}
+
+Тип `Ydb` используется в [потоковых запросах](../../../concepts/streaming-query.md), чтобы читать и записывать [топики](../../../concepts/datamodel/topic.md) в **другой базе** {{ ydb-short-name }}. Подробнее — [{#T}](../../../dev/streaming-query/local-and-external-topics.md).
+
+Обязательные поля:
+
+| Поле | Описание |
+|------|----------|
+| `SOURCE_TYPE` | `Ydb` |
+| `LOCATION` | Адрес кластера: `хост:порт` (например, `localhost:2136`) |
+| `DATABASE_NAME` | Путь к базе с топиками (например, `/local`) |
+| `AUTH_METHOD` | `NONE` или `BASIC` |
+
+Дополнительно:
+
+| Поле | Описание |
+|------|----------|
+| `USE_TLS` | `TRUE` / `FALSE` — защищённое соединение |
+| `LOGIN`, `PASSWORD_SECRET_PATH` | Для `AUTH_METHOD="BASIC"` |
+| `SHARED_READING` | `TRUE` — совместное чтение топика несколькими потоковыми запросами для форматов `json_each_row` и `raw` |
+
+После создания источника `ext_source` обращение к топику `events` во внешней базе:
+
+```yql
+SELECT * FROM ext_source.events WITH (FORMAT = json_each_row, SCHEMA = (...));
+```
+
+### Пример
+
+```yql
+CREATE EXTERNAL DATA SOURCE ydb_events WITH (
+  SOURCE_TYPE = "Ydb",
+  LOCATION = "localhost:2136",
+  DATABASE_NAME = "/local",
+  AUTH_METHOD = "NONE"
+);
 ```
 

@@ -30,4 +30,5 @@ SELECT * FROM test_data_source.test_table;
 - [ClickHouse](../query_execution/federated_query/clickhouse.md)
 - [PostgreSQL](../query_execution/federated_query/postgresql.md)
 - [Подключения к S3 ({{ objstorage-name }})](../query_execution/federated_query/s3/external_data_source.md)
+- **{{ ydb-short-name }}** (`SOURCE_TYPE = "Ydb"`) — доступ к топикам в другой базе из [потоковых запросов](../streaming-query.md); см. [{#T}](../../dev/streaming-query/local-and-external-topics.md) и [CREATE EXTERNAL DATA SOURCE](../../yql/reference/syntax/create-external-data-source.md#ydb)
 

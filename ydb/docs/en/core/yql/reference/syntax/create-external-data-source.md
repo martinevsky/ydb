@@ -104,13 +104,9 @@ To create an external data source pointing to a bucket with data in S3 ({{ objst
 
 - in the `SOURCE_TYPE` field, the value `ObjectStorage`;
 - in the `LOCATION` field, the network path to the bucket;
-- in the `AUTH_METHOD` field, the value `NONE`.
+- in the `AUTH_METHOD` field, the value `NONE` (public bucket), `AWS`, or `SERVICE_ACCOUNT` (private bucket).
 
-{% note info %}
-
-Currently, only buckets that are not protected by authentication are supported.
-
-{% endnote %}
+For examples with secrets and AWS parameters, see [reading from S3 buckets](../../../concepts/query_execution/federated_query/s3/external_data_source.md).
 
 Connection is possible to any data sources that support the [AWS S3](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html) access protocol. Any URLs to systems supporting this protocol can be specified.
 
@@ -130,5 +126,43 @@ CREATE EXTERNAL DATA SOURCE TestDataSource WITH (
   SOURCE_TYPE="ObjectStorage",
   LOCATION="http://s3.amazonaws.com/bucket/folder/",
   AUTH_METHOD="NONE"
-)
+);
+```
+
+## Connecting to {{ ydb-short-name }} (topics in another database) {#ydb}
+
+Use `Ydb` in [streaming queries](../../../concepts/streaming-query.md) to read and write [topics](../../../concepts/datamodel/topic.md) in **another** {{ ydb-short-name }} database. See also [{#T}](../../../dev/streaming-query/local-and-external-topics.md).
+
+Required fields:
+
+| Field | Description |
+|-------|-------------|
+| `SOURCE_TYPE` | `Ydb` |
+| `LOCATION` | Cluster endpoint, e.g. `localhost:2136` |
+| `DATABASE_NAME` | Database path with topics, e.g. `/local` |
+| `AUTH_METHOD` | `NONE` or `BASIC` |
+
+Optional:
+
+| Field | Description |
+|-------|-------------|
+| `USE_TLS` | `TRUE` / `FALSE` |
+| `LOGIN`, `PASSWORD_SECRET_PATH` | For `AUTH_METHOD="BASIC"` |
+| `SHARED_READING` | `TRUE` — shared topic reads across streaming queries for `json_each_row` and `raw` formats |
+
+After creating source `ext_source`, topic `events` in the external database:
+
+```yql
+SELECT * FROM ext_source.events WITH (FORMAT = json_each_row, SCHEMA = (...));
+```
+
+### Example
+
+```yql
+CREATE EXTERNAL DATA SOURCE ydb_events WITH (
+  SOURCE_TYPE = "Ydb",
+  LOCATION = "localhost:2136",
+  DATABASE_NAME = "/local",
+  AUTH_METHOD = "NONE"
+);
 ```
