@@ -4,25 +4,39 @@
 
 Для подключения к внешней базе {{ ydb-short-name }} со стороны другой базы {{ ydb-short-name }}, выступающей в роли движка обработки федеративных запросов, на последней требуется выполнить следующие шаги:
 
-1. Подготовить аутентификационные данные для доступа к удалённой базе {{ ydb-short-name }}. В настоящее время в федеративных запросах к {{ ydb-short-name }} доступен метод аутентификации по [логину и паролю](../../../security/authentication.md#static-credentials) (остальные методы не поддерживаются). Пароль к внешней базе сохраняется в виде [секрета](../../datamodel/secrets.md):
-
-   ```yql
-    CREATE SECRET ydb_datasource_user_password WITH (value = "<password>");
-    ```
-
-1. Создать [внешний источник данных](../../datamodel/external_data_source.md), описывающий стороннюю базу {{ ydb-short-name }}. Параметр `LOCATION` содержит сетевой адрес экземпляра {{ ydb-short-name }}, к которому осуществляется сетевое подключение. В `DATABASE_NAME` указывается имя базы данных (например, `local`). Для аутентификации во внешнюю базу используются значения параметров `LOGIN` и `PASSWORD_SECRET_PATH`. Включить шифрование соединений к внешней базе данных можно с помощью параметра `USE_TLS="TRUE"`. Если шифрование включено, то в поле `<port>` параметра `LOCATION` необходимо указать порт gRPCs внешней {{ ydb-short-name }}, в противном случае - порт gRPC.
+1. Подготовить начальный [IAM-токен](../../../security/authentication.md#iam) для сервисного аккаунта и сохранить его в виде [секрета](../../datamodel/secrets.md):
 
     ```yql
-    CREATE EXTERNAL DATA SOURCE ydb_datasource WITH (
+    CREATE SECRET <token_secret_name> WITH (value = "<iam_token>");
+    ```
+
+    Где:
+
+    - `<token_secret_name>` -- имя, которое вы присваиваете секрету, например `mytoken`.
+    - `<iam_token>` -- начальный IAM-токен сервисного аккаунта.
+
+1. Создать [внешний источник данных](../../datamodel/external_data_source.md), описывающий стороннюю базу {{ ydb-short-name }}. Параметр `LOCATION` содержит сетевой адрес экземпляра {{ ydb-short-name }}, к которому осуществляется сетевое подключение. В `DATABASE_NAME` указывается полный путь к базе данных. Включить шифрование соединений к внешней базе данных можно с помощью параметра `USE_TLS="TRUE"`. Если шифрование включено, то в поле `<port>` параметра `LOCATION` необходимо указать порт gRPCs внешней {{ ydb-short-name }}, в противном случае -- порт gRPC.
+
+    ```yql
+    CREATE EXTERNAL DATA SOURCE <source_name> WITH (
         SOURCE_TYPE="Ydb",
         LOCATION="<host>:<port>",
         DATABASE_NAME="<database>",
-        AUTH_METHOD="BASIC",
-        LOGIN="user",
-        PASSWORD_SECRET_PATH="ydb_datasource_user_password",
+        AUTH_METHOD="IAM",
+        SERVICE_ACCOUNT_ID="<service_account_id>",
+        INITIAL_TOKEN_SECRET_PATH="<token_secret_name>",
         USE_TLS="TRUE"
     );
     ```
+
+    Где:
+
+    - `<source_name>` -- имя, которое вы присваиваете внешнему источнику данных, например `ydb_datasource`.
+    - `<host>` -- имя хоста внешнего экземпляра {{ ydb-short-name }}, например `u-lb.abcde12345.ydb.mdb.yandexcloud.net`.
+    - `<port>` -- порт gRPCs (если `USE_TLS="TRUE"`) или порт gRPC внешнего экземпляра {{ ydb-short-name }}, например `2135`.
+    - `<database>` -- полный путь к базе данных, например `/ru-central1/b1g8skpblkos03malf3s/etndqstq7ne4v68n6gpr`.
+    - `<service_account_id>` -- идентификатор [сервисного аккаунта Яндекс Облака](https://yandex.cloud/ru/docs/iam/concepts/users/service-accounts), используемого для аутентификации, например `ajehr5a9p9lc7c7qnhdc`.
+    - `<token_secret_name>` -- имя секрета, созданного на предыдущем шаге.
 
 1. {% include [!](_includes/connector_deployment.md) %}
 1. [Выполнить запрос](#query) к внешнему источнику данных.

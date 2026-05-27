@@ -4,25 +4,39 @@
 
 To connect to an external {{ ydb-short-name }} database from another {{ ydb-short-name }} database acting as the federated query engine, the following steps need to be performed on the latter:
 
-1. Prepare authentication data to access the remote {{ ydb-short-name }} database. Currently, in federated queries to {{ ydb-short-name }}, the only available authentication method is [login and password](../../../security/authentication.md#static-credentials) (other methods are not supported). The password to the external database is stored as a [secret](../../datamodel/secrets.md):
+1. Prepare the initial [IAM token](../../../security/authentication.md#iam) for the service account and store it as a [secret](../../datamodel/secrets.md):
 
     ```yql
-    CREATE SECRET ydb_datasource_user_password WITH (value = "<password>");
+    CREATE SECRET <token_secret_name> WITH (value = "<iam_token>");
     ```
 
-2. Create an [external data source](../../datamodel/external_data_source.md) describing the external {{ ydb-short-name }} database. The `LOCATION` parameter contains the network address of the {{ ydb-short-name }} instance to which the network connection is made. The `DATABASE_NAME` specifies the name of the database (e.g., `local`). For authentication to the external database, the `LOGIN` and `PASSWORD_SECRET_PATH` parameters are used. Encryption of connections to the external database can be enabled using the `USE_TLS="TRUE"` parameter. If encryption is enabled, the `<port>` field in the `LOCATION` parameter should specify the gRPCs port of the external {{ ydb-short-name }}; otherwise, the gRPC port should be specified.
+    Where:
+
+    - `<token_secret_name>` is the name you assign to the secret, for example `mytoken`.
+    - `<iam_token>` is the initial IAM token for the service account.
+
+2. Create an [external data source](../../datamodel/external_data_source.md) describing the external {{ ydb-short-name }} database. The `LOCATION` parameter contains the network address of the {{ ydb-short-name }} instance to which the network connection is made. The `DATABASE_NAME` specifies the full path to the database. Encryption of connections to the external database can be enabled using the `USE_TLS="TRUE"` parameter. If encryption is enabled, the `<port>` field in the `LOCATION` parameter should specify the gRPCs port of the external {{ ydb-short-name }}; otherwise, the gRPC port should be specified.
 
     ```yql
-    CREATE EXTERNAL DATA SOURCE ydb_datasource WITH (
+    CREATE EXTERNAL DATA SOURCE <source_name> WITH (
         SOURCE_TYPE="Ydb",
         LOCATION="<host>:<port>",
         DATABASE_NAME="<database>",
-        AUTH_METHOD="BASIC",
-        LOGIN="user",
-        PASSWORD_SECRET_PATH="ydb_datasource_user_password",
+        AUTH_METHOD="IAM",
+        SERVICE_ACCOUNT_ID="<service_account_id>",
+        INITIAL_TOKEN_SECRET_PATH="<token_secret_name>",
         USE_TLS="TRUE"
     );
     ```
+
+    Where:
+
+    - `<source_name>` is the name you assign to the external data source, for example `ydb_datasource`.
+    - `<host>` is the hostname of the external {{ ydb-short-name }} instance, for example `u-lb.abcde12345.ydb.mdb.yandexcloud.net`.
+    - `<port>` is the gRPCs port (if `USE_TLS="TRUE"`) or the gRPC port of the external {{ ydb-short-name }} instance, for example `2135`.
+    - `<database>` is the full path to the database, for example `/ru-central1/b1g8skpblkos03malf3s/etndqstq7ne4v68n6gpr`.
+    - `<service_account_id>` is the ID of the [Yandex Cloud service account](https://yandex.cloud/en/docs/iam/concepts/users/service-accounts) used for authentication, for example `ajehr5a9p9lc7c7qnhdc`.
+    - `<token_secret_name>` is the name of the secret created in the previous step.
 
 3. {% include [!](_includes/connector_deployment.md) %}
 4. [Execute a query](#query) to the external data source.
