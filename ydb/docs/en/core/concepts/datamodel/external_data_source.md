@@ -27,7 +27,7 @@ External data sources allow execution of [federated queries](../query_execution/
 
 ## IAM Authentication for {{ ydb-short-name }} Data Sources {#iam-auth}
 
-When {{ ydb-short-name }} is used as an external data source in long-running [streaming queries](query_execution/streaming-query.md), standard token-based authentication becomes impractical: cloud tokens have a limited validity period, forcing queries to be restarted each time a token expires.
+When {{ ydb-short-name }} is used as an external data source in long-running topic queries, standard token-based authentication becomes impractical: cloud tokens have a limited validity period, forcing queries to be restarted each time a token expires.
 
 To solve this, {{ ydb-full-name }} supports IAM authentication with service account delegation for `SOURCE_TYPE="Ydb"` external data sources. When the external data source is created, an initial IAM token is provided via `INITIAL_TOKEN_SECRET_PATH`. This token is used once to verify connectivity to the target database and to resolve its resource identifier in the cloud. After that, all ongoing authentication is handled by the service account specified in `SERVICE_ACCOUNT_ID`, whose tokens are refreshed automatically, allowing streaming queries to run indefinitely without restarts.
 
