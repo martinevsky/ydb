@@ -14,10 +14,13 @@
 #include <ydb/public/sdk/cpp/include/ydb-cpp-sdk/client/draft/accessor.h>
 #include <ydb/public/api/protos/ydb_scheme.pb.h>
 #include <ydb/public/api/protos/ydb_secret.pb.h>
+#include <ydb/public/api/protos/ydb_table.pb.h>
 
 #include <util/generic/hash.h>
 #include <util/stream/format.h>
 #include <util/string/join.h>
+
+#include <map>
 
 namespace NYdb::NConsoleClient {
 
@@ -1142,8 +1145,49 @@ int TDescribeLogic::DescribeExternalDataSource(const TString& path, EDataFormat 
     }
 }
 
-int TDescribeLogic::PrintExternalDataSourceResponsePretty(const NYdb::NTable::TExternalDataSourceDescription& /*result*/) const {
-    // to do
+int TDescribeLogic::PrintExternalDataSourceResponsePretty(const NYdb::NTable::TExternalDataSourceDescription& result) const {
+    const auto& proto = NYdb::TProtoAccessor::GetProto(result);
+
+    Out << Endl << "Source type: " << proto.source_type();
+    Out << Endl << "Location: " << proto.location();
+
+    // Properties is a flat string map that also carries the auth method and the
+    // (optional) managed database reference. Pull the well-known fields out so they
+    // are shown as dedicated lines and the rest goes into the properties table below.
+    std::map<TString, TString> properties(proto.properties().begin(), proto.properties().end());
+
+    auto extract = [&properties](TStringBuf key) -> std::optional<TString> {
+        if (auto it = properties.find(TString(key)); it != properties.end()) {
+            TString value = it->second;
+            properties.erase(it);
+            return value;
+        }
+        return std::nullopt;
+    };
+
+    if (auto authMethod = extract("AUTH_METHOD")) {
+        Out << Endl << "Auth method: " << *authMethod;
+    }
+    if (auto database = extract("DATABASE_NAME")) {
+        Out << Endl << "Database: " << *database;
+    }
+    if (auto databaseId = extract("DATABASE_ID")) {
+        Out << Endl << "Database id: " << *databaseId;
+    }
+
+    Out << Endl << "Created: " << FormatTime(TInstant::MilliSeconds(proto.self().created_at().plan_step()));
+
+    if (!properties.empty()) {
+        TPrettyTable table({ "Name", "Value" }, TPrettyTableConfig().WithoutRowDelimiters());
+        for (const auto& [name, value] : properties) {
+            table.AddRow()
+                .Column(0, name)
+                .Column(1, value);
+        }
+        Out << Endl << "Properties: " << Endl << table;
+    }
+
+    Out << Endl;
     return EXIT_SUCCESS;
 }
 
