@@ -27,6 +27,11 @@ TExternalDataSourceManager::TYqlConclusionStatus PrepareIamDelegation(
     NKikimrSchemeOp::TExternalDataSourceDescription& description,
     TStringBuf name);
 
+TExternalDataSourceManager::TYqlConclusionStatus ApplyIamDelegationTestIdentity(
+    TExternalDataSourceManager::TExternalModificationContext& context,
+    TStringBuf rawToken,
+    TStringBuf userSid);
+
 TExternalDataSourceManager::TAsyncStatus ExecuteIamDelegationDdl(
     const NKikimrSchemeOp::TModifyScheme& schemeTx,
     const TExternalDataSourceManager::TExternalModificationContext& context,

@@ -17,6 +17,7 @@
 #include <ydb/library/ycloud/impl/service_control.h>
 
 #include <util/generic/guid.h>
+#include <util/string/strip.h>
 
 namespace NKikimr::NKqp::NExternalDataSource {
 namespace {
@@ -518,6 +519,40 @@ TStatus PrepareIamDelegation(
             "SERVICE_ACCOUNT_ID is required for AUTH_METHOD=IAM");
     }
     iam.SetDelegationReferrerId(MakeIamDelegationReferrerId(name, CreateGuidAsString()));
+    return TStatus::Success();
+}
+
+TStatus ApplyIamDelegationTestIdentity(
+    TContext& context,
+    TStringBuf rawToken,
+    TStringBuf userSid)
+{
+    TString token = StripString(TString(rawToken));
+    if (token.empty() || userSid.empty()) {
+        return TStatus::Fail(
+            NYql::TIssuesIds::KIKIMR_PRECONDITION_FAILED,
+            "IAM delegation test auth requires both a raw token and user SID");
+    }
+    const TString subjectId = NormalizeIamSubject(TString(userSid));
+    if (!userSid.EndsWith("@as") || subjectId.empty() || subjectId.size() > 50) {
+        return TStatus::Fail(
+            NYql::TIssuesIds::KIKIMR_PRECONDITION_FAILED,
+            "IAM delegation test auth user_sid must be an IAM subject ending in @as");
+    }
+
+    NACLib::TUserToken userToken({
+        .OriginalUserToken = std::move(token),
+        .UserSID = TString(userSid),
+        .GroupSIDs = {},
+        .AuthType = "AccessService",
+    });
+    userToken.SaveSerializationInfo();
+    if (!ParseIamCallerIdentity(userToken)) {
+        return TStatus::Fail(
+            NYql::TIssuesIds::KIKIMR_PRECONDITION_FAILED,
+            "IAM delegation test auth must produce a serializable user token");
+    }
+    context.SetUserToken(std::move(userToken));
     return TStatus::Success();
 }
 

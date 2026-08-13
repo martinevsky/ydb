@@ -385,6 +385,40 @@ Y_UNIT_TEST_SUITE(IamDelegation) {
         UNIT_ASSERT(!flags.GetEnableExternalDataSourceIamDelegation());
     }
 
+    Y_UNIT_TEST(TestIdentityContainsRawTokenAndSerializableSchemeShardToken) {
+        TExternalDataSourceManager::TExternalModificationContext context;
+        const auto status = ApplyIamDelegationTestIdentity(
+            context, "  raw-user-iam-token\n", "user-id@as");
+        UNIT_ASSERT(!status.IsFail());
+        UNIT_ASSERT(context.GetUserToken());
+
+        const auto& userToken = *context.GetUserToken();
+        UNIT_ASSERT_VALUES_EQUAL(userToken.GetOriginalUserToken(), "raw-user-iam-token");
+        UNIT_ASSERT_VALUES_EQUAL(userToken.GetUserSID(), "user-id@as");
+        UNIT_ASSERT(!userToken.GetSerializedToken().empty());
+
+        const auto identity = ParseIamCallerIdentity(userToken);
+        UNIT_ASSERT(identity);
+        UNIT_ASSERT_VALUES_EQUAL(
+            identity->BearerToken, "raw-user-iam-token");
+        UNIT_ASSERT_VALUES_EQUAL(identity->SubjectId, "user-id");
+
+        NACLibProto::TUserToken schemeShardToken;
+        UNIT_ASSERT(schemeShardToken.ParseFromString(userToken.GetSerializedToken()));
+        UNIT_ASSERT_VALUES_EQUAL(schemeShardToken.GetAuthType(), "AccessService");
+        UNIT_ASSERT_VALUES_EQUAL(schemeShardToken.GetUserSID(), "user-id@as");
+    }
+
+    Y_UNIT_TEST(TestIdentityRequiresExplicitCompleteConfiguration) {
+        TExternalDataSourceManager::TExternalModificationContext context;
+        UNIT_ASSERT(ApplyIamDelegationTestIdentity(context, {}, {}).IsFail());
+        UNIT_ASSERT(ApplyIamDelegationTestIdentity(
+            context, "raw-user-iam-token", {}).IsFail());
+        UNIT_ASSERT(ApplyIamDelegationTestIdentity(
+            context, "raw-user-iam-token", "user-id").IsFail());
+        UNIT_ASSERT(!context.GetUserToken());
+    }
+
     Y_UNIT_TEST(DelegationRouteLeavesNonIamCreateOnLegacyPath) {
         NKikimrSchemeOp::TModifyScheme schemeTx;
         schemeTx.MutableCreateExternalDataSource()->MutableAuth()->MutableNone();
