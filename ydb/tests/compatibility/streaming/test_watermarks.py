@@ -8,7 +8,7 @@ from typing import Generator, Self
 from ydb.tests.library.compatibility.fixtures import MixedClusterFixture, RestartToAnotherVersionFixture, RollingUpgradeAndDowngradeFixture
 from ydb.tests.library.harness.util import LogLevels
 from ydb.tests.library.test_meta import link_test_case
-from ydb.tests.fq.streaming_common.common import YdbClient
+from ydb.tests.fq.streaming_common.common import YdbClient, wait_completed_checkpoints
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ class StreamingTestBase:
         extra_feature_flags = [
             "enable_external_data_sources",
             "enable_streaming_queries",
+            "enable_streaming_queries_counters",
             "enable_shared_reading_in_streaming_queries",
         ]
 
@@ -46,6 +47,7 @@ class StreamingTestBase:
             },
         ):
             self.ydb_client = YdbClient(self.driver)
+            self.previous_expected: set[str] = set()
             try:
                 yield
             finally:
@@ -103,8 +105,9 @@ class StreamingTestBase:
 
     def create_streaming_query(self: Self) -> None:
         logger.debug("create_streaming_query")
+        self.query_name = "my_queries/query_name"
         self.ydb_client.query(f"""
-            CREATE STREAMING QUERY `my_queries/query_name` AS DO BEGIN
+            CREATE STREAMING QUERY `{self.query_name}` AS DO BEGIN
             $precompute_data = SELECT value FROM table_name LIMIT 1;
 
             $input = (
@@ -140,8 +143,9 @@ class StreamingTestBase:
 
     def create_simple_streaming_query(self: Self) -> None:
         logger.debug("create_simple_streaming_query")
+        self.query_name = "my_queries/query_name"
         self.ydb_client.query(f"""
-            CREATE STREAMING QUERY `my_queries/query_name` AS DO BEGIN
+            CREATE STREAMING QUERY `{self.query_name}` AS DO BEGIN
             $precompute_data = SELECT value FROM table_name LIMIT 1;
 
             $input = (
@@ -169,10 +173,22 @@ class StreamingTestBase:
         self.ydb_client.topic_write(self.input_topic, input_data)
 
         logger.debug("read data from stream")
-        actual = self.ydb_client.topic_read_until(self.output_topic, self.consumer_name, len(expected))
-        if len(actual) != len(expected):
-            actual = actual[-len(expected):]  # deduplication disabled
-        assert sorted(actual) == sorted(expected)
+        actual = self.ydb_client.topic_read_until_contains(self.output_topic, self.consumer_name, expected)
+
+        # PQ sink deduplication is disabled, so after a restart the query may re-emit results
+        # produced after its last completed checkpoint. Re-emitted results of previous steps
+        # are tolerated, any other unexpected data is not.
+        missing = sorted(set(expected) - set(actual))
+        unexpected = [message for message in actual if message not in expected and message not in self.previous_expected]
+        assert not missing and not unexpected, f"missing: {missing}, unexpected: {unexpected}, actual: {actual}"
+        self.previous_expected.update(expected)
+
+    def wait_checkpoints(self: Self) -> None:
+        # Wait for checkpoints taken after the results were produced (the first completed
+        # checkpoint may have been in flight before the results were emitted), so that the
+        # query is restored without replaying already emitted results after a restart.
+        logger.debug("wait_checkpoints")
+        wait_completed_checkpoints(self.cluster, f"/Root/{self.query_name}", checkpoints_count=2, wait_delta=True)
 
     def do_test_part1(self: Self) -> None:
         suffix = 'value1'
@@ -228,6 +244,7 @@ class TestWatermarksRestartToAnotherVersion(StreamingTestBase, RestartToAnotherV
         self.create_objects(external)
         self.create_streaming_query()
         self.do_test_part1()
+        self.wait_checkpoints()
         self.change_cluster_version()
         self.do_test_part2()
 
@@ -252,4 +269,4 @@ class TestWatermarksRollingUpgradeAndDowngrade(StreamingTestBase, RollingUpgrade
                 f'{{"host":"host-{i}","level":"error","time":"2025-01-01T00:15:00.000000Z"}}' + suffix,
             ]
             self.do_write_read(input_data, expected)
-            time.sleep(0.5)
+            self.wait_checkpoints()

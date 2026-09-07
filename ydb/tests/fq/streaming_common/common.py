@@ -327,6 +327,47 @@ class YdbClient:
                 result.extend(_read_batch())
             return result
 
+    def topic_read_until_contains(
+        self,
+        topic: str,
+        consumer: str,
+        expected: list[str],
+        timeout: int = plain_or_under_sanitizer_wrapper(30, 300),
+        commit: bool = True,
+    ) -> list[str]:
+        """Read messages until every message from `expected` is received at least once.
+
+        Unlike `topic_read_until`, extra messages do not stop reading early. This matters for
+        streaming queries: PQ sink deduplication is disabled, so after a restart a query may
+        re-emit results produced after its last completed checkpoint, and such duplicates may
+        arrive before the expected messages. On timeout the messages received so far are returned.
+        """
+        deadline = time.monotonic() + timeout
+        missing = set(expected)
+        result: list[str] = []
+
+        with self.driver.topic_client.reader(topic, consumer=consumer) as reader:
+            while missing:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+
+                try:
+                    batch = reader.receive_batch(timeout=remaining)
+                except TimeoutError:
+                    break
+
+                if commit:
+                    reader.commit(batch)
+
+                for message in batch.messages:
+                    data = message.data
+                    data = data.decode() if isinstance(data, bytes) else str(data)
+                    result.append(data)
+                    missing.discard(data)
+
+        return result
+
 
 class Kikimr:
     def __init__(self, config: KikimrConfigGenerator, timeout_seconds: int = 240, enable_discovery: bool = True):
