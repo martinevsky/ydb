@@ -16,9 +16,15 @@ IF (CLANG AND NOT WITH_VALGRIND)
 
     SRCS(
         yql_arrow_column_converters_ut.cpp
+        yql_s3_source_queue_ut.cpp
     )
 
     PEERDIR(
+        ydb/library/actors/interconnect
+        ydb/library/actors/testlib
+        ydb/library/services
+        ydb/library/yql/dq/actors/common
+        ydb/library/yql/providers/s3/events
         ydb/library/yql/udfs/common/clickhouse/client
     )
 
