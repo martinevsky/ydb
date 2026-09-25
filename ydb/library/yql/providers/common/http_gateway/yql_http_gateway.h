@@ -161,6 +161,10 @@ public:
 
     virtual void UpdatePoolCaps(THashMap<NDq::TWorkScope, size_t> caps) = 0;
 
+    // The configuration the gateway was created with. Make() returns a process-wide singleton, so a
+    // later Make() with another config does not change it (a warning is logged). Fakes return {}.
+    virtual THttpGatewayConfig GetEffectiveConfig() const;
+
     static constexpr const char* DefaultPoolId = "default";
 
     static THeaders MakeYcHeaders(

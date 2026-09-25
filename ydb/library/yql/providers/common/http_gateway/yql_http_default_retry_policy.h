@@ -3,6 +3,7 @@
 #include "yql_http_gateway.h"
 
 #include <curl/curl.h>
+#include <functional>
 #include <optional>
 #include <unordered_set>
 
@@ -21,5 +22,8 @@ IHTTPGateway::TRetryPolicy::TPtr GetHTTPDefaultRetryPolicy(THttpRetryPolicyOptio
 IHTTPGateway::TRetryPolicy::TPtr GetHTTPDefaultRetryPolicy(TDuration maxTime, size_t maxRetries = std::numeric_limits<size_t>::max()); // Zero means default maxTime
 
 IHTTPGateway::TRetryPolicy::TPtr GetFqHTTPRetryPolicy();
+
+// Same policy; `now` is the clock of the dns error budget (test seam S2). Empty: TInstant::Now().
+IHTTPGateway::TRetryPolicy::TPtr GetFqHTTPRetryPolicy(std::function<TInstant()> now);
 
 }

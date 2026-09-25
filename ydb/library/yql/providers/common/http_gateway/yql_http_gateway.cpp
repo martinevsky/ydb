@@ -1,13 +1,16 @@
 #include "yql_aws_signature.h"
 #include "yql_dns_gateway.h"
 #include "yql_http_gateway.h"
+#include "yql_http_gateway_test_hooks.h"
 
+#include <util/generic/hash_set.h>
 #include <util/generic/size_literals.h>
 #include <util/generic/yexception.h>
 #include <util/stream/str.h>
 #include <util/string/builder.h>
 #include <util/datetime/base.h>
 #include <util/system/hp_timer.h>
+#include <yql/essentials/providers/common/proto/gateways_config.pb.h>
 #include <yql/essentials/utils/log/log.h>
 
 #include <thread>
@@ -78,6 +81,8 @@ struct TCurlInitConfig {
     // THttpGatewayConfig.VerifyPeer / CaFile. Off by default (legacy behaviour).
     bool VerifyPeer = false;
     TString CaFile;
+    // Test seam S1 (TGatewayTestOptions.Now): the SigV4 signing clock. Empty: TInstant::Now().
+    std::function<TInstant()> Now;
 };
 
 // some WinNT macros clash
@@ -216,7 +221,7 @@ public:
                     contentType = field.substr(strlen("Content-Type:"));
                 }
             }
-            TAwsSignature signature(method, Url, contentType, Data, Headers.Options.AwsSigV4, Headers.Options.UserPwd);
+            TAwsSignature signature(method, Url, contentType, Data, Headers.Options.AwsSigV4, Headers.Options.UserPwd, Config.Now ? Config.Now() : TInstant::Now());
             Headers.Fields.push_back(TStringBuilder{} << "Authorization: " << signature.GetAuthorization());
             Headers.Fields.push_back(TStringBuilder{} << "x-amz-content-sha256: " << signature.GetXAmzContentSha256());
             Headers.Fields.push_back(TStringBuilder{} << "x-amz-date: " << signature.GetAmzDate());
@@ -656,8 +661,14 @@ public:
 
     explicit THTTPMultiGateway(
         const THttpGatewayConfig* httpGatewaysCfg,
-        ::NMonitoring::TDynamicCounterPtr counters)
-        : DnsGateway(httpGatewaysCfg ? httpGatewaysCfg->GetDnsResolverConfig(): TDnsResolverConfig{}, counters->GetSubgroup("subsystem", "dns_gateway"))
+        ::NMonitoring::TDynamicCounterPtr counters,
+        const NHttpGatewayTest::TGatewayTestOptions& testOptions = {})
+        : EffectiveConfig(httpGatewaysCfg ? *httpGatewaysCfg : THttpGatewayConfig{})
+        , Clock(testOptions.Now)
+        , DnsGateway(
+            httpGatewaysCfg ? httpGatewaysCfg->GetDnsResolverConfig(): TDnsResolverConfig{},
+            counters->GetSubgroup("subsystem", "dns_gateway"),
+            TInjectableDNSResolver{testOptions.DnsResolve})
         , Counters(std::move(counters))
         , Rps(Counters->GetCounter("Requests", true))
         , InFlight(Counters->GetCounter("InFlight"))
@@ -722,9 +733,51 @@ public:
                 : !InitConfig.CaFile.empty();
         }
 
+        InitConfig.Now = Clock;
+
         PoolCaps.emplace(DefaultPoolKey(), MaxHandlers);
 
         InitCurl();
+    }
+
+    // IHTTPGateway::Make and NHttpGatewayTest::MakeHttpGatewayForTest: returns the live singleton if
+    // there is one (a differing non-null config is ignored with a warning), otherwise creates it.
+    static IHTTPGateway::TPtr MakeOrReuse(
+        const THttpGatewayConfig* httpGatewaysCfg,
+        ::NMonitoring::TDynamicCounterPtr counters,
+        const NHttpGatewayTest::TGatewayTestOptions& testOptions)
+    {
+        const std::unique_lock lock(CreateSync);
+        if (const auto g = Singleton.lock()) {
+            if (httpGatewaysCfg) {
+                const TString effective = g->EffectiveConfig.ShortDebugString();
+                const TString ignored = httpGatewaysCfg->ShortDebugString();
+                // Once per distinct ignored config: some callers make the gateway per client/query.
+                if (effective != ignored && g->IgnoredConfigs.insert(ignored).second) {
+                    YQL_CLOG(WARN, HttpGateway) << "HTTP gateway is already created, the new configuration is ignored"
+                        << " (the gateway is a process-wide singleton). effective config: {" << effective
+                        << "} ignored config: {" << ignored << "}";
+                }
+            }
+            return g;
+        }
+
+        const auto gateway = std::make_shared<THTTPMultiGateway>(httpGatewaysCfg, std::move(counters), testOptions);
+        Singleton = gateway;
+
+        gateway->Thread = std::thread([self = gateway.get()] () {
+            return self->Perform();
+        });
+
+        return gateway;
+    }
+
+    THttpGatewayConfig GetEffectiveConfig() const final {
+        return EffectiveConfig;
+    }
+
+    void RefreshDnsNow() {
+        DnsGateway.RefreshNow();
     }
 
     static NDq::TWorkScope DefaultPoolKey() {
@@ -745,6 +798,13 @@ private:
     size_t MaxSimulatenousDownloadsSize = 8_GB;
     size_t BuffersSizePerStream = CURL_MAX_WRITE_SIZE << 3U;
     TCurlInitConfig InitConfig;
+    const THttpGatewayConfig EffectiveConfig;
+    THashSet<TString> IgnoredConfigs; // S4: configs already reported as ignored; guarded by CreateSync
+    const std::function<TInstant()> Clock; // S1; empty: wall clock
+
+    TInstant Now() const {
+        return Clock ? Clock() : TInstant::Now();
+    }
 
     struct TPoolCounters {
         ::NMonitoring::TDynamicCounters::TCounterPtr PerPoolCapFloor;
@@ -843,7 +903,7 @@ private:
                 it = Streams.erase(it);
         }
 
-        while (!Delayed.empty() && Delayed.top().first <= TInstant::Now()) {
+        while (!Delayed.empty() && Delayed.top().first <= Now()) {
             const auto poolKey = Delayed.top().second->GetWorkScope();
             AwaitPerPool[poolKey].emplace_back(std::move(Delayed.top().second));
             Delayed.pop();
@@ -948,7 +1008,7 @@ private:
                     AllocatedSize -= buffer->GetSizeLimit();
                     if (const auto& nextRetryDelay = buffer->GetNextRetryDelay(result, httpResponseCode)) {
                         buffer->Reset();
-                        Delayed.emplace(nextRetryDelay->ToDeadLine(), std::move(buffer));
+                        Delayed.emplace(nextRetryDelay->ToDeadLine(Now()), std::move(buffer));
                         easy.reset();
                     }
                 }
@@ -1213,7 +1273,7 @@ private:
     static std::mutex CreateSync;
     static TWeakPtr Singleton;
 
-    TDNSGateway<> DnsGateway;
+    TDNSGateway<TInjectableDNSResolver> DnsGateway;
 
     const ::NMonitoring::TDynamicCounterPtr Counters;
     const ::NMonitoring::TDynamicCounters::TCounterPtr Rps;
@@ -1314,19 +1374,30 @@ TString IHTTPGateway::TCountedContent::Extract() {
 
 IHTTPGateway::TPtr
 IHTTPGateway::Make(const THttpGatewayConfig* httpGatewaysCfg, ::NMonitoring::TDynamicCounterPtr counters) {
-    const std::unique_lock lock(THTTPMultiGateway::CreateSync);
-    if (const auto g = THTTPMultiGateway::Singleton.lock())
-        return g;
-
-    const auto gateway = std::make_shared<THTTPMultiGateway>(httpGatewaysCfg, std::move(counters));
-    THTTPMultiGateway::Singleton = gateway;
-
-    gateway->Thread = std::thread([self = gateway.get()] () {
-        return self->Perform();
-    });
-
-    return gateway;
+    return THTTPMultiGateway::MakeOrReuse(httpGatewaysCfg, std::move(counters), {});
 }
+
+THttpGatewayConfig IHTTPGateway::GetEffectiveConfig() const {
+    return {};
+}
+
+namespace NHttpGatewayTest {
+
+IHTTPGateway::TPtr MakeHttpGatewayForTest(
+    const THttpGatewayConfig* httpGatewaysCfg,
+    ::NMonitoring::TDynamicCounterPtr counters,
+    const TGatewayTestOptions& options)
+{
+    return THTTPMultiGateway::MakeOrReuse(httpGatewaysCfg, std::move(counters), options);
+}
+
+void RefreshDnsNow(const IHTTPGateway::TPtr& gateway) {
+    const auto multi = std::dynamic_pointer_cast<THTTPMultiGateway>(gateway);
+    Y_ENSURE(multi, "RefreshDnsNow: not the curl HTTP gateway");
+    multi->RefreshDnsNow();
+}
+
+} // namespace NHttpGatewayTest
 
 IHTTPGateway::THeaders IHTTPGateway::MakeYcHeaders(
     const TString& requestId,

@@ -11,6 +11,7 @@
 #include <yql/essentials/utils/log/log_component.h>
 
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -26,6 +27,19 @@ struct TDNSResolver {
             result.emplace_back(NAddr::TOpaqueAddr((*i).ai_addr));
         }
         return result;
+    }
+};
+
+// S11: a resolver that can be replaced by a test (THTTPMultiGateway test options). Without an injected
+// function it resolves exactly like TDNSResolver.
+struct TInjectableDNSResolver {
+    std::function<std::vector<NAddr::TOpaqueAddr>(const TString&, ui16)> Resolve_;
+
+    std::vector<NAddr::TOpaqueAddr> Resolve(const TString& host, ui16 port) const {
+        if (Resolve_) {
+            return Resolve_(host, port);
+        }
+        return TDNSResolver().Resolve(host, port);
     }
 };
 
@@ -49,9 +63,11 @@ public:
 
     TDNSGateway(
         const TDnsResolverConfig& dnsResolverConfig,
-        ::NMonitoring::TDynamicCounterPtr counters)
+        ::NMonitoring::TDynamicCounterPtr counters,
+        Resolver resolver = Resolver())
         : IsStopped(false)
         , UpdateInterval(std::chrono::milliseconds(dnsResolverConfig.GetRefreshMs()))
+        , DnsResolver(std::move(resolver))
         , TotalResolutionCounter(counters->GetCounter("TotalResolutions", true))
         , ResolutionSuccessCounter(counters->GetCounter("ResolutionSuccesses", true))
         , ResolutionErrorCounter(counters->GetCounter("ResolutionErrors", true))
@@ -85,7 +101,7 @@ public:
         YQL_CLOG(INFO, HttpGateway)
             << "Filled DNS resolution table based on provided configuration";
 
-        UpdateResolutionTable();
+        RefreshNow();
 
         Thread = std::thread([this]() {
             auto lock = std::unique_lock{Sync};
@@ -103,7 +119,7 @@ public:
                     lock.lock();
                 };
 
-                UpdateResolutionTable();
+                RefreshNow();
             }
             YQL_CLOG(DEBUG, HttpGateway) << "DNS Gateway thread stopped";
         });
@@ -115,6 +131,12 @@ public:
     }
 
     ~TDNSGateway() { StopThread(); }
+
+    // Re-resolves the explicit records now. Called by the refresh thread; tests call it directly (S11).
+    void RefreshNow() {
+        auto lock = std::lock_guard{UpdateSync};
+        UpdateResolutionTable();
+    }
 
 private:
     void SetDNSCurlList(TDNSCurlListPtr&& newDnsCurlList) {
@@ -271,6 +293,7 @@ private:
 
 private:
     std::mutex Sync;
+    std::mutex UpdateSync; // serializes UpdateResolutionTable (refresh thread vs RefreshNow)
     std::thread Thread;
     std::condition_variable IsStoppedConditionalVariable;
     bool IsStopped = false;

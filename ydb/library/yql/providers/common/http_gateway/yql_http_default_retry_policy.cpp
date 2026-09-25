@@ -48,19 +48,21 @@ std::unordered_set<CURLcode> YqlRetriedCurlCodes() {
 // errors keep the shared backoff and the full budget of the wrapped policy.
 class TFqRetryPolicy final: public IHTTPGateway::TRetryPolicy {
 public:
-    explicit TFqRetryPolicy(IHTTPGateway::TRetryPolicy::TPtr policy)
+    TFqRetryPolicy(IHTTPGateway::TRetryPolicy::TPtr policy, std::function<TInstant()> now)
         : Policy(std::move(policy))
+        , Now(std::move(now))
     {
     }
 
     IRetryState::TPtr CreateRetryState() const override {
-        return std::make_unique<TFqRetryState>(Policy->CreateRetryState());
+        return std::make_unique<TFqRetryState>(Policy->CreateRetryState(), Now);
     }
 
 private:
     struct TFqRetryState final: IRetryState {
-        explicit TFqRetryState(IRetryState::TPtr state)
+        TFqRetryState(IRetryState::TPtr state, std::function<TInstant()> now)
             : State(std::move(state))
+            , Now(std::move(now))
         {
         }
 
@@ -69,7 +71,7 @@ private:
                 // The host has been resolved, so a later dns error starts a new budget
                 DnsErrorsStartTime.reset();
             } else {
-                const TInstant now = TInstant::Now();
+                const TInstant now = Now ? Now() : TInstant::Now();
                 if (!DnsErrorsStartTime) {
                     DnsErrorsStartTime = now;
                 } else if (now - *DnsErrorsStartTime >= DNS_ERROR_MAX_TIME) {
@@ -80,10 +82,12 @@ private:
         }
 
         const IRetryState::TPtr State;
+        const std::function<TInstant()> Now; // empty: TInstant::Now()
         std::optional<TInstant> DnsErrorsStartTime; // start of the current run of dns errors
     };
 
     const IHTTPGateway::TRetryPolicy::TPtr Policy;
+    const std::function<TInstant()> Now;
 };
 
 IHTTPGateway::TRetryPolicy::TPtr GetHTTPDefaultRetryPolicy(THttpRetryPolicyOptions&& options) {
@@ -129,9 +133,13 @@ IHTTPGateway::TRetryPolicy::TPtr GetHTTPDefaultRetryPolicy(TDuration maxTime, si
 }
 
 IHTTPGateway::TRetryPolicy::TPtr GetFqHTTPRetryPolicy() {
+    return GetFqHTTPRetryPolicy(std::function<TInstant()>{});
+}
+
+IHTTPGateway::TRetryPolicy::TPtr GetFqHTTPRetryPolicy(std::function<TInstant()> now) {
     return std::make_shared<TFqRetryPolicy>(GetHTTPDefaultRetryPolicy(THttpRetryPolicyOptions{
         .RetriedCurlCodes = FqRetriedCurlCodes(),
-    }));
+    }), std::move(now));
 }
 
 }
