@@ -40,3 +40,7 @@ RECURSE(
     actors
     http_gateway_config
 )
+
+RECURSE_FOR_TESTS(
+    ut
+)
