@@ -163,6 +163,9 @@ struct TSecureSocketImpl : TPlainSocketImpl, TSslHelpers {
     TSslHolder<BIO> Bio;
     TSslHolder<SSL_CTX> Ctx;
     TSslHolder<SSL> Ssl;
+    // Client side only: opt-in server certificate verification, see TEvHttpOutgoingRequest::CaFile.
+    // Empty (default) keeps the legacy behaviour: the server certificate is not verified.
+    TString VerifyCaFile;
 
     TSecureSocketImpl() = default;
 
@@ -182,6 +185,7 @@ struct TSecureSocketImpl : TPlainSocketImpl, TSslHelpers {
             Split(Host, ":", items);
             SSL_set_tlsext_host_name(Ssl.Get(), items[0].c_str());
         }
+        ConfigureClientVerification();
         SSL_set_connect_state(Ssl.Get());
     }
 
@@ -198,7 +202,47 @@ struct TSecureSocketImpl : TPlainSocketImpl, TSslHelpers {
             Split(Host, ":", items);
             SSL_set_tlsext_host_name(Ssl.Get(), items[0].c_str());
         }
+        ConfigureClientVerification();
         SSL_set_connect_state(Ssl.Get());
+    }
+
+    // Host name (or IP literal) of Host without the port and IPv6 brackets.
+    static TString GetHostNameForVerification(TStringBuf host) {
+        if (host.StartsWith('[')) {
+            return TString(host.After('[').Before(']'));
+        }
+        return TString(host.Before(':'));
+    }
+
+    // Requests SSL_VERIFY_PEER against VerifyCaFile and checks the certificate name against Host.
+    // If the CA file cannot be loaded there are no trusted roots, so the handshake fails (fail closed).
+    void ConfigureClientVerification() {
+        if (VerifyCaFile.empty()) {
+            return;
+        }
+        if (SSL_CTX_load_verify_locations(Ctx.Get(), VerifyCaFile.c_str(), nullptr) != 1) {
+            ERR_clear_error();
+        }
+        SSL_set_verify(Ssl.Get(), SSL_VERIFY_PEER, nullptr);
+        const TString hostName = GetHostNameForVerification(Host);
+        if (!hostName.empty()) {
+            if (X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(Ssl.Get()), hostName.c_str()) != 1) {
+                SSL_set1_host(Ssl.Get(), hostName.c_str());
+            }
+            ERR_clear_error();
+        }
+    }
+
+    // Describes a failed server certificate verification; empty if verification was not requested or passed.
+    TString GetVerifyError() const {
+        if (VerifyCaFile.empty() || !Ssl) {
+            return {};
+        }
+        const long result = SSL_get_verify_result(Ssl.Get());
+        if (result == X509_V_OK) {
+            return {};
+        }
+        return TStringBuilder() << "server certificate verify failed: " << X509_verify_cert_error_string(result);
     }
 
     void InitServerSsl(SSL_CTX* ctx) {

@@ -134,6 +134,11 @@ struct TEvHttpProxy {
         bool AllowConnectionReuse = false;
         bool UseHttp2 = false;
         std::vector<TString> StreamContentTypes;
+        // Opt-in verification of the server certificate for https requests: when set, the client
+        // verifies the certificate chain against this CA bundle (PEM file) and the certificate name
+        // against the request host. Such requests never reuse a pooled connection.
+        // Empty (default) keeps the legacy behaviour: the server certificate is not verified.
+        TString CaFile;
 
         TEvHttpOutgoingRequest(THttpOutgoingRequestPtr request)
             : Request(std::move(request))

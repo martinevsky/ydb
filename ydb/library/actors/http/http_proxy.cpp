@@ -92,7 +92,7 @@ protected:
     }
 
     void Handle(TEvHttpProxy::TEvHttpOutgoingRequest::TPtr& event) {
-        if (event->Get()->AllowConnectionReuse) {
+        if (event->Get()->AllowConnectionReuse && event->Get()->CaFile.empty()) {
             auto destination = event->Get()->Request->GetDestination();
             auto itAvailableConnection = AvailableConnections.find(destination);
             if (itAvailableConnection != AvailableConnections.end()) {

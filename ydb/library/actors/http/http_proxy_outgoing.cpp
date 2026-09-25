@@ -221,6 +221,9 @@ protected:
         }
         AllowConnectionReuse = event->Get()->AllowConnectionReuse;
         UseHttp2 = event->Get()->UseHttp2;
+        if constexpr (std::is_same_v<TSocketImpl, TSecureSocketImpl>) {
+            TSocketImpl::VerifyCaFile = event->Get()->CaFile;
+        }
         StreamContentTypes = event->Get()->StreamContentTypes;
         StreamState = EStreamState::Unknown;
     }
@@ -386,6 +389,11 @@ protected:
                 }
                 return;
             } else {
+                if constexpr (std::is_same_v<TSocketImpl, TSecureSocketImpl>) {
+                    if (TString verifyError = TSocketImpl::GetVerifyError()) {
+                        return ReplyErrorAndPassAway(verifyError);
+                    }
+                }
                 return ReplyErrorAndPassAway(strerror(-res));
             }
         }
