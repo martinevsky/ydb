@@ -24,6 +24,7 @@ PEERDIR(
     ydb/core/kqp/ut/federated_query/common
     ydb/core/wrappers/ut_helpers
     ydb/library/testlib/s3_recipe_helper
+    ydb/library/yql/providers/common/ut_helpers/transport
     ydb/library/yql/providers/s3/actors
     ydb/public/sdk/cpp/src/client/types/operation
     yql/essentials/sql/pg_dummy

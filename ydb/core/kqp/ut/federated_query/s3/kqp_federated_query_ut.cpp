@@ -6,6 +6,8 @@
 #include <ydb/core/kqp/federated_query/kqp_federated_query_helpers.h>
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
 #include <ydb/core/wrappers/ut_helpers/s3_mock.h>
+#include <ydb/library/yql/providers/common/ut_helpers/transport/known_bug.h>
+#include <ydb/library/yql/providers/common/ut_helpers/transport/loopback_http_server.h>
 #include <ydb/public/sdk/cpp/include/ydb-cpp-sdk/client/draft/ydb_scripting.h>
 #include <ydb/public/sdk/cpp/include/ydb-cpp-sdk/client/operation/operation.h>
 #include <ydb/public/sdk/cpp/include/ydb-cpp-sdk/client/proto/accessor.h>
@@ -4030,6 +4032,69 @@ Y_UNIT_TEST_SUITE(KqpFederatedQuery) {
         const auto& issues = result.GetIssues().ToString();
         UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::GENERIC_ERROR, issues);
         UNIT_ASSERT_STRING_CONTAINS(issues, TStringBuilder() << "Multiple writes into same topic or external object is not supported. Found multiple write operations for external table: db.[" << externalTableName);
+    }
+
+    // T-E2E-1 (F-A-4, FQ transport test plan): a KQP node without an HttpGateway section runs the gateway
+    // with DefaultHttpGatewayConfig() (through TKqpFederatedQuerySetupFactoryDefault) and that config
+    // drops a stalled S3 connection. The oracle is server-observable: the client closes the first
+    // connection and opens a new one (a retry). Today the default has no LowSpeed guard and no total
+    // timeout, so the client never closes. Query latency is not asserted.
+    Y_UNIT_TEST(DefaultHttpGatewayConfigDropsStalledS3Connection) {
+        YDB_SKIP_KNOWN_BUG("F-A-4");
+        using namespace NYql::NTransportTest;
+
+        NKikimrConfig::TAppConfig appConfig;
+        appConfig.MutableQueryServiceConfig()->SetAllExternalDataSourcesAreAvailable(true);
+        UNIT_ASSERT(!appConfig.GetQueryServiceConfig().HasHttpGateway());
+
+        // No test gateway (initializeHttpGateway = false): the node makes its own through the default factory.
+        auto kikimr = NFederatedQueryTest::MakeKikimrRunner(false, nullptr, nullptr, appConfig,
+            NYql::NDq::CreateS3ActorsFactory(), {.InternalInitFederatedQuerySetupFactory = true});
+
+        // The gateway is a process singleton: make sure the node got the KQP default config and did not
+        // inherit a gateway from an earlier test in this process.
+        UNIT_ASSERT_VALUES_EQUAL_C(NYql::IHTTPGateway::Make()->GetEffectiveConfig().ShortDebugString(),
+            DefaultHttpGatewayConfig().ShortDebugString(),
+            "the node does not run the gateway with DefaultHttpGatewayConfig() (singleton left by another test?)");
+
+        // Declared after the node so that it stops first: that releases the stalled connections.
+        TLoopbackHttpServer server;
+        server.SetDefault(TScriptedResponse::StallForever());
+
+        auto db = kikimr->GetQueryClient();
+        auto result = db.ExecuteQuery(fmt::format(R"(
+            CREATE EXTERNAL DATA SOURCE `/Root/stalled_source` WITH (
+                SOURCE_TYPE = "ObjectStorage",
+                LOCATION = "{location}",
+                AUTH_METHOD = "NONE"
+            );
+            CREATE EXTERNAL TABLE `/Root/stalled_table` (
+                key Utf8 NOT NULL,
+                value Utf8 NOT NULL
+            ) WITH (
+                DATA_SOURCE = "/Root/stalled_source",
+                LOCATION = "test.json",
+                FORMAT = "json_each_row"
+            );)",
+            "location"_a = server.Url("/stalled-bucket/")
+        ), TTxControl::NoTx()).ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToOneLineString());
+
+        auto scriptExecutionOperation = db.ExecuteScript(R"(
+            SELECT * FROM `/Root/stalled_table`;
+        )").ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL_C(scriptExecutionOperation.Status().GetStatus(), EStatus::SUCCESS,
+            scriptExecutionOperation.Status().GetIssues().ToOneLineString());
+
+        const TDuration guard = TDuration::Seconds(60);
+        server.WaitForRequests(1, guard);
+        server.WaitConnectionClosedByPeer(0, guard);
+        server.WaitForRequests(2, guard);
+        UNIT_ASSERT_GE(server.ConnectionsAccepted(), 2);
+
+        NOperation::TOperationClient operationClient(kikimr->GetDriver());
+        const auto cancelResult = operationClient.Cancel(scriptExecutionOperation.Id()).ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL_C(cancelResult.GetStatus(), EStatus::SUCCESS, cancelResult.GetIssues().ToOneLineString());
     }
 }
 
