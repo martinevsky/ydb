@@ -57,6 +57,13 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
 
     // A runner with the IAM config of the tests, a fake delegation service registered after the KQP proxy has
     // bootstrapped (it registers the real services then), and helpers to run an orchestrator directly.
+    // the orchestrator checks the YDB rights of the user before IAM: the test user may do everything
+    void GrantAllToBob(TKikimrRunner& kikimr) {
+        const auto result = kikimr.GetQueryClient().ExecuteQuery(
+            "GRANT ALL ON `/Root` TO `bob@" BUILTIN_ACL_DOMAIN "`;", NYdb::NQuery::TTxControl::NoTx()).ExtractValueSync();
+        UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
+    }
+
     struct TOrchestratorRunner {
         static NKikimrConfig::TAppConfig MakeAppConfig() {
             NKikimrConfig::TAppConfig appConfig;
@@ -90,6 +97,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
             // served a query: the fake registered afterwards replaces them
             const auto result = Kikimr.GetQueryClient().ExecuteQuery("SELECT 1;", NYdb::NQuery::TTxControl::NoTx()).ExtractValueSync();
             UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
+            GrantAllToBob(Kikimr);
             Calls = NSecret::RegisterFakeIamDelegationService(Runtime);
         }
 
@@ -341,6 +349,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
             const auto result = kikimr.GetQueryClient().ExecuteQuery("SELECT 1;", NYdb::NQuery::TTxControl::NoTx()).ExtractValueSync();
             UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
         }
+        GrantAllToBob(kikimr);
         auto calls = NSecret::RegisterFakeIamDelegationService(runtime);
         with_lock (calls->Mutex) {
             calls->HoldSetups = true;
