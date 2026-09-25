@@ -13,6 +13,7 @@
 #include <fmt/format.h>
 
 #include <util/generic/hash_set.h>
+#include <util/system/condvar.h>
 
 namespace NKikimr::NKqp {
 
@@ -141,43 +142,91 @@ public:
         ExecQuery(fmt::format("GRANT ALL ON `/Root` TO `{user}`", "user"_a = CLOUD_USER_SID));
     }
 
+    // The revocations IAM has accepted, recorded by TRevocationWatcher.
+    struct TAcceptedRevocations : TThrRefBase {
+        TMutex Mutex;
+        TCondVar Changed;
+        THashSet<TString> Referrers;
+    };
+
+    // Stands in front of the node's IAM delegation service: every request is forwarded to the real service, and
+    // the answers to revoke requests are relayed to their senders after the accepted ones have been recorded.
+    // (The runtime runs real threads here, so its event observers do not see the traffic.)
+    class TRevocationWatcher : public TActor<TRevocationWatcher> {
+        using TEvIamDelegation = NIamDelegation::TEvIamDelegation;
+
+    public:
+        TRevocationWatcher(const TActorId& realService, TIntrusivePtr<TAcceptedRevocations> accepted)
+            : TActor(&TRevocationWatcher::StateWork)
+            , RealService(realService)
+            , Accepted(std::move(accepted))
+        {}
+
+        STFUNC(StateWork) {
+            switch (ev->GetTypeRewrite()) {
+                case TEvIamDelegation::EvRevokeDelegation: {
+                    const ui64 cookie = ++Seq;
+                    Pending[cookie] = {ev->Sender, ev->Cookie, ev->Get<TEvIamDelegation::TEvRevokeDelegation>()->Spec.ReferrerId};
+                    Send(RealService, ev->ReleaseBase().Release(), 0, cookie);
+                    break;
+                }
+                case TEvIamDelegation::EvRevokeDelegationResult: {
+                    const auto it = Pending.find(ev->Cookie);
+                    if (it == Pending.end()) {
+                        break;
+                    }
+                    const auto& result = ev->Get<TEvIamDelegation::TEvRevokeDelegationResult>()->Result;
+                    if (result.IsSuccess() || result.Status == Ydb::StatusIds::NOT_FOUND) {
+                        with_lock (Accepted->Mutex) {
+                            Accepted->Referrers.insert(it->second.ReferrerId);
+                            Accepted->Changed.BroadCast();
+                        }
+                    }
+                    Send(it->second.Sender, ev->ReleaseBase().Release(), 0, it->second.Cookie);
+                    Pending.erase(it);
+                    break;
+                }
+                default:
+                    TActivationContext::Send(ev->Forward(RealService)); // setups and the rest: the sender talks to the real service
+            }
+        }
+
+    private:
+        struct TPendingRevoke {
+            TActorId Sender;
+            ui64 Cookie;
+            TString ReferrerId;
+        };
+
+        const TActorId RealService;
+        const TIntrusivePtr<TAcceptedRevocations> Accepted;
+        ui64 Seq = 0;
+        THashMap<ui64, TPendingRevoke> Pending;
+    };
+
     // Runs the action (a DROP or an ALTER that stops the secret from naming the delegation) and waits until the
     // schemeshard's revoker got IAM's acceptance of the revocation: the revocation is asynchronous, so a token
     // check after the statement needs this gate (with a hang guard; the action makes the revocation inevitable).
     void RunAndWaitRevoked(const TString& referrerId, const std::function<void()>& action) {
         auto& runtime = GetRuntime();
-        struct TState {
-            TMutex Mutex;
-            THashSet<TActorId> Revokers; // the revokers that asked for this referrer
-            bool Revoked = false;
-        };
-        auto state = std::make_shared<TState>();
-        const auto previous = runtime.SetObserverFunc([state, referrerId](TAutoPtr<IEventHandle>& ev) {
-            using TEvIamDelegation = NIamDelegation::TEvIamDelegation;
-            if (ev->GetTypeRewrite() == TEvIamDelegation::EvRevokeDelegation) {
-                if (ev->Get<TEvIamDelegation::TEvRevokeDelegation>()->Spec.ReferrerId == referrerId) {
-                    with_lock (state->Mutex) {
-                        state->Revokers.insert(ev->Sender);
-                    }
-                }
-            } else if (ev->GetTypeRewrite() == TEvIamDelegation::EvRevokeDelegationResult) {
-                const auto& result = ev->Get<TEvIamDelegation::TEvRevokeDelegationResult>()->Result;
-                with_lock (state->Mutex) {
-                    if (state->Revokers.contains(ev->Recipient) && (result.IsSuccess() || result.Status == Ydb::StatusIds::NOT_FOUND)) {
-                        state->Revoked = true;
-                    }
-                }
-            }
-            return TTestActorRuntimeBase::EEventAction::PROCESS;
-        });
+        if (!Accepted) {
+            // the schemeshard of /Root runs on the static node, whose KQP proxy registered the real service
+            Accepted = MakeIntrusive<TAcceptedRevocations>();
+            const TActorId realService = runtime.GetLocalServiceId(NIamDelegation::MakeIamDelegationServiceId());
+            UNIT_ASSERT_C(realService, "the IAM delegation service is not registered on the static node");
+            const TActorId watcher = runtime.Register(new TRevocationWatcher(realService, Accepted));
+            runtime.RegisterService(NIamDelegation::MakeIamDelegationServiceId(), watcher);
+        }
         action();
-        runtime.WaitFor("the revocation of " + referrerId, [state]() {
-            with_lock (state->Mutex) {
-                return state->Revoked;
+        const TInstant deadline = TInstant::Now() + TDuration::Seconds(120); // hang guard
+        with_lock (Accepted->Mutex) {
+            while (!Accepted->Referrers.contains(referrerId)) {
+                UNIT_ASSERT_C(Accepted->Changed.WaitD(Accepted->Mutex, deadline), "the revocation of " << referrerId << " was not accepted");
             }
-        }, TDuration::Seconds(120));
-        runtime.SetObserverFunc(previous);
+        }
     }
+
+    TIntrusivePtr<TAcceptedRevocations> Accepted;
 
     TString ReferrerOf(const TString& path) {
         return DescribeSecret(path).GetIamDelegation().GetReferrerId();

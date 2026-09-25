@@ -17,8 +17,10 @@ namespace NKikimr::NSecret {
     using TDescriptionPromise = NThreading::TPromise<NKqp::TEvDescribeSecretsResponse::TDescription>;
 
     namespace {
+        // alter: what an AlterSecret does with the delegation (STAGE names it as the pending replacement, PROMOTE makes it current)
         void ProposeIamDelegationSecret(NActors::TTestActorRuntime& runtime, const TString& path, NKikimrSchemeOp::EOperationType operationType,
-            const TString& serviceAccountId, const TString& cloudId, const TString& referrerId)
+            const TString& serviceAccountId, const TString& cloudId, const TString& referrerId,
+            NKikimrSchemeOp::EIamDelegationAlter alter = NKikimrSchemeOp::IAM_DELEGATION_ALTER_NONE)
         {
             const auto parts = SplitPath(path);
             UNIT_ASSERT_C(parts.size() >= 2, path);
@@ -37,6 +39,10 @@ namespace NKikimr::NSecret {
             delegation.SetServiceAccountId(serviceAccountId);
             delegation.SetCloudId(cloudId);
             delegation.SetReferrerId(referrerId);
+            if (operationType == NKikimrSchemeOp::ESchemeOpAlterSecret) {
+                secret.SetIamDelegationAlter(alter);
+            }
+            const bool staged = alter == NKikimrSchemeOp::IAM_DELEGATION_ALTER_STAGE;
 
             const TActorId sender = runtime.AllocateEdgeActor();
             runtime.Send(new IEventHandle(MakeTxProxyID(), sender, request.release()));
@@ -54,12 +60,17 @@ namespace NKikimr::NSecret {
                 const auto& entry = navigate->ResultSet.at(0);
                 if (entry.Status == NSchemeCache::TSchemeCacheNavigate::EStatus::Ok
                     && entry.Kind == NSchemeCache::TSchemeCacheNavigate::EKind::KindSecret
-                    && entry.SecretInfo
-                    && entry.SecretInfo->Description.GetIamDelegation().GetServiceAccountId() == serviceAccountId
-                    && entry.SecretInfo->Description.GetIamDelegation().GetCloudId() == cloudId
-                    && entry.SecretInfo->Description.GetIamDelegation().GetReferrerId() == referrerId)
+                    && entry.SecretInfo)
                 {
-                    return;
+                    const auto& described = staged
+                        ? entry.SecretInfo->Description.GetPendingIamDelegation()
+                        : entry.SecretInfo->Description.GetIamDelegation();
+                    if (described.GetServiceAccountId() == serviceAccountId
+                        && described.GetCloudId() == cloudId
+                        && described.GetReferrerId() == referrerId)
+                    {
+                        return;
+                    }
                 }
                 UNIT_ASSERT_C(TInstant::Now() < deadline, "secret " << path << " was not updated in time, status " << static_cast<int>(entry.Status));
                 Sleep(TDuration::MilliSeconds(100));
@@ -280,7 +291,11 @@ namespace NKikimr::NSecret {
     void AlterIamDelegationSecretDirect(NActors::TTestActorRuntime& runtime, const TString& path,
         const TString& serviceAccountId, const TString& cloudId, const TString& referrerId)
     {
-        ProposeIamDelegationSecret(runtime, path, NKikimrSchemeOp::ESchemeOpAlterSecret, serviceAccountId, cloudId, referrerId);
+        // the way the orchestrator replaces a delegation: staged first, promoted once set up
+        ProposeIamDelegationSecret(runtime, path, NKikimrSchemeOp::ESchemeOpAlterSecret, serviceAccountId, cloudId, referrerId,
+            NKikimrSchemeOp::IAM_DELEGATION_ALTER_STAGE);
+        ProposeIamDelegationSecret(runtime, path, NKikimrSchemeOp::ESchemeOpAlterSecret, serviceAccountId, cloudId, referrerId,
+            NKikimrSchemeOp::IAM_DELEGATION_ALTER_PROMOTE);
     }
 
     void CreateSchemaSecret(const TString& secretName, const TString& secretValue, NYdb::NTable::TSession& session) {
