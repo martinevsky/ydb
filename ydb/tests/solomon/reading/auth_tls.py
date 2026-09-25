@@ -96,6 +96,29 @@ class TestAuthTls(SolomonReadingTestBase):
         # The token itself must not leak into the error.
         assert WRONG_TOKEN not in messages, messages
 
+    @pytest.mark.parametrize("use_tls", ["TRUE", "True"])
+    def test_use_tls_is_case_insensitive(self, use_tls):
+        # USE_TLS = "TRUE" must mean TLS: otherwise the token goes over plain HTTP.
+        expected = f"OAuth {TOKEN}"
+        set_read_auth(expected)
+
+        source = f"tls_case_{use_tls}"
+        result, error = self.execute_query(f"""
+            CREATE EXTERNAL DATA SOURCE `{source}` WITH (
+                SOURCE_TYPE = "Monium.Metrics",
+                LOCATION = "{self.solomon_https_endpoint}",
+                GRPC_LOCATION = "{self.solomon_grpcs_endpoint}",
+                AUTH_METHOD = "TOKEN",
+                TOKEN_SECRET_PATH = "solomon_token",
+                USE_TLS = "{use_tls}"
+            )""")
+        assert error is None, error
+
+        result, error = self.execute_query_once(self.read_query("solomon", source, program=False))
+        assert error is None, self.issue_messages(error)
+        self.check_rows(result)
+        assert all(value == expected for _, value in self.auth_calls())
+
     @pytest.mark.parametrize("cluster_type", CLUSTER_TYPES)
     def test_plain_connection_sends_no_token(self, cluster_type):
         source = f"plain_token_{cluster_type}"

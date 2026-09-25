@@ -145,6 +145,14 @@ class TestDataSemantics(SolomonReadingTestBase):
         # program mode reads exactly the requested range
         assert all((r["from_ms"], r["to_ms"]) == (0, 60000) for r in requests), requests
 
+    @pytest.mark.parametrize("program", [False, True], ids=["selectors", "program"])
+    def test_with_schema(self, program):
+        rows = self.rows(self.query("nan_test", """
+            , `downsampling.disabled` = "true"
+            , SCHEMA (ts Datetime NOT NULL, value Double)
+        """, program))
+        assert [row["value"] for row in rows] == [1, None, 3]
+
     def test_value_column_is_nullable_double(self):
         rows = self.rows(self.query("types_test"))
         assert all(isinstance(row["value"], float) and not math.isnan(row["value"]) for row in rows)

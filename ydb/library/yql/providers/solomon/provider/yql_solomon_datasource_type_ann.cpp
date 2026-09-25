@@ -202,6 +202,13 @@ public:
             return TStatus::Error;
         }
 
+        // The type goes first: SetColumnOrder requires an annotated node.
+        const auto type = rowType.GetTypeAnn()->Cast<TTypeExprType>()->GetType();
+        input->SetTypeAnn(ctx.MakeType<TTupleExprType>(TTypeAnnotationNode::TListType{
+            input->Child(TSoReadObject::idx_World)->GetTypeAnn(),
+            ctx.MakeType<TListExprType>(type)
+        }));
+
         if (input->ChildrenSize() > TSoReadObject::idx_ColumnOrder) {
             auto& order = *input->Child(TSoReadObject::idx_ColumnOrder);
             if (!EnsureTupleOfAtoms(order, ctx)) {
@@ -222,12 +229,6 @@ public:
             }
             return State_->Types->SetColumnOrder(*input, TColumnOrder(columnOrder), ctx);
         }
-
-        const auto type = rowType.GetTypeAnn()->Cast<TTypeExprType>()->GetType();
-        input->SetTypeAnn(ctx.MakeType<TTupleExprType>(TTypeAnnotationNode::TListType{
-            input->Child(TSoReadObject::idx_World)->GetTypeAnn(),
-            ctx.MakeType<TListExprType>(type)
-        }));
 
         return TStatus::Ok;
     }

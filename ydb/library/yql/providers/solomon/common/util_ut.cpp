@@ -7,6 +7,21 @@
 namespace NYql::NSo {
 
 Y_UNIT_TEST_SUITE(TestSolomonParseSelectors) {
+    Y_UNIT_TEST(QuestionMarkInValues) {
+        // `?` is a glob for one character and a regex quantifier, both valid in selectors.
+        TString selectors = "{host = \"web-?\", dc =~ \"sas-[0-9]?\", zone !~ \"^a?b$\"}";
+        TSelectors result;
+
+        TSelectors expectedResult = {
+            { "host", { "=", "web-?" } },
+            { "dc", { "=~", "sas-[0-9]?" } },
+            { "zone", { "!~", "^a?b$" } }
+        };
+
+        UNIT_ASSERT_EQUAL(ParseSelectorValues(selectors, result), TMaybe<TString>{});
+        UNIT_ASSERT_EQUAL(result, expectedResult);
+    }
+
     Y_UNIT_TEST(Basic) {
         TString selectors = "{a = \"a\", b = \"b\"}";
         TSelectors result;

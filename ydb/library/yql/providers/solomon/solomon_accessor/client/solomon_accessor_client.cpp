@@ -275,7 +275,7 @@ TListMetricsLabelsResponse ProcessListMetricsLabelsResponse(NYql::IHTTPGateway::
     return TListMetricsLabelsResponse(std::move(result), response.Content.size() + response.Content.Headers.size());
 }
 
-TGetPointsCountResponse ProcessGetPointsCountResponse(NYql::IHTTPGateway::TResult&& response, ui64 downsampledPointsCount) {
+TGetPointsCountResponse ProcessGetPointsCountResponse(NYql::IHTTPGateway::TResult&& response, ui64 downsampledPointsCount, ui64 maxPointsCount) {
     TGetPointsCountResult result;
 
     if (response.CurlResponseCode != CURLE_OK) {
@@ -323,7 +323,14 @@ TGetPointsCountResponse ProcessGetPointsCountResponse(NYql::IHTTPGateway::TResul
         return TGetPointsCountResponse("Monitoring api points count response doesn't contain requested info");
     }
 
-    result.PointsCount = json["scalar"].GetInteger() + downsampledPointsCount;
+    // The reader splits the range by this number: an impossible count would make it plan
+    // an absurd number of requests, and allocating them aborts the process.
+    const i64 scalar = json["scalar"].GetInteger();
+    if (scalar < 0 || static_cast<ui64>(scalar) > maxPointsCount) {
+        return TGetPointsCountResponse(TStringBuilder() << "Monitoring api points count response is invalid: " << scalar << " points");
+    }
+
+    result.PointsCount = scalar + downsampledPointsCount;
 
     return TGetPointsCountResponse(std::move(result), response.Content.size() + response.Content.Headers.size());
 }
@@ -469,24 +476,8 @@ public:
     }
 
     NThreading::TFuture<TListMetricsResponse> ListMetrics(const TSelectors& selectors, TInstant from, TInstant to) const override final {
-        auto [url, body] = BuildListMetricsHttpParams(selectors, from, to);
-
         auto resultPromise = NThreading::NewPromise<TListMetricsResponse>();
-        
-        auto cb = [resultPromise](NYql::IHTTPGateway::TResult&& result) mutable {
-            resultPromise.SetValue(ProcessListMetricsResponse(std::move(result)));
-        };
-
-        auto error = DoHttpRequest(
-            std::move(cb),
-            std::move(url),
-            std::move(body)
-        );
-
-        if (error) {
-            return NThreading::MakeFuture(TListMetricsResponse(*error));
-        }
-
+        ListMetricsPage(selectors, from, to, 0, {}, 0, resultPromise);
         return resultPromise.GetFuture();
     }
 
@@ -529,8 +520,10 @@ public:
             
             auto [url, body] = BuildGetPointsCountHttpParams(program, downsamplingTo, to);
             
-            auto cb = [resultPromise, downsampledPointsCount](NYql::IHTTPGateway::TResult&& response) mutable {
-                resultPromise.SetValue(ProcessGetPointsCountResponse(std::move(response), downsampledPointsCount));
+            // Points have millisecond timestamps, so the range can't hold more than this.
+            const ui64 maxPointsCount = (to - downsamplingTo).MilliSeconds() + 1;
+            auto cb = [resultPromise, downsampledPointsCount, maxPointsCount](NYql::IHTTPGateway::TResult&& response) mutable {
+                resultPromise.SetValue(ProcessGetPointsCountResponse(std::move(response), downsampledPointsCount, maxPointsCount));
             };
     
             auto error = DoHttpRequest(
@@ -611,6 +604,45 @@ public:
     }
 
 private:
+    // The api may return fewer metrics than asked for and report more pages: read them all.
+    void ListMetricsPage(const TSelectors& selectors, TInstant from, TInstant to, ui64 page,
+        TListMetricsResult listed, ui64 downloadedBytes, NThreading::TPromise<TListMetricsResponse> resultPromise) const
+    {
+        auto [url, body] = BuildListMetricsHttpParams(selectors, from, to, page);
+
+        auto cb = [weakSelf = weak_from_this(), selectors, from, to, page, listed = std::move(listed), downloadedBytes, resultPromise]
+            (NYql::IHTTPGateway::TResult&& result) mutable
+        {
+            auto response = ProcessListMetricsResponse(std::move(result));
+            if (response.Status != EStatus::STATUS_OK) {
+                resultPromise.SetValue(std::move(response));
+                return;
+            }
+
+            auto& pageResult = response.Result;
+            listed.Metrics.insert(listed.Metrics.end(),
+                std::make_move_iterator(pageResult.Metrics.begin()), std::make_move_iterator(pageResult.Metrics.end()));
+            listed.PagesCount = pageResult.PagesCount;
+            listed.TotalCount = pageResult.TotalCount;
+            downloadedBytes += response.DownloadedBytes;
+
+            if (page + 1 < pageResult.PagesCount) {
+                if (auto self = weakSelf.lock()) {
+                    self->ListMetricsPage(selectors, from, to, page + 1, std::move(listed), downloadedBytes, resultPromise);
+                } else {
+                    resultPromise.SetValue(TListMetricsResponse("Client is being shutted down"));
+                }
+                return;
+            }
+
+            resultPromise.SetValue(TListMetricsResponse(std::move(listed), downloadedBytes));
+        };
+
+        if (auto error = DoHttpRequest(std::move(cb), std::move(url), std::move(body))) {
+            resultPromise.SetValue(TListMetricsResponse(*error));
+        }
+    }
+
     std::optional<TString> GetAuthInfo(TString& auth) const {
         auth.clear();
 
@@ -713,7 +745,7 @@ private:
         return { builder.Build(), w.Str() };
     }
 
-    std::tuple<TString, TString> BuildListMetricsHttpParams(const TSelectors& selectors, TInstant from, TInstant to) const {
+    std::tuple<TString, TString> BuildListMetricsHttpParams(const TSelectors& selectors, TInstant from, TInstant to, ui64 page) const {
         TUrlBuilder builder(GetHttpSolomonEndpoint());
 
         builder.AddPathComponent("api");
@@ -723,6 +755,9 @@ private:
         builder.AddPathComponent("sensors");
 
         builder.AddUrlParam("pageSize", ToString(MaxListingPageSize));
+        if (page > 0) {
+            builder.AddUrlParam("page", ToString(page));
+        }
 
         NJsonWriter::TBuf w;
 

@@ -97,3 +97,19 @@ class TestSettingsValidationEdgeCases(SolomonReadingTestBase):
     @pytest.mark.parametrize("fill", ["NONE", "NULL", "PREVIOUS"])
     def test_every_fill_is_accepted(self, cluster_type, fill):
         self.check_ok(self.query(cluster_type, f', `downsampling.fill` = "{fill}"'))
+
+    def test_cluster_without_project_is_rejected(self):
+        # CLUSTER only means something together with PROJECT (a cloud folder); alone it
+        # would be dropped silently and the source would address another installation.
+        result, error = self.execute_query_once(f"""
+            CREATE EXTERNAL DATA SOURCE cluster_only WITH (
+                SOURCE_TYPE = "Monium.Metrics",
+                LOCATION = "{self.solomon_http_endpoint}",
+                GRPC_LOCATION = "{self.solomon_grpc_endpoint}",
+                CLUSTER = "settings_validation",
+                AUTH_METHOD = "NONE",
+                USE_TLS = "false"
+            )""")
+        assert error is not None, "CREATE with CLUSTER and without PROJECT succeeded"
+        messages = self.issue_messages(error)
+        assert "PROJECT" in messages.upper(), messages

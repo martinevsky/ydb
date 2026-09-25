@@ -169,6 +169,18 @@ class SolomonReadingTestBase(object):
                 }
             ]})
 
+        elif test_name == "listing_pages":
+            cls.listing_pages_metrics_size = 60
+            add_solomon_metrics("listing_pages", "listing_pages", "my_service", {"metrics": [
+                {
+                    "labels"        : {"test_type": "listing_pages_test", "test_label": str(i)},
+                    "type"          : "DGAUGE",
+                    "timestamps"    : [0],
+                    "values"        : [i]
+                }
+                for i in range(cls.listing_pages_metrics_size)
+            ]})
+
         elif test_name == "data_semantics":
             add_solomon_metrics("data_semantics", "data_semantics", "my_service", {"metrics": [
                 {

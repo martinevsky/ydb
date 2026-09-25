@@ -12,9 +12,11 @@ TEST_SRCS(
     data_semantics.py
     get_api.py
     listing_batching.py
+    listing_pages.py
     listing_paging.py
     monium.py
     points_count.py
+    queue_settings.py
     settings_validation.py
     settings_validation_edge_cases.py
     transport_errors.py

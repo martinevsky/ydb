@@ -1,6 +1,8 @@
 import logging
 from datetime import datetime, timezone
 
+import pytest
+
 from ydb.library.yql.tools.solomon_emulator.client.client import (
     clear_read_faults, fail_read, get_read_auth_calls, get_read_requests)
 
@@ -72,6 +74,21 @@ class TestPointsCount(SolomonReadingTestBase):
         assert error is not None, "query succeeded, expected it to fail"
         messages = self.issue_messages(error)
         assert "Injected points count failure" in messages, messages
+
+    @pytest.mark.parametrize("scalar", [-5, 2 ** 62], ids=["negative", "huge"])
+    def test_impossible_points_count_fails_query(self, scalar):
+        # The reader splits the range into points_count / 10000 requests: an absurd count
+        # from the api must fail the query, not the node.
+        fail_read("data", count=1, scalar=scalar)
+        result, error = self.execute_query_once(self.read_query("points_count_test"))
+        assert error is not None, "query succeeded, expected it to fail"
+        messages = self.issue_messages(error)
+        assert "points count response is invalid" in messages, messages
+
+        # The node survived and keeps serving reads.
+        result, error = self.execute_query_once(self.read_query("points_count_test"))
+        assert error is None, self.issue_messages(error)
+        assert len(result[0].rows) == self.points_count_size
 
     def test_points_count_retriable_error_is_retried(self):
         fail_read("data", count=2, status=503)
