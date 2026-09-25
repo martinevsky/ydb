@@ -711,7 +711,26 @@ private:
             return false;
         }
 
+        // Split ranges share their boundaries, [a, b] then [b, c]. Whether the api includes
+        // the end of a range or not, a point at b must come from exactly one of them, so
+        // every range but the last one drops its end.
+        const bool lastRange = request.To >= TrueRangeTo;
         for (auto& metric : batch.Response.Result.Timeseries) {
+            if (!lastRange) {
+                auto& timestamps = metric.Timestamps;
+                auto& values = metric.Values;
+                const i64 endMs = request.To.MilliSeconds();
+                size_t kept = 0;
+                for (size_t i = 0; i < timestamps.size(); ++i) {
+                    if (timestamps[i] < endMs) {
+                        timestamps[kept] = timestamps[i];
+                        values[kept] = values[i];
+                        ++kept;
+                    }
+                }
+                timestamps.resize(kept);
+                values.resize(kept);
+            }
             MetricsData.emplace_back(std::move(metric));
             CurrentDataBytesStored += MetricsData.back().TotalSize;
         }
