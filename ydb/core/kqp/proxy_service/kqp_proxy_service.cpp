@@ -389,9 +389,7 @@ public:
 
         if (auto gateway = FederatedQuerySetup ? FederatedQuerySetup->HttpGateway : nullptr) {
             if (auto scheduler = AppData()->KqpComputeScheduler) {
-                const auto& httpGatewayConfig = QueryServiceConfig.GetHttpGateway();
-                const size_t maxHandlers = httpGatewayConfig.HasMaxInFlightCount()
-                    ? httpGatewayConfig.GetMaxInFlightCount() : 1024;
+                const size_t maxHandlers = PoolCapMaxHandlers(QueryServiceConfig);
                 const auto PoolCapsPushPeriod = TDuration::MilliSeconds(500);
                 const double MinDefaultPoolShare = 0.1;
 

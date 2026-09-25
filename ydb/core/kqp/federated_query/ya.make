@@ -8,6 +8,7 @@ PEERDIR(
     ydb/core/base
     ydb/core/fq/libs/credentials
     ydb/core/fq/libs/db_id_async_resolver_impl
+    ydb/core/kqp/federated_query/http_gateway_config
     ydb/core/local_proxy/local_pq_client
     ydb/core/protos
     ydb/library/logger
@@ -37,4 +38,5 @@ END()
 
 RECURSE(
     actors
+    http_gateway_config
 )

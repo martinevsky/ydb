@@ -191,16 +191,6 @@ namespace {
         ));
     }
 
-    NYql::THttpGatewayConfig DefaultHttpGatewayConfig() {
-        NYql::THttpGatewayConfig config;
-        config.SetMaxInFlightCount(2000);
-        config.SetMaxSimulatenousDownloadsSize(2000000000);
-        config.SetBuffersSizePerStream(5000000);
-        config.SetConnectionTimeoutSeconds(15);
-        config.SetRequestTimeoutSeconds(0);
-        return config;
-    }
-
     std::pair<TString, bool> ParseGrpcEndpoint(const TString& endpoint) {
         TStringBuf scheme;
         TStringBuf host;
@@ -228,7 +218,7 @@ namespace {
         const auto& queryServiceConfig = appConfig.GetQueryServiceConfig();
 
         // Initialize HTTP Gateway
-        HttpGatewayConfig = queryServiceConfig.HasHttpGateway() ? queryServiceConfig.GetHttpGateway() : DefaultHttpGatewayConfig();
+        HttpGatewayConfig = GetEffectiveHttpGatewayConfig(queryServiceConfig);
         HttpGateway = MakeHttpGateway(HttpGatewayConfig, appData->Counters);
 
         S3GatewayConfig = queryServiceConfig.GetS3();
