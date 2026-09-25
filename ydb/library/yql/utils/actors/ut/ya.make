@@ -9,6 +9,7 @@ IF (OS_LINUX OR OS_DARWIN)
 
     PEERDIR(
         ydb/library/actors/testlib
+        ydb/library/yql/providers/common/ut_helpers/transport
     )
 
     END()
