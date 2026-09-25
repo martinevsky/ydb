@@ -47,6 +47,12 @@ std::optional<TString> ValidateIamDelegation(const NKikimrSchemeOp::TIamDelegati
     return std::nullopt;
 }
 
+bool SameIamDelegation(const NKikimrSchemeOp::TIamDelegation& a, const NKikimrSchemeOp::TIamDelegation& b) {
+    return a.GetServiceAccountId() == b.GetServiceAccountId()
+        && a.GetCloudId() == b.GetCloudId()
+        && a.GetReferrerId() == b.GetReferrerId();
+}
+
 } // namespace NKikimr::NSchemeShard
 
 namespace {
@@ -411,6 +417,7 @@ ISubOperation::TPtr CreateNewSecret(TOperationId id, const TTxTransaction& tx, T
             if (createSecretProto.HasIamDelegation()) {
                 alterSecret->MutableIamDelegation()->CopyFrom(createSecretProto.GetIamDelegation());
             }
+            alterSecret->SetIamDelegationAlter(createSecretProto.GetIamDelegationAlter());
             return CreateAlterSecret(id, alterTx);
         }
     }

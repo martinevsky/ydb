@@ -2708,6 +2708,19 @@ struct Schema : NIceDb::Schema {
         >;
     };
 
+    // Outbox of IAM delegations to revoke: a row is written in the transaction that stops a secret from naming
+    // the delegation (drop, or the promotion / cancellation of a staged replacement) and deleted once IAM has
+    // accepted the revocation. See schemeshard_iam_delegation.h.
+    struct IamDelegationRevocations : Table<141> {
+        struct ReferrerId : Column<1, NScheme::NTypeIds::Utf8> {};
+        struct ServiceAccountId : Column<2, NScheme::NTypeIds::Utf8> {};
+        struct CloudId : Column<3, NScheme::NTypeIds::Utf8> {};
+        struct PathId : Column<4, NScheme::NTypeIds::Uint64> { using Type = TLocalPathId; }; // the secret that named the delegation, for logs
+
+        using TKey = TableKey<ReferrerId>;
+        using TColumns = TableColumns<ReferrerId, ServiceAccountId, CloudId, PathId>;
+    };
+
     struct TestShardSet : Table<140> {
         struct PathId : Column<1, NScheme::NTypeIds::Uint64> { using Type = TLocalPathId; };
         struct AlterVersion : Column<2, NScheme::NTypeIds::Uint64> {};
@@ -2856,7 +2869,8 @@ struct Schema : NIceDb::Schema {
         FullBackupItems,
         SetColumnConstraint,
         SetColumnConstraintShardStatus,
-        TestShardSet
+        TestShardSet,
+        IamDelegationRevocations
     >;
 
     static constexpr ui64 SysParam_NextPathId = 1;

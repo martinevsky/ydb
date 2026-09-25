@@ -15331,7 +15331,7 @@ END DO)",
             const auto navigate = Navigate(runtime, runtime.AllocateEdgeActor(), "/Root/sa-secret", NSchemeCache::TSchemeCacheNavigate::EOp::OpUnknown);
             UNIT_ASSERT_UNEQUAL(navigate->ResultSet.at(0).Status, NSchemeCache::TSchemeCacheNavigate::EStatus::Ok);
         }
-        { // DROP IF EXISTS of a missing secret goes through the orchestrated path and succeeds
+        { // DROP IF EXISTS of a missing secret succeeds for anyone: nothing is done on anyone's behalf
             static const auto query = R"sql(
                 DROP SECRET IF EXISTS `/Root/missing-secret`;
             )sql";
@@ -15341,9 +15341,8 @@ END DO)",
     }
 
     // A cluster with the IAM token service but without the IAM control plane endpoint cannot set new
-    // delegations up, but everything that does not call ServiceControl must keep working. Every
-    // DROP SECRET goes through the delegation orchestrator, because the type of the secret is not
-    // known from the statement, so dropping an ordinary value secret is the case at risk here.
+    // delegations up, but everything that does not call ServiceControl must keep working: value secrets
+    // are created, altered and dropped as before.
     Y_UNIT_TEST(SecretsWithoutIamServiceControlEndpoint) {
         NKikimrConfig::TAppConfig appConfig;
         auto& iamConfig = *appConfig.MutableIamConfig();
@@ -15408,6 +15407,7 @@ END DO)",
                 iamConfig.SetServiceControlEndpoint("localhost:1");
             }
             iamConfig.SetServiceId("ydb");
+            iamConfig.SetMicroserviceId("data-plane");
             iamConfig.SetResourceType("resource-manager.cloud");
             appConfig.MutableAuthConfig()->SetAccessServiceDomain(accessServiceDomain);
             return appConfig;
@@ -15488,15 +15488,25 @@ END DO)",
             return TStringBuilder() << prefix << " `" << path << "` WITH (TYPE = \"IAM_DELEGATION\", SERVICE_ACCOUNT_ID = \"" << sa << "\", RESOURCE = \"" << cloud << "\");";
         }
 
+        // The revocation of a delegation is made by the schemeshard after the statement: the calls of the fake
+        // are filtered by referrer, so that a retried revocation never shifts the counts.
+        ui32 RevokesOf(const TString& referrer) {
+            ui32 count = 0;
+            for (const auto& call : Calls->Snapshot()) {
+                count += call.Method == "Revoke" && call.Spec.ReferrerId == referrer;
+            }
+            return count;
+        }
+
         TKikimrRunner Kikimr;
         TTestActorRuntime& Runtime;
         TIntrusivePtr<NSecret::TFakeDelegationCalls> Calls;
     };
 
-    Y_UNIT_TEST(IamDelegationCreateSetsUpThenWritesSecret) {
+    Y_UNIT_TEST(IamDelegationCreateWritesSecretThenSetsUp) {
         TIamDelegationKqp t;
 
-        // CREATE: SetupDelegation on behalf of the user, then the schema write with the same referrer
+        // CREATE: the schema write naming a fresh referrer, then SetupDelegation on behalf of the user with it
         t.ExecOk(t.CloudUser, t.CreateQuery("/Root/sa-secret", "aje-sa", "b1g-cloud"));
         auto calls = t.Calls->Snapshot();
         UNIT_ASSERT_VALUES_EQUAL(calls.size(), 1u);
@@ -15520,35 +15530,46 @@ END DO)",
             UNIT_ASSERT_VALUES_EQUAL(t.Describe("/Root/sa-secret").GetIamDelegation().GetServiceAccountId(), "aje-sa");
         }
 
-        // the schema write fails (the name is longer than the schemeshard allows): the delegation just set up
-        // is revoked with the same spec and the schema error is returned without any revoke warning
+        // the schema write fails (the name is longer than the schemeshard allows): nothing reaches IAM
         const TString longName = TString(300, 'x');
         {
             const auto result = t.Exec(t.CloudUser, t.CreateQuery("/Root/" + longName, "aje-rollback", "b1g-cloud"));
             UNIT_ASSERT_C(!result.IsSuccess(), result.GetIssues().ToString());
-            const TString issues = result.GetIssues().ToString();
-            UNIT_ASSERT_C(!issues.Contains("SetupDelegation"), issues);
-            UNIT_ASSERT_C(!issues.Contains("is not revoked yet"), issues);
+            UNIT_ASSERT_C(!result.GetIssues().ToString().contains("SetupDelegation"), result.GetIssues().ToString());
             UNIT_ASSERT(!t.Exists("/Root/" + longName));
         }
+        UNIT_ASSERT_VALUES_EQUAL(t.Calls->Snapshot().size(), 1u);
+
+        // IAM refuses the delegation: the secret written before is dropped again and, as for any dropped secret,
+        // the schemeshard revokes the delegation it named (a no-op for IAM here)
+        with_lock (t.Calls->Mutex) {
+            t.Calls->SetupStatus = Ydb::StatusIds::UNAUTHORIZED;
+        }
+        t.ExecFails(t.CloudUser, t.CreateQuery("/Root/refused-secret", "aje-refused", "b1g-cloud"), EStatus::UNAUTHORIZED, "SetupDelegation for service account aje-refused failed");
+        UNIT_ASSERT(!t.Exists("/Root/refused-secret"));
+        t.Calls->WaitCalls("Revoke", 1);
         calls = t.Calls->Snapshot();
         UNIT_ASSERT_VALUES_EQUAL(calls.size(), 3u);
-        t.AssertSpec(calls[1], "Setup", "aje-rollback", "b1g-cloud");
-        t.AssertSpec(calls[2], "Revoke", "aje-rollback", "b1g-cloud", calls[1].Spec.ReferrerId);
+        t.AssertSpec(calls[1], "Setup", "aje-refused", "b1g-cloud");
+        UNIT_ASSERT_VALUES_EQUAL(calls[1].SubjectId, "bob");
+        t.AssertSpec(calls[2], "Revoke", "aje-refused", "b1g-cloud", calls[1].Spec.ReferrerId);
     }
 
-    Y_UNIT_TEST(IamDelegationAlterSetsUpSwitchesThenRevokes) {
+    Y_UNIT_TEST(IamDelegationAlterStagesSetsUpPromotesThenRevokes) {
         TIamDelegationKqp t;
         t.ExecOk(t.CloudUser, t.CreateQuery("/Root/sa-secret", "aje-sa-1", "b1g-cloud-1"));
         const TString referrer1 = t.Describe("/Root/sa-secret").GetIamDelegation().GetReferrerId();
 
-        // ALTER: the new delegation is set up first, the secret is switched to it and only then the old one
-        // is revoked. The revoke is held back by the fake service, so the switch is observable in between.
+        // ALTER: the new delegation is staged in the secret, set up and promoted; the old one is revoked by the
+        // schemeshard afterwards, so the statement does not wait for the revoke: it completes while the fake
+        // holds the revoke back, and the secret names the new delegation by then
         with_lock (t.Calls->Mutex) {
             t.Calls->HoldRevokes = true;
         }
-        auto client = t.Kikimr.GetQueryClient(NYdb::NQuery::TClientSettings().AuthToken(t.CloudUser));
-        auto alter = client.ExecuteQuery(R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-2");)", NYdb::NQuery::TTxControl::NoTx());
+        {
+            const auto result = t.ExecOk(t.CloudUser, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-2");)");
+            UNIT_ASSERT_C(result.GetIssues().Empty(), result.GetIssues().ToString());
+        }
         t.Calls->WaitCalls("Revoke", 1);
         auto calls = t.Calls->Snapshot();
         UNIT_ASSERT_VALUES_EQUAL(calls.size(), 3u);
@@ -15557,20 +15578,16 @@ END DO)",
         UNIT_ASSERT_VALUES_UNEQUAL(calls[1].Spec.ReferrerId, referrer1);
         t.AssertSpec(calls[2], "Revoke", "aje-sa-1", "b1g-cloud-1", referrer1);
         {
-            // the schema already names the new delegation while the old one is still being revoked
+            // the secret names the new delegation while the old one is still being revoked; the staging and
+            // the promotion are two versions
             const auto secret = t.Describe("/Root/sa-secret");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa-2");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetCloudId(), "b1g-cloud-1");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), calls[1].Spec.ReferrerId);
-            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 1u);
+            UNIT_ASSERT(!secret.HasPendingIamDelegation());
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 2u);
         }
-        UNIT_ASSERT(!alter.HasValue()); // the statement waits for the revoke
         NSecret::ReleaseHeldDelegationReplies(t.Runtime);
-        {
-            const auto result = alter.ExtractValueSync();
-            UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
-            UNIT_ASSERT_C(result.GetIssues().Empty(), result.GetIssues().ToString());
-        }
         with_lock (t.Calls->Mutex) {
             t.Calls->HoldRevokes = false;
         }
@@ -15578,6 +15595,7 @@ END DO)",
 
         // ALTER RESOURCE only: the delegation moves to the other cloud with the same service account
         t.ExecOk(t.CloudUser, R"(ALTER SECRET `/Root/sa-secret` WITH (RESOURCE = "b1g-cloud-2");)");
+        t.Calls->WaitCalls("Revoke", 2);
         calls = t.Calls->Snapshot();
         UNIT_ASSERT_VALUES_EQUAL(calls.size(), 5u);
         t.AssertSpec(calls[3], "Setup", "aje-sa-2", "b1g-cloud-2");
@@ -15586,12 +15604,14 @@ END DO)",
             const auto secret = t.Describe("/Root/sa-secret");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetCloudId(), "b1g-cloud-2");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), calls[3].Spec.ReferrerId);
-            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 2u);
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 4u);
         }
 
         // ALTER both; then ALTER the service account only keeps the cloud of the secret
         t.ExecOk(t.CloudUser, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-3", RESOURCE = "b1g-cloud-3");)");
+        t.Calls->WaitCalls("Revoke", 3);
         t.ExecOk(t.CloudUser, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-4");)");
+        t.Calls->WaitCalls("Revoke", 4);
         calls = t.Calls->Snapshot();
         UNIT_ASSERT_VALUES_EQUAL(calls.size(), 9u);
         t.AssertSpec(calls[5], "Setup", "aje-sa-3", "b1g-cloud-3");
@@ -15602,51 +15622,60 @@ END DO)",
             const auto secret = t.Describe("/Root/sa-secret");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa-4");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetCloudId(), "b1g-cloud-3");
-            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 4u);
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 8u);
         }
 
         // CREATE OR REPLACE over the delegation secret behaves as ALTER
         t.ExecOk(t.CloudUser, t.CreateQuery("/Root/sa-secret", "aje-sa-5", "b1g-cloud-3", "CREATE OR REPLACE SECRET"));
+        t.Calls->WaitCalls("Revoke", 5);
         calls = t.Calls->Snapshot();
         UNIT_ASSERT_VALUES_EQUAL(calls.size(), 11u);
         t.AssertSpec(calls[9], "Setup", "aje-sa-5", "b1g-cloud-3");
         t.AssertSpec(calls[10], "Revoke", "aje-sa-4", "b1g-cloud-3", calls[7].Spec.ReferrerId);
-        UNIT_ASSERT_VALUES_EQUAL(t.Describe("/Root/sa-secret").GetVersion(), 5u);
+        UNIT_ASSERT_VALUES_EQUAL(t.Describe("/Root/sa-secret").GetVersion(), 10u);
     }
 
-    Y_UNIT_TEST(IamDelegationAlterSchemeFailureRevokesNew) {
+    Y_UNIT_TEST(IamDelegationAlterFailuresLeaveTheSecret) {
         TIamDelegationKqp t;
         t.ExecOk(t.CloudUser, t.CreateQuery("/Root/sa-secret", "aje-sa-1", "b1g-cloud"));
         const auto before = t.Describe("/Root/sa-secret");
 
-        // another cloud user without rights on the secret: the new delegation is set up on their behalf, the
-        // schemeshard refuses the alter, and the new delegation is revoked again; the secret is untouched
+        // another cloud user without rights on the secret: the schemeshard refuses to stage the replacement,
+        // before anything reaches IAM; the secret is untouched
         {
             const auto result = t.Exec(t.OtherUser, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-2");)");
             UNIT_ASSERT_C(!result.IsSuccess(), result.GetIssues().ToString());
-            UNIT_ASSERT_C(!result.GetIssues().ToString().contains("is not revoked yet"), result.GetIssues().ToString());
         }
-        const auto calls = t.Calls->Snapshot();
-        UNIT_ASSERT_VALUES_EQUAL(calls.size(), 3u);
-        t.AssertSpec(calls[1], "Setup", "aje-sa-2", "b1g-cloud");
-        UNIT_ASSERT_VALUES_EQUAL(calls[1].SubjectId, "carol");
-        t.AssertSpec(calls[2], "Revoke", "aje-sa-2", "b1g-cloud", calls[1].Spec.ReferrerId);
-        const auto after = t.Describe("/Root/sa-secret");
-        UNIT_ASSERT_VALUES_EQUAL(after.GetIamDelegation().GetServiceAccountId(), "aje-sa-1");
-        UNIT_ASSERT_VALUES_EQUAL(after.GetIamDelegation().GetReferrerId(), before.GetIamDelegation().GetReferrerId());
-        UNIT_ASSERT_VALUES_EQUAL(after.GetVersion(), before.GetVersion());
+        UNIT_ASSERT_VALUES_EQUAL(t.Calls->Snapshot().size(), 1u);
+        {
+            const auto after = t.Describe("/Root/sa-secret");
+            UNIT_ASSERT_VALUES_EQUAL(after.GetIamDelegation().GetServiceAccountId(), "aje-sa-1");
+            UNIT_ASSERT_VALUES_EQUAL(after.GetIamDelegation().GetReferrerId(), before.GetIamDelegation().GetReferrerId());
+            UNIT_ASSERT_VALUES_EQUAL(after.GetVersion(), before.GetVersion());
+        }
 
-        // the new delegation is refused by IAM: nothing is written, nothing is revoked
+        // the new delegation is refused by IAM: the staged replacement is cancelled and, as the secret no longer
+        // names it, revoked by the schemeshard (a no-op for IAM); the delegation of the secret is unchanged
         with_lock (t.Calls->Mutex) {
             t.Calls->SetupStatus = Ydb::StatusIds::UNAUTHORIZED;
         }
         t.ExecFails(t.CloudUser, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-3");)", EStatus::UNAUTHORIZED, "SetupDelegation for service account aje-sa-3 failed");
-        UNIT_ASSERT_VALUES_EQUAL(t.Calls->Snapshot().size(), 4u);
-        UNIT_ASSERT_VALUES_EQUAL(t.Calls->RevokeCalls(), 1u);
-        UNIT_ASSERT_VALUES_EQUAL(t.Describe("/Root/sa-secret").GetIamDelegation().GetServiceAccountId(), "aje-sa-1");
+        t.Calls->WaitCalls("Revoke", 1);
+        const auto calls = t.Calls->Snapshot();
+        UNIT_ASSERT_VALUES_EQUAL(calls.size(), 3u);
+        t.AssertSpec(calls[1], "Setup", "aje-sa-3", "b1g-cloud");
+        UNIT_ASSERT_VALUES_EQUAL(calls[1].SubjectId, "bob");
+        t.AssertSpec(calls[2], "Revoke", "aje-sa-3", "b1g-cloud", calls[1].Spec.ReferrerId);
+        {
+            const auto after = t.Describe("/Root/sa-secret");
+            UNIT_ASSERT_VALUES_EQUAL(after.GetIamDelegation().GetServiceAccountId(), "aje-sa-1");
+            UNIT_ASSERT_VALUES_EQUAL(after.GetIamDelegation().GetReferrerId(), before.GetIamDelegation().GetReferrerId());
+            UNIT_ASSERT(!after.HasPendingIamDelegation());
+            UNIT_ASSERT_VALUES_EQUAL(after.GetVersion(), before.GetVersion() + 2); // staged and cancelled
+        }
     }
 
-    Y_UNIT_TEST(IamDelegationDropRevokesAfterSchemeOp) {
+    Y_UNIT_TEST(IamDelegationDropIsRevokedByTheSchemeshard) {
         TIamDelegationKqp t;
         t.ExecOk(t.CloudUser, t.CreateQuery("/Root/sa-secret", "aje-sa", "b1g-cloud"));
         const TString referrer = t.Describe("/Root/sa-secret").GetIamDelegation().GetReferrerId();
@@ -15659,101 +15688,75 @@ END DO)",
             UNIT_ASSERT_VALUES_EQUAL(t.Calls->RevokeCalls(), 0u);
         }
 
-        // the revoke fails: the object is gone anyway and the statement succeeds with a warning naming the referrer
+        // the revoke fails: the statement is not concerned (the object is gone, the revocation is the
+        // schemeshard's, which retries it), so it succeeds without a warning
         with_lock (t.Calls->Mutex) {
             t.Calls->RevokeStatus = Ydb::StatusIds::UNAVAILABLE;
         }
         {
             const auto result = t.ExecOk(t.CloudUser, "DROP SECRET `/Root/sa-secret`;");
-            const TString issues = result.GetIssues().ToString();
-            UNIT_ASSERT_STRING_CONTAINS(issues, "is not revoked yet");
-            UNIT_ASSERT_STRING_CONTAINS(issues, referrer);
+            UNIT_ASSERT_C(result.GetIssues().Empty(), result.GetIssues().ToString());
             UNIT_ASSERT(!t.Exists("/Root/sa-secret"));
+            t.Calls->WaitCalls("Revoke", 1);
             const auto calls = t.Calls->Snapshot();
-            UNIT_ASSERT_VALUES_EQUAL(calls.size(), 2u);
             t.AssertSpec(calls[1], "Revoke", "aje-sa", "b1g-cloud", referrer);
         }
 
-        // a successful revoke: no warning
+        // a successful revoke of another secret (the failed one is retried by the schemeshard on its own schedule,
+        // so the calls are counted by referrer)
         with_lock (t.Calls->Mutex) {
             t.Calls->RevokeStatus = Ydb::StatusIds::SUCCESS;
         }
         t.ExecOk(t.CloudUser, t.CreateQuery("/Root/sa-secret", "aje-sa-2", "b1g-cloud"));
+        const TString referrer2 = t.Describe("/Root/sa-secret").GetIamDelegation().GetReferrerId();
         {
             const auto result = t.ExecOk(t.CloudUser, "DROP SECRET `/Root/sa-secret`;");
             UNIT_ASSERT_C(result.GetIssues().Empty(), result.GetIssues().ToString());
             UNIT_ASSERT(!t.Exists("/Root/sa-secret"));
-            const auto calls = t.Calls->Snapshot();
-            UNIT_ASSERT_VALUES_EQUAL(calls.size(), 4u);
-            t.AssertSpec(calls[3], "Revoke", "aje-sa-2", "b1g-cloud", calls[2].Spec.ReferrerId);
+            t.Runtime.WaitFor("the revocation of " + referrer2, [&]() { return t.RevokesOf(referrer2) >= 1; }, TDuration::Seconds(120)); // hang guard
+            UNIT_ASSERT_VALUES_EQUAL(t.RevokesOf(referrer2), 1u);
         }
 
         // DROP IF EXISTS of a missing path and of a value secret do not touch IAM
         t.ExecOk(t.CloudUser, "DROP SECRET IF EXISTS `/Root/sa-secret`;");
         t.ExecOk(t.CloudUser, R"(CREATE SECRET `/Root/plain-secret` WITH (VALUE = "v");)");
         t.ExecOk(t.CloudUser, "DROP SECRET `/Root/plain-secret`;");
-        UNIT_ASSERT_VALUES_EQUAL(t.Calls->Snapshot().size(), 4u);
+        UNIT_ASSERT_VALUES_EQUAL(t.Calls->SetupCalls(), 2u);
+        for (const auto& call : t.Calls->Snapshot()) {
+            UNIT_ASSERT_C(call.Spec.ReferrerId == referrer || call.Spec.ReferrerId == referrer2, call.Spec.ToString());
+        }
     }
 
-    // The YDB right the statement needs is checked before any IAM call: a cloud user without it causes none.
+    // The YDB right the statement needs is checked by the schemeshard before any IAM call: a cloud user
+    // without it causes none.
     Y_UNIT_TEST(IamDelegationRightsCheckedBeforeIam) {
         TIamDelegationKqp t;
         static constexpr char NoRightsUser[] = "dave@builtin"; // a cloud subject without any grant
-        t.ExecFails(NoRightsUser, t.CreateQuery("/Root/sa-secret", "aje-sa", "b1g-cloud"), EStatus::UNAUTHORIZED, "access denied");
+        t.ExecFails(NoRightsUser, t.CreateQuery("/Root/sa-secret", "aje-sa", "b1g-cloud"), EStatus::UNAUTHORIZED, "Access denied");
         UNIT_ASSERT(!t.Exists("/Root/sa-secret"));
         UNIT_ASSERT_VALUES_EQUAL(t.Calls->Snapshot().size(), 0u);
 
         t.ExecOk(t.CloudUser, t.CreateQuery("/Root/sa-secret", "aje-sa", "b1g-cloud"));
         UNIT_ASSERT_VALUES_EQUAL(t.Calls->Snapshot().size(), 1u);
 
-        t.ExecFails(NoRightsUser, "ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = \"aje-sa-2\");", EStatus::UNAUTHORIZED, "access denied");
-        t.ExecFails(NoRightsUser, "DROP SECRET `/Root/sa-secret`;", EStatus::UNAUTHORIZED, "access denied");
+        t.ExecFails(NoRightsUser, "ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = \"aje-sa-2\");", EStatus::UNAUTHORIZED, "Access denied");
+        t.ExecFails(NoRightsUser, "DROP SECRET `/Root/sa-secret`;", EStatus::UNAUTHORIZED, "Access denied");
         UNIT_ASSERT(t.Exists("/Root/sa-secret"));
         UNIT_ASSERT_VALUES_EQUAL(t.Calls->Snapshot().size(), 1u); // still only the setup of the CREATE
     }
 
-    // Every delegation is recorded before IAM is called and the record is removed once the outcome is final; a
-    // revocation that failed leaves its record for the reconciliation.
-    Y_UNIT_TEST(IamDelegationRecordsFollowTheOutcome) {
-        TIamDelegationKqp t;
-        const auto countRecords = [&]() {
-            const auto result = t.ExecOk("", "SELECT COUNT(*) AS records FROM `/Root/.metadata/iam_delegation/delegations`;");
-            NYdb::TResultSetParser parser(result.GetResultSet(0));
-            UNIT_ASSERT(parser.TryNextRow());
-            return parser.ColumnParser("records").GetUint64();
-        };
-
-        t.ExecOk(t.CloudUser, t.CreateQuery("/Root/sa-secret", "aje-sa", "b1g-cloud"));
-        UNIT_ASSERT_VALUES_EQUAL(countRecords(), 0u); // the secret names the delegation: final
-
-        t.ExecOk(t.CloudUser, "ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = \"aje-sa-2\");");
-        UNIT_ASSERT_VALUES_EQUAL(countRecords(), 0u); // the old one is revoked, the new one is named: both final
-
-        with_lock (t.Calls->Mutex) {
-            t.Calls->RevokeStatus = Ydb::StatusIds::UNAVAILABLE;
-        }
-        const TString referrer = t.Describe("/Root/sa-secret").GetIamDelegation().GetReferrerId();
-        t.ExecOk(t.CloudUser, "DROP SECRET `/Root/sa-secret`;");
-        UNIT_ASSERT_VALUES_EQUAL(countRecords(), 1u); // the failed revocation is left to the reconciliation
-        const auto result = t.ExecOk("", "SELECT referrer_id FROM `/Root/.metadata/iam_delegation/delegations`;");
-        NYdb::TResultSetParser parser(result.GetResultSet(0));
-        UNIT_ASSERT(parser.TryNextRow());
-        UNIT_ASSERT_VALUES_EQUAL(parser.ColumnParser("referrer_id").GetOptionalUtf8().value_or(""), referrer);
-    }
-
-    Y_UNIT_TEST(IamDelegationSecretDropRequiresCloudSubject) {
+    Y_UNIT_TEST(IamDelegationAlterRequiresCloudSubject) {
         // the default domain of cloud subjects ("as"): builtin logins are not cloud subjects
         TIamDelegationKqp t(TIamDelegationKqp::MakeSettings(TIamDelegationKqp::MakeAppConfig(true, "as")));
         NSecret::CreateIamDelegationSecretDirect(t.Runtime, "/Root/sa-secret", "aje-sa", "b1g-cloud", "ydb.delegation.00000000000000000000000000000001");
 
-        // a builtin user may neither alter nor drop a delegation secret: rejected before any IAM call
+        // a builtin user may not alter a delegation secret (a delegation is set up on behalf of a cloud
+        // subject): rejected before any IAM call
         t.ExecFails(BUILTIN_ACL_ROOT, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-2");)", EStatus::BAD_REQUEST, "is not a cloud subject");
-        t.ExecFails(BUILTIN_ACL_ROOT, "DROP SECRET `/Root/sa-secret`;", EStatus::BAD_REQUEST, "is not a cloud subject");
-        t.ExecFails(BUILTIN_ACL_ROOT, "DROP SECRET IF EXISTS `/Root/sa-secret`;", EStatus::BAD_REQUEST, "is not a cloud subject");
         // an anonymous request has no user at all
         {
             auto client = t.Kikimr.GetQueryClient();
-            const auto result = client.ExecuteQuery("DROP SECRET `/Root/sa-secret`;", NYdb::NQuery::TTxControl::NoTx()).ExtractValueSync();
+            const auto result = client.ExecuteQuery(R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-2");)", NYdb::NQuery::TTxControl::NoTx()).ExtractValueSync();
             UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::UNAUTHORIZED, result.GetIssues().ToString());
             UNIT_ASSERT_STRING_CONTAINS(result.GetIssues().ToString(), "require an authenticated Yandex Cloud user");
         }
@@ -15761,25 +15764,30 @@ END DO)",
         UNIT_ASSERT_VALUES_EQUAL(t.Describe("/Root/sa-secret").GetIamDelegation().GetServiceAccountId(), "aje-sa");
         UNIT_ASSERT_VALUES_EQUAL(t.Calls->Snapshot().size(), 0u);
 
+        // dropping needs no cloud subject: nothing is done on anyone's behalf, the schemeshard revokes as YDB
+        t.ExecOk(BUILTIN_ACL_ROOT, "DROP SECRET `/Root/sa-secret`;");
+        UNIT_ASSERT(!t.Exists("/Root/sa-secret"));
+        t.Calls->WaitCalls("Revoke", 1);
+        t.AssertSpec(t.Calls->Snapshot()[0], "Revoke", "aje-sa", "b1g-cloud", "ydb.delegation.00000000000000000000000000000001");
+
         // value secrets and missing paths are not affected
         t.ExecOk(BUILTIN_ACL_ROOT, R"(CREATE SECRET `/Root/plain-secret` WITH (VALUE = "v");)");
         t.ExecOk(BUILTIN_ACL_ROOT, "DROP SECRET `/Root/plain-secret`;");
         t.ExecOk(BUILTIN_ACL_ROOT, "DROP SECRET IF EXISTS `/Root/missing-secret`;");
-        UNIT_ASSERT_VALUES_EQUAL(t.Calls->Snapshot().size(), 0u);
+        UNIT_ASSERT_VALUES_EQUAL(t.Calls->Snapshot().size(), 1u);
     }
 
-    Y_UNIT_TEST(IamDelegationDropViaTableServiceIsRefused) {
+    Y_UNIT_TEST(IamDelegationViaTableServiceIsRefused) {
         TIamDelegationKqp t;
         t.ExecOk(t.CloudUser, t.CreateQuery("/Root/sa-secret", "aje-sa", "b1g-cloud"));
+        const TString referrer = t.Describe("/Root/sa-secret").GetIamDelegation().GetReferrerId();
 
         // outside the query service (the non-prepared path of the table service and of YQL scripts) a delegation
-        // secret can be neither created, altered nor dropped: the delegation would be left in IAM
+        // secret can be neither created nor altered: nobody would set the delegation up
         const TString expectedError = "Secrets of type IAM_DELEGATION are supported only in the query service";
         auto tableClient = t.Kikimr.GetTableClient(NYdb::NTable::TClientSettings().AuthToken(t.CloudUser));
         auto session = tableClient.CreateSession().GetValueSync().GetSession();
         for (const TString& query : {
-            TString("DROP SECRET `/Root/sa-secret`;"),
-            TString("DROP SECRET IF EXISTS `/Root/sa-secret`;"),
             TString(R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-2");)"),
             t.CreateQuery("/Root/sa-secret-2", "aje-sa-2", "b1g-cloud"),
         }) {
@@ -15790,7 +15798,7 @@ END DO)",
         {
             NYdb::TDriver driver(t.Kikimr.GetDriverConfig().SetAuthToken(t.CloudUser));
             NYdb::NScripting::TScriptingClient scripting(driver);
-            const auto result = scripting.ExecuteYqlScript("DROP SECRET `/Root/sa-secret`;").GetValueSync();
+            const auto result = scripting.ExecuteYqlScript(R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-2");)").GetValueSync();
             UNIT_ASSERT_C(!result.IsSuccess(), result.GetIssues().ToString());
             UNIT_ASSERT_STRING_CONTAINS(result.GetIssues().ToString(), expectedError);
             driver.Stop(true);
@@ -15811,10 +15819,14 @@ END DO)",
             UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
         }
 
-        // the query service drops it and revokes
-        t.ExecOk(t.CloudUser, "DROP SECRET `/Root/sa-secret`;");
+        // a delegation secret is dropped from anywhere: the schemeshard revokes its delegation whoever drops it
+        {
+            const auto result = session.ExecuteSchemeQuery("DROP SECRET `/Root/sa-secret`;").GetValueSync();
+            UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
+        }
         UNIT_ASSERT(!t.Exists("/Root/sa-secret"));
-        UNIT_ASSERT_VALUES_EQUAL(t.Calls->RevokeCalls(), 1u);
+        t.Calls->WaitCalls("Revoke", 1);
+        t.AssertSpec(t.Calls->Snapshot()[1], "Revoke", "aje-sa", "b1g-cloud", referrer);
     }
 
     Y_UNIT_TEST(IamDelegationNoIamCallForNoopStatements) {
@@ -15822,10 +15834,17 @@ END DO)",
         t.ExecOk(t.CloudUser, t.CreateQuery("/Root/sa-secret", "aje-sa", "b1g-cloud"));
         const auto before = t.Describe("/Root/sa-secret");
 
-        // the delegation service dies: from now on every IAM call fails as undelivered
+        // the delegation service dies: from now on every IAM call fails as undelivered. The ALTER stages the
+        // replacement, cannot set it up, and cancels it: the secret keeps its delegation (two versions later)
         t.Runtime.Send(new IEventHandle(NIamDelegation::MakeIamDelegationServiceId(), t.Runtime.AllocateEdgeActor(), new TEvents::TEvPoison()));
         t.ExecFails(t.CloudUser, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-2");)", EStatus::UNAVAILABLE, "IAM delegation service is not running on this node");
-        UNIT_ASSERT_VALUES_EQUAL(t.Describe("/Root/sa-secret").GetIamDelegation().GetServiceAccountId(), "aje-sa");
+        {
+            const auto secret = t.Describe("/Root/sa-secret");
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa");
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), before.GetIamDelegation().GetReferrerId());
+            UNIT_ASSERT(!secret.HasPendingIamDelegation());
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 2u);
+        }
 
         // statements that change nothing in IAM do not call it
         t.ExecOk(t.CloudUser, t.CreateQuery("/Root/sa-secret", "aje-sa-9", "b1g-cloud", "CREATE SECRET IF NOT EXISTS"));
@@ -15833,13 +15852,13 @@ END DO)",
             const auto secret = t.Describe("/Root/sa-secret");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), before.GetIamDelegation().GetReferrerId());
-            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 0u);
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 2u);
         }
         t.ExecOk(t.CloudUser, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa");)");
         {
             const auto secret = t.Describe("/Root/sa-secret");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), before.GetIamDelegation().GetReferrerId());
-            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 1u);
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 3u);
         }
         t.ExecOk(t.CloudUser, R"(ALTER SECRET IF EXISTS `/Root/missing-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa");)");
         t.ExecOk(t.CloudUser, "DROP SECRET IF EXISTS `/Root/missing-secret`;");
@@ -15862,8 +15881,8 @@ END DO)",
 
     Y_UNIT_TEST(IamDelegationSecretsWithoutServiceControlEndpoint) {
         // a cluster with the token service but without the IAM control plane: existing delegation secrets are
-        // read (the token service is enough), but no delegation can be set up or revoked, so CREATE, ALTER and
-        // DROP of delegation secrets fail naming the missing setting and the secret stays
+        // read (the token service is enough), but no delegation can be set up, so CREATE and ALTER of delegation
+        // secrets fail naming the missing setting and the secret stays
         TIamDelegationKqp t(TIamDelegationKqp::MakeSettings(TIamDelegationKqp::MakeAppConfig(/* serviceControlEndpoint */ false)));
         NSecret::RegisterFakeIamDelegatedTokenService(t.Runtime, {{"aje-sa", "b1g-cloud"}});
         NSecret::CreateIamDelegationSecretDirect(t.Runtime, "/Root/sa-secret", "aje-sa", "b1g-cloud", "ydb.delegation.00000000000000000000000000000002");
@@ -15872,7 +15891,6 @@ END DO)",
         t.ExecFails(t.CloudUser, t.CreateQuery("/Root/sa-secret-2", "aje-sa-2", "b1g-cloud"), EStatus::PRECONDITION_FAILED, expectedError);
         UNIT_ASSERT(!t.Exists("/Root/sa-secret-2"));
         t.ExecFails(t.CloudUser, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-2");)", EStatus::PRECONDITION_FAILED, expectedError);
-        t.ExecFails(t.CloudUser, "DROP SECRET `/Root/sa-secret`;", EStatus::PRECONDITION_FAILED, expectedError);
         UNIT_ASSERT(t.Exists("/Root/sa-secret"));
         UNIT_ASSERT_VALUES_EQUAL(t.Describe("/Root/sa-secret").GetIamDelegation().GetServiceAccountId(), "aje-sa");
         UNIT_ASSERT_VALUES_EQUAL(t.Calls->Snapshot().size(), 0u);
@@ -15884,6 +15902,11 @@ END DO)",
         t.ExecOk("", R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa");)");
         t.ExecOk(t.CloudUser, R"(CREATE SECRET `/Root/plain-secret` WITH (VALUE = "v");)");
         t.ExecOk(t.CloudUser, "DROP SECRET `/Root/plain-secret`;");
+
+        // neither does DROP (by the owner of the secret): the object goes away, the schemeshard keeps the
+        // revocation until the control plane is configured
+        t.ExecOk("", "DROP SECRET `/Root/sa-secret`;");
+        UNIT_ASSERT(!t.Exists("/Root/sa-secret"));
     }
 
     Y_UNIT_TEST(IamDelegationCloudFallbackWithoutResourceManager) {

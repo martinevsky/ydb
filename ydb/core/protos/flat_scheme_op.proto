@@ -2643,7 +2643,22 @@ message TSecretDescription {
     optional string Value = 2 [(Ydb.sensitive) = true]; // original, unencrypted value
     optional uint64 Version = 3;
     optional ESecretType Type = 4 [default = SECRET_TYPE_VALUE];
+    // The delegation readers of the secret use.
     optional TIamDelegation IamDelegation = 5;
+    // A replacement staged by ALTER SECRET and not promoted yet (see EIamDelegationAlter): IAM may or may not
+    // know it, readers never use it. Whatever delegation stops being named by the secret is revoked by the
+    // schemeshard (its outbox of revocations), so a staged replacement never leaks.
+    optional TIamDelegation PendingIamDelegation = 6;
+}
+
+// What ALTER SECRET does with the delegation of an IAM_DELEGATION secret. The delegation is set up in IAM
+// between STAGE and PROMOTE: the secret always names every delegation IAM may know, before it is set up and
+// until it is revoked.
+enum EIamDelegationAlter {
+    IAM_DELEGATION_ALTER_NONE = 0;     // the delegation is unchanged (IamDelegation must name the current one)
+    IAM_DELEGATION_ALTER_STAGE = 1;    // IamDelegation becomes PendingIamDelegation; a previously staged one is revoked
+    IAM_DELEGATION_ALTER_PROMOTE = 2;  // PendingIamDelegation (its ReferrerId is IamDelegation.ReferrerId) becomes current; the old current one is revoked
+    IAM_DELEGATION_ALTER_CANCEL = 3;   // PendingIamDelegation (its ReferrerId is IamDelegation.ReferrerId) is dropped and revoked
 }
 
 message TSecretSchemaOp {
@@ -2655,9 +2670,11 @@ message TSecretSchemaOp {
     // Schemeshard always uses secret's value from the Value field and asserts that the ValueParamName field is empty.
     optional string ValueParamName = 4;
     optional ESecretType Type = 5 [default = SECRET_TYPE_VALUE];
-    // For SECRET_TYPE_IAM_DELEGATION. KQP fills ServiceAccountId/CloudId from the query,
-    // the delegation orchestrator fills the rest after a successful SetupDelegation.
+    // For SECRET_TYPE_IAM_DELEGATION. KQP fills ServiceAccountId/CloudId from the query, the delegation
+    // orchestrator fills the ReferrerId: CREATE names the delegation before it is set up in IAM.
     optional TIamDelegation IamDelegation = 6;
+    // For ALTER of a SECRET_TYPE_IAM_DELEGATION secret.
+    optional EIamDelegationAlter IamDelegationAlter = 7 [default = IAM_DELEGATION_ALTER_NONE];
 }
 
 message TStreamingQueryProperties {

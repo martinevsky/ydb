@@ -3,9 +3,9 @@
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/path.h>
 #include <ydb/core/kqp/gateway/actors/scheme.h>
-#include <ydb/core/kqp/iam_delegation/kqp_iam_delegation_records.h>
 #include <ydb/core/protos/auth.pb.h>
 #include <ydb/core/protos/config.pb.h>
+#include <ydb/core/protos/schemeshard/operations.pb.h>
 #include <ydb/core/security/iam_delegation/cloud_resolver.h>
 #include <ydb/core/security/iam_delegation/events.h>
 #include <ydb/core/security/iam_delegation/iam_actor_base.h>
@@ -107,8 +107,8 @@ concept CDelegationResultEvent = requires (TEv ev) {
     { ev.Result } -> std::same_as<NIamDelegation::TDelegationResult&>;
 };
 
-// Building blocks shared by the three operations. Every method is a nested coroutine and keeps its
-// data in its frame; the actor itself owns only the pending scheme request and the promise.
+// Building blocks shared by the two operations. Every method is a nested coroutine and keeps its data in
+// its frame; the actor itself owns only the pending scheme request and the promise.
 template <class TDerived>
 class TDelegationSecretActorBase : public TActorBootstrapped<TDerived> {
 public:
@@ -117,6 +117,7 @@ public:
 
     explicit TDelegationSecretActorBase(TIamDelegationSecretOperation op)
         : Op(std::move(op))
+        , RequestTemplate(Op.Request->Record) // the follow-up scheme requests carry the same database, token and flags
     {
         static_assert(std::derived_from<TDerived, TDelegationSecretActorBase>, "TDerived must derive from TDelegationSecretActorBase<TDerived>");
         static_assert(requires (TDerived& derived) { { derived.Run() } -> std::same_as<async<TGenericResult>>; },
@@ -147,12 +148,10 @@ public:
         // replies are consumed by ActorRequest; late ones (after a timeout) end up here
         IgnoreFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult);
         IgnoreFunc(TEvIamDelegation::TEvSetupDelegationResult);
-        IgnoreFunc(TEvIamDelegation::TEvRevokeDelegationResult);
         IgnoreFunc(NCloud::TEvServiceAccountService::TEvGetServiceAccountResponse); // the clients of ResolveCloud
         IgnoreFunc(NCloud::TEvFolderService::TEvResolveFoldersResponse);
         IgnoreFunc(TEvents::TEvUndelivered);
         IgnoreFunc(TEvPrivate::TEvSchemeOpDone);
-        IgnoreFunc(TEvIamDelegation::TEvDelegationRecordsResult);
         cFunc(TEvents::TEvPoison::EventType, BeginShutdown);
     )
 
@@ -162,7 +161,8 @@ public:
 
 protected:
     // The executer waits for the promise: a cancelled operation must complete it rather than leave it hanging.
-    // Whatever IAM has accepted by now is recorded and revoked by the reconciliation (kqp_iam_delegation_records.h).
+    // Whatever IAM has accepted by now is named by the secret (as its delegation or a staged one) and is revoked
+    // by the schemeshard when the secret stops naming it.
     void BeginShutdown() {
         if (!Op.Promise.HasValue()) {
             YDB_LOG_WARN("Cancelled while in flight", {"database", Op.Database});
@@ -173,11 +173,46 @@ protected:
     }
 
     NKikimrSchemeOp::TModifyScheme& ModifyScheme() {
+        Y_ENSURE(Op.Request, "the scheme operation was already executed");
         return *Op.Request->Record.MutableTransaction()->MutableModifyScheme();
     }
 
     TString SecretPath(const TString& name) {
-        return CanonizePath(JoinPath({ModifyScheme().GetWorkingDir(), name}));
+        return CanonizePath(JoinPath({RequestTemplate.GetTransaction().GetModifyScheme().GetWorkingDir(), name}));
+    }
+
+    // The statement's own scheme request, executed once.
+    THolder<TEvTxUserProxy::TEvProposeTransaction> TakeRequest() {
+        Y_ENSURE(Op.Request, "the scheme operation was already executed");
+        return std::move(Op.Request);
+    }
+
+    // A follow-up scheme request of the statement: the same database, token and flags, another operation.
+    THolder<TEvTxUserProxy::TEvProposeTransaction> MakeRequest(NKikimrSchemeOp::EOperationType type) {
+        auto request = MakeHolder<TEvTxUserProxy::TEvProposeTransaction>();
+        request->Record = RequestTemplate;
+        auto& modifyScheme = *request->Record.MutableTransaction()->MutableModifyScheme();
+        modifyScheme.Clear();
+        modifyScheme.SetWorkingDir(RequestTemplate.GetTransaction().GetModifyScheme().GetWorkingDir());
+        modifyScheme.SetOperationType(type);
+        return request;
+    }
+
+    THolder<TEvTxUserProxy::TEvProposeTransaction> DropRequest(const TString& name) {
+        auto request = MakeRequest(NKikimrSchemeOp::ESchemeOpDropSecret);
+        request->Record.MutableTransaction()->MutableModifyScheme()->MutableDrop()->SetName(name);
+        return request;
+    }
+
+    // ALTER of the delegation only: the promotion or the cancellation of a staged delegation.
+    THolder<TEvTxUserProxy::TEvProposeTransaction> AlterDelegationRequest(const TString& name, const TDelegationSpec& spec, NKikimrSchemeOp::EIamDelegationAlter action) {
+        auto request = MakeRequest(NKikimrSchemeOp::ESchemeOpAlterSecret);
+        auto& alter = *request->Record.MutableTransaction()->MutableModifyScheme()->MutableAlterSecret();
+        alter.SetName(name);
+        alter.SetType(NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
+        FillProto(spec, *alter.MutableIamDelegation());
+        alter.SetIamDelegationAlter(action);
+        return request;
     }
 
     // Settings of the paths that call ServiceControl (SetupDelegation and RevokeDelegation). Reading a
@@ -208,7 +243,7 @@ protected:
         const auto subjectId = ExtractCloudSubjectId(*Op.UserToken, AppData()->AuthConfig.GetAccessServiceDomain());
         if (!subjectId) {
             throw TOrchestrationError(Ydb::StatusIds::BAD_REQUEST)
-                << "IAM delegation secrets can be created, altered or dropped only by Yandex Cloud subjects; user '"
+                << "IAM delegation secrets can be created or altered only by Yandex Cloud subjects; user '"
                 << Op.UserToken->GetUserSID() << "' is not a cloud subject";
         }
         return *subjectId;
@@ -328,87 +363,21 @@ protected:
         co_return (*ev)->template Get<TResult>()->Result;
     }
 
-    async<void> Setup(TDelegationSpec spec, TString subjectId) {
+    // Sets the delegation up on behalf of the subject. The result is returned, not thrown: the caller has to
+    // undo the schema change that named the delegation first, and a coroutine cannot await in a handler.
+    async<TDelegationResult> Setup(TDelegationSpec spec, TString subjectId) {
         YDB_LOG_INFO("SetupDelegation", {"spec", spec.ToString()}, {"subjectId", subjectId});
-        const auto result = co_await CallDelegationService<TEvIamDelegation::TEvSetupDelegationResult>(
+        co_return co_await CallDelegationService<TEvIamDelegation::TEvSetupDelegationResult>(
             new TEvIamDelegation::TEvSetupDelegation(spec, subjectId), "SetupDelegation");
-        if (!result.IsSuccess()) {
-            throw TOrchestrationError(result.Status) << "SetupDelegation for service account " << spec.ServiceAccountId
-                << " failed: " << result.Issues.ToOneLineString();
-        }
     }
 
-    // The right the schema operation needs, checked with the user's token before any IAM call: the same check the
-    // scheme request makes at commit, which still runs and covers rights revoked in between.
-    async<void> CheckRight(TString path, ui32 access) {
-        using EStatus = NSchemeCache::TSchemeCacheNavigate::EStatus;
-        Y_ENSURE(Op.UserToken, "the user was checked to be a cloud subject");
-        const auto entry = co_await Navigate(path);
-        switch (entry.Status) {
-            case EStatus::Ok:
-                break;
-            case EStatus::RootUnknown:
-            case EStatus::PathErrorUnknown:
-                throw TOrchestrationError(Ydb::StatusIds::SCHEME_ERROR) << "path " << path << " does not exist";
-            case EStatus::AccessDenied:
-                throw TOrchestrationError(Ydb::StatusIds::UNAUTHORIZED) << "access denied to " << path;
-            default:
-                throw TOrchestrationError(Ydb::StatusIds::UNAVAILABLE) << "cannot resolve " << path << ": " << entry.Status;
-        }
-        if (entry.SecurityObject && !entry.SecurityObject->CheckAccess(access, *Op.UserToken)) {
-            throw TOrchestrationError(Ydb::StatusIds::UNAUTHORIZED) << "access denied for " << Op.UserToken->GetUserSID()
-                << " on " << path << " with access " << NACLib::AccessRightsToString(access);
-        }
+    TString SetupError(const TDelegationSpec& spec, const TDelegationResult& setup) {
+        return TStringBuilder() << "SetupDelegation for service account " << spec.ServiceAccountId << " failed: " << setup.Issues.ToOneLineString();
     }
 
-    // Records the delegation durably before an IAM call sets it up or revokes it: a failure fails the statement
-    // before IAM is called.
-    async<void> Record(TString path, TDelegationSpec spec) {
-        TEvIamDelegation::TDelegationRecord record;
-        record.Database = Op.Database;
-        record.SecretPath = path;
-        record.Spec = spec;
-        record.LeaseDeadline = TActivationContext::Now() + DelegationRecordLease;
-        try {
-            co_await WriteDelegationRecord(std::move(record));
-        } catch (const std::exception& e) {
-            throw TOrchestrationError(Ydb::StatusIds::UNAVAILABLE) << "cannot record the IAM delegation before calling IAM: " << e.what();
-        }
-    }
-
-    // Removes the record once the outcome of the delegation is final. A failure leaves the record to the
-    // reconciliation, which removes it (or revokes the delegation) after the lease.
-    async<void> Unrecord(TDelegationSpec spec) {
-        try {
-            co_await RemoveDelegationRecord(Op.Database, spec.ReferrerId);
-        } catch (const std::exception& e) {
-            YDB_LOG_WARN("Cannot remove an IAM delegation record, the reconciliation removes it later",
-                {"spec", spec.ToString()}, {"error", e.what()});
-        }
-    }
-
-    // Revokes a recorded delegation. Success removes the record; a failure does not fail the operation, is
-    // reported as a warning and is retried by the reconciliation.
-    async<void> RevokeRecorded(TDelegationSpec spec, TGenericResult& result) {
-        YDB_LOG_INFO("RevokeDelegation", {"spec", spec.ToString()});
-        const auto revoke = co_await CallDelegationService<TEvIamDelegation::TEvRevokeDelegationResult>(
-            new TEvIamDelegation::TEvRevokeDelegation(spec), "RevokeDelegation");
-        if (revoke.IsSuccess()) {
-            co_await Unrecord(spec);
-            co_return;
-        }
-        YDB_LOG_WARN("RevokeDelegation failed, the reconciliation retries it",
-            {"spec", spec.ToString()}, {"status", revoke.Status}, {"issues", revoke.Issues.ToOneLineString()});
-        NYql::TIssue issue(TStringBuilder() << "IAM delegation " << spec.ReferrerId << " for service account "
-            << spec.ServiceAccountId << " is not revoked yet: " << revoke.Issues.ToOneLineString()
-            << "; the revocation is retried automatically");
-        issue.SetCode(NYql::DEFAULT_ERROR, NYql::TSeverityIds::S_WARNING);
-        result.AddIssue(issue);
-    }
-
-    // Executes the prepared scheme request through the regular scheme request handler.
-    async<TGenericResult> RunSchemeOp() {
-        Y_ENSURE(Op.Request, "the scheme operation was already executed");
+    // Executes a scheme request through the regular scheme request handler. The flags of the statement
+    // (IF EXISTS, IF NOT EXISTS) apply to its own request only.
+    async<TGenericResult> RunSchemeOp(THolder<TEvTxUserProxy::TEvProposeTransaction> request, bool failedOnAlreadyExists = false, bool successOnNotExist = false) {
         // the handler completes the promise from its own turn or from another thread, so the result comes
         // back as a self-event; it cannot be handled before this turn ends, so the wait below
         // still intercepts it
@@ -419,42 +388,65 @@ protected:
         promise.GetFuture().Subscribe([actorSystem, selfId, cookie](const NThreading::TFuture<TGenericResult>& future) {
             actorSystem->Send(new IEventHandle(selfId, selfId, new TEvPrivate::TEvSchemeOpDone(future.GetValue()), 0, cookie));
         });
-        this->RegisterWithSameMailbox(new TSchemeOpRequestHandler(Op.Request.Release(), promise, Op.FailedOnAlreadyExists, Op.SuccessOnNotExist));
+        this->RegisterWithSameMailbox(new TSchemeOpRequestHandler(request.Release(), promise, failedOnAlreadyExists, successOnNotExist));
         auto ev = co_await ActorWaitForEvent<TEvPrivate::TEvSchemeOpDone>(cookie);
         co_return ev->Get()->Result;
     }
 
-    // Replaces the delegation of an existing secret (ALTER, CREATE OR REPLACE): sets up the new one first,
-    // runs the scheme operation and revokes the old one; on failure the new one is revoked.
-    async<TGenericResult> Replace(TString path, TDelegationSpec oldSpec, NKikimrSchemeOp::TIamDelegation& requested) {
+    async<TGenericResult> RunStatementSchemeOp() {
+        co_return co_await RunSchemeOp(TakeRequest(), Op.FailedOnAlreadyExists, Op.SuccessOnNotExist);
+    }
+
+    // Replaces the delegation of an existing secret (ALTER, CREATE OR REPLACE). The statement's own request
+    // stages the new delegation (and checks the user's rights); once IAM has set it up, a second request
+    // promotes it and the schemeshard revokes the old one. When IAM refuses, the second request cancels
+    // the staged delegation instead. secretOp is the CreateSecret or AlterSecret of the statement.
+    async<TGenericResult> Replace(TString path, TDelegationSpec oldSpec, NKikimrSchemeOp::TSecretSchemaOp& secretOp) {
+        // secretOp lives in the statement's request, which is gone once that request has run
+        const TString name = secretOp.GetName();
+        auto& requested = *secretOp.MutableIamDelegation();
         TString serviceAccountId = requested.GetServiceAccountId() ? requested.GetServiceAccountId() : oldSpec.ServiceAccountId;
         TString cloudId = requested.GetCloudId() ? requested.GetCloudId() : oldSpec.CloudId;
         if (serviceAccountId == oldSpec.ServiceAccountId && cloudId == oldSpec.CloudId) {
             // nothing changes in IAM: keep the existing delegation
             FillProto(oldSpec, requested);
-            co_return co_await RunSchemeOp();
+            secretOp.SetIamDelegationAlter(NKikimrSchemeOp::IAM_DELEGATION_ALTER_NONE);
+            co_return co_await RunStatementSchemeOp();
         }
 
         const TString subjectId = ResolveSubjectId();
-        co_await CheckRight(path, NACLib::EAccessRights::AlterSchema);
         const TDelegationSpec newSpec = NewSpec(serviceAccountId, cloudId);
         YDB_LOG_INFO("Replacing delegation", {"path", path}, {"old", oldSpec.ToString()}, {"new", newSpec.ToString()});
-        // both are recorded before any IAM call: whichever the secret ends up not naming is revoked, by this
-        // statement or, after a crash or a failed revocation, by the reconciliation
-        co_await Record(path, newSpec);
-        co_await Record(path, oldSpec);
-        co_await Setup(newSpec, subjectId);
-
         FillProto(newSpec, requested);
-        TGenericResult result = co_await RunSchemeOp();
-        const TDelegationSpec& kept = result.Success() ? newSpec : oldSpec;
-        const TDelegationSpec& dropped = result.Success() ? oldSpec : newSpec;
-        co_await RevokeRecorded(dropped, result);
-        co_await Unrecord(kept);
+        secretOp.SetIamDelegationAlter(NKikimrSchemeOp::IAM_DELEGATION_ALTER_STAGE);
+        const TGenericResult staged = co_await RunStatementSchemeOp();
+        if (!staged.Success()) {
+            co_return staged; // nothing was sent to IAM
+        }
+
+        const TDelegationResult setup = co_await Setup(newSpec, subjectId);
+        const auto action = setup.IsSuccess() ? NKikimrSchemeOp::IAM_DELEGATION_ALTER_PROMOTE : NKikimrSchemeOp::IAM_DELEGATION_ALTER_CANCEL;
+        TGenericResult result = co_await RunSchemeOp(AlterDelegationRequest(name, newSpec, action));
+        if (!setup.IsSuccess()) {
+            TStringBuilder message;
+            message << SetupError(newSpec, setup);
+            if (!result.Success()) {
+                message << "; the delegation " << newSpec.ReferrerId << " stays staged for the secret until its next ALTER or DROP: "
+                    << result.Issues().ToOneLineString();
+            }
+            throw TOrchestrationError(setup.Status) << message;
+        }
+        if (!result.Success()) {
+            // IAM knows the new delegation and the secret names it as staged: the next ALTER or DROP of the
+            // secret revokes it, the readers keep the old one meanwhile
+            result.AddIssue(NYql::TIssue(TStringBuilder() << "IAM delegation " << newSpec.ReferrerId << " for service account "
+                << newSpec.ServiceAccountId << " was set up but the secret still uses the previous one; retry ALTER SECRET"));
+        }
         co_return result;
     }
 
     TIamDelegationSecretOperation Op;
+    NKikimrTxUserProxy::TEvProposeTransaction RequestTemplate;
     NYql::TIssues Warnings; // reported with the result of a successful operation
 };
 
@@ -465,7 +457,8 @@ public:
     async<TGenericResult> Run() {
         auto& op = *ModifyScheme().MutableCreateSecret();
         Y_ENSURE(op.GetType() == NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
-        const TString path = SecretPath(op.GetName());
+        const TString name = op.GetName();
+        const TString path = SecretPath(name);
 
         const TExistingSecret existing = co_await NavigateSecret(path);
         if (existing.Exists) {
@@ -474,31 +467,38 @@ public:
                     throw TOrchestrationError(Ydb::StatusIds::BAD_REQUEST)
                         << "Cannot replace secret " << path << " of type VALUE with a secret of type IAM_DELEGATION";
                 }
-                co_return co_await Replace(path, ToSpec(existing.Description.GetIamDelegation()), *op.MutableIamDelegation());
+                co_return co_await Replace(path, ToSpec(existing.Description.GetIamDelegation()), op);
             }
             if (!ModifyScheme().GetFailOnExist() && !ModifyScheme().GetReplaceIfExists() && existing.IsSecret) {
                 co_return MakeSuccess(); // IF NOT EXISTS
             }
-            co_return co_await RunSchemeOp(); // the schemeshard reports the conflict (or the non-secret path)
+            co_return co_await RunStatementSchemeOp(); // the schemeshard reports the conflict (or the non-secret path)
         }
 
         const TString subjectId = ResolveSubjectId();
-        co_await CheckRight(ModifyScheme().GetWorkingDir(), NACLib::EAccessRights::CreateTable);
         TString cloudId = op.GetIamDelegation().GetCloudId();
         if (cloudId.empty()) {
             cloudId = co_await ResolveCloudId(op.GetIamDelegation().GetServiceAccountId());
         }
         const TDelegationSpec spec = NewSpec(op.GetIamDelegation().GetServiceAccountId(), cloudId);
-        co_await Record(path, spec);
-        co_await Setup(spec, subjectId);
-
         FillProto(spec, *op.MutableIamDelegation());
-        TGenericResult result = co_await RunSchemeOp();
-        if (result.Success()) {
-            co_await Unrecord(spec);
-        } else {
-            YDB_LOG_WARN("CREATE SECRET failed after SetupDelegation, revoking", {"path", path}, {"spec", spec.ToString()});
-            co_await RevokeRecorded(spec, result);
+
+        // the secret names the delegation before IAM knows it; the schemeshard checks the user's rights here
+        TGenericResult result = co_await RunStatementSchemeOp();
+        if (!result.Success()) {
+            co_return result;
+        }
+        const TDelegationResult setup = co_await Setup(spec, subjectId);
+        if (!setup.IsSuccess()) {
+            // the secret names a delegation IAM refused: drop it (the revocation the schemeshard makes is a no-op)
+            YDB_LOG_WARN("SetupDelegation failed after CREATE SECRET, dropping the secret", {"path", path}, {"spec", spec.ToString()});
+            const TGenericResult drop = co_await RunSchemeOp(DropRequest(name));
+            TStringBuilder message;
+            message << SetupError(spec, setup);
+            if (!drop.Success()) {
+                message << "; secret " << path << " was created and could not be dropped: " << drop.Issues().ToOneLineString() << "; drop it";
+            }
+            throw TOrchestrationError(setup.Status) << message;
         }
         for (const auto& warning : Warnings) {
             result.AddIssue(warning);
@@ -520,42 +520,9 @@ public:
             co_return MakeSuccess(); // IF EXISTS
         }
         if (!existing.IsDelegation()) {
-            co_return co_await RunSchemeOp(); // the schemeshard reports a missing path or a type change
+            co_return co_await RunStatementSchemeOp(); // the schemeshard reports a missing path or a type change
         }
-        co_return co_await Replace(path, ToSpec(existing.Description.GetIamDelegation()), *op.MutableIamDelegation());
-    }
-};
-
-class TDropper : public TDelegationSecretActorBase<TDropper> {
-public:
-    using TDelegationSecretActorBase::TDelegationSecretActorBase;
-
-    async<TGenericResult> Run() {
-        const TString path = SecretPath(ModifyScheme().GetDrop().GetName());
-
-        const TExistingSecret existing = co_await NavigateSecret(path);
-        if (!existing.IsDelegation()) {
-            co_return co_await RunSchemeOp();
-        }
-
-        // Only a cloud subject may drop a delegation secret, as for CREATE and ALTER (the subject itself
-        // is not sent with the revoke).
-        ResolveSubjectId();
-        // DROP revokes the delegation in IAM, so it needs the control plane even though reading the
-        // secret does not. Dropping the object while leaving the delegation in place would silently
-        // break the guarantee that dropping a secret revokes the access it granted.
-        DelegationSettings();
-
-        co_await CheckRight(path, NACLib::EAccessRights::RemoveSchema);
-        const TDelegationSpec spec = ToSpec(existing.Description.GetIamDelegation());
-        co_await Record(path, spec);
-        TGenericResult result = co_await RunSchemeOp();
-        if (result.Success()) {
-            co_await RevokeRecorded(spec, result);
-        } else {
-            co_await Unrecord(spec); // the secret still names the delegation
-        }
-        co_return result;
+        co_return co_await Replace(path, ToSpec(existing.Description.GetIamDelegation()), op);
     }
 };
 
@@ -589,10 +556,6 @@ IActor* CreateIamDelegationSecretCreator(TIamDelegationSecretOperation op) {
 
 IActor* CreateIamDelegationSecretAlterer(TIamDelegationSecretOperation op) {
     return new TAlterer(std::move(op));
-}
-
-IActor* CreateIamDelegationSecretDropper(TIamDelegationSecretOperation op) {
-    return new TDropper(std::move(op));
 }
 
 } // namespace NKikimr::NKqp

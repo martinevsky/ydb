@@ -1246,6 +1246,9 @@ void TPathDescriber::DescribeSecret(const TActorContext&, TPathId pathId, TPathE
     if (secretInfo->Description.HasIamDelegation()) {
         entry->MutableIamDelegation()->CopyFrom(secretInfo->Description.GetIamDelegation());
     }
+    if (secretInfo->Description.HasPendingIamDelegation()) {
+        entry->MutablePendingIamDelegation()->CopyFrom(secretInfo->Description.GetPendingIamDelegation());
+    }
 }
 
 void TPathDescriber::DescribeStreamingQuery(TPathId pathId, TPathElement::TPtr pathEl) {

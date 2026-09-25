@@ -12,6 +12,7 @@
 #include "schemeshard_export.h"
 #include "schemeshard_forced_compaction.h"
 #include "schemeshard_import.h"
+#include "schemeshard_iam_delegation.h"
 #include "schemeshard_info_types.h"
 #include "schemeshard_db_ref_map.h"
 #include "schemeshard_path.h"
@@ -331,6 +332,10 @@ public:
     TDbRefMap<TBackupCollectionInfo::TPtr> BackupCollections{"BackupCollections", this, DbRefMaps};
     TDbRefMap<TSysViewInfo::TPtr> SysViews{"SysViews", this, DbRefMaps};
     TDbRefMap<TSecretInfo::TPtr> Secrets{"Secrets", this, DbRefMaps};
+    // The outbox of IAM delegation revocations (schemeshard_iam_delegation.h), by referrer id, and the revokers
+    // working on it; the latter are killed on the death of the schemeshard.
+    THashMap<TString, TIamDelegationRevocation> IamDelegationRevocations;
+    THashMap<TString, TActorId> RunningIamDelegationRevokers;
     TDbRefMap<TStreamingQueryInfo::TPtr> StreamingQueries{"StreamingQueries", this, DbRefMaps};
     THashSet<TPathId> TableInBackupCollections;
     TDbRefMap<TTestShardSetInfo::TPtr> TestShardSets{"TestShardSets", this, DbRefMaps};
@@ -1063,6 +1068,18 @@ public:
     void PersistSecret(NIceDb::TNiceDb& db, TPathId pathId);
     void PersistSecretRemove(NIceDb::TNiceDb& db, TPathId pathId);
     void PersistSecretAlter(NIceDb::TNiceDb& db, TPathId pathId, const TSecretInfo& secretInfo);
+
+    // IAM delegation revocations
+    void PersistIamDelegationRevocation(NIceDb::TNiceDb& db, const TIamDelegationRevocation& revocation);
+    void PersistIamDelegationRevocationRemove(NIceDb::TNiceDb& db, const TString& referrerId);
+    // Schedules the revocation of every delegation named by the secret before the change and not after it
+    // (after == nullptr: the secret is removed). Returns how many were scheduled; the caller has the
+    // schemeshard start the revokers with TEvPrivate::TEvRunIamDelegationRevocations once the change is committed.
+    ui32 PersistIamDelegationRevocations(NIceDb::TNiceDb& db, TPathId pathId,
+        const NKikimrSchemeOp::TSecretDescription& before, const NKikimrSchemeOp::TSecretDescription* after);
+    void RunIamDelegationRevocations(const TActorContext& ctx);
+    void Handle(TEvPrivate::TEvRunIamDelegationRevocations::TPtr& ev, const TActorContext& ctx);
+    void Handle(TEvPrivate::TEvIamDelegationRevoked::TPtr& ev, const TActorContext& ctx);
     void PersistSecretAlter(NIceDb::TNiceDb& db, TPathId pathId);
     void PersistSecretAlterRemove(NIceDb::TNiceDb& db, TPathId pathId);
 

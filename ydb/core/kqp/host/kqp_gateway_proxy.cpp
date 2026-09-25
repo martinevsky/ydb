@@ -5,11 +5,7 @@
 #include <ydb/core/formats/arrow/serializer/parsing.h>
 #include <ydb/core/formats/arrow/serializer/utils.h>
 #include <ydb/core/grpc_services/table_settings.h>
-#include <ydb/core/base/path.h>
 #include <ydb/core/kqp/gateway/utils/scheme_helpers.h>
-#include <ydb/core/tx/scheme_cache/scheme_cache.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
 #include <ydb/core/protos/metrics_config.pb.h>
 #include <ydb/core/protos/set_column_constraint.pb.h>
 #include <ydb/core/protos/schemeshard/operations.pb.h>
@@ -3634,10 +3630,9 @@ public:
     template<class TSecretSchemaOp>
     class TSecretSchemaModifier {
     public:
-        TSecretSchemaModifier(TIntrusivePtr<IKqpGateway> gateway, TIntrusivePtr<TKikimrSessionContext> sessionCtx, TActorSystem* actorSystem)
+        TSecretSchemaModifier(TIntrusivePtr<IKqpGateway> gateway, TIntrusivePtr<TKikimrSessionContext> sessionCtx)
             : Gateway_(gateway)
             , SessionCtx_(sessionCtx)
-            , ActorSystem_(actorSystem)
         {
         }
 
@@ -3722,75 +3717,12 @@ public:
                             op.SetValue(resolvedValue);
                             op.ClearValueParamName();
                         }
-                    } else {
-                        // DROP SECRET: the delegation of an IAM_DELEGATION secret is revoked by the orchestrator
-                        // of the query service only, so such a secret cannot be dropped here. Its type is not
-                        // known from the statement and is looked up first, so that value secrets are dropped
-                        // as before.
-                        return DropUnlessDelegation(std::move(tx), CanonizePath(JoinPath({pathPair.first, pathPair.second})));
                     }
                     return Gateway_->ModifyScheme(std::move(tx));
                 }
             } catch (yexception& e) {
                 return MakeFuture(ResultFromException<TGenericResult>(e));
             }
-        }
-
-    private:
-        // Resolves through the scheme cache (as the orchestrator of the query service does) whether the path
-        // is a secret of type IAM_DELEGATION.
-        class TSecretTypeResolver : public TActorBootstrapped<TSecretTypeResolver> {
-        public:
-            TSecretTypeResolver(TString database, TString path, NThreading::TPromise<bool> promise)
-                : Database(std::move(database))
-                , Path(std::move(path))
-                , Promise(std::move(promise))
-            {}
-
-            void Bootstrap() {
-                auto request = MakeHolder<NSchemeCache::TSchemeCacheNavigate>();
-                request->DatabaseName = Database;
-                auto& entry = request->ResultSet.emplace_back();
-                entry.Path = SplitPath(Path);
-                entry.Operation = NSchemeCache::TSchemeCacheNavigate::OpPath;
-                entry.RequestType = NSchemeCache::TSchemeCacheNavigate::TEntry::ERequestType::ByPath;
-                entry.RedirectRequired = false;
-                entry.SyncVersion = true;
-                this->Send(MakeSchemeCacheID(), new TEvTxProxySchemeCache::TEvNavigateKeySet(request.Release()));
-                this->Become(&TSecretTypeResolver::StateWork);
-            }
-
-            STATEFN(StateWork) {
-                switch (ev->GetTypeRewrite()) {
-                    hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, Handle);
-                }
-            }
-
-        private:
-            void Handle(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev) {
-                const auto& entry = ev->Get()->Request->ResultSet.front();
-                Promise.SetValue(entry.Status == NSchemeCache::TSchemeCacheNavigate::EStatus::Ok
-                    && entry.Kind == NSchemeCache::TSchemeCacheNavigate::KindSecret && entry.SecretInfo
-                    && entry.SecretInfo->Description.GetType() == NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
-                this->PassAway();
-            }
-
-            const TString Database;
-            const TString Path;
-            NThreading::TPromise<bool> Promise;
-        };
-
-        TFuture<TGenericResult> DropUnlessDelegation(NKikimrSchemeOp::TModifyScheme&& tx, const TString& secretPath) {
-            auto promise = NewPromise<bool>();
-            ActorSystem_->Register(new TSecretTypeResolver(SessionCtx_->GetDatabase(), secretPath, promise));
-            return promise.GetFuture().Apply([gateway = Gateway_, tx = std::move(tx)](const TFuture<bool>& isDelegation) mutable {
-                if (isDelegation.GetValue()) {
-                    return MakeErrorFuture<TGenericResult>(
-                        std::make_exception_ptr(yexception() << "Secrets of type IAM_DELEGATION are supported only in the query service")
-                    );
-                }
-                return gateway->ModifyScheme(std::move(tx));
-            });
         }
 
     protected:
@@ -3802,14 +3734,13 @@ public:
     private:
         TIntrusivePtr<IKqpGateway> Gateway_;
         TIntrusivePtr<TKikimrSessionContext> SessionCtx_;
-        TActorSystem* ActorSystem_;
     };
 
     template<class TSecretSchemaOp>
     class TCreateSecretSchemaModifier : public TSecretSchemaModifier<TSecretSchemaOp> {
     public:
-        TCreateSecretSchemaModifier(TIntrusivePtr<IKqpGateway> gateway, TIntrusivePtr<TKikimrSessionContext> sessionCtx, TActorSystem* actorSystem)
-            : TSecretSchemaModifier<TSecretSchemaOp>(gateway, sessionCtx, actorSystem)
+        TCreateSecretSchemaModifier(TIntrusivePtr<IKqpGateway> gateway, TIntrusivePtr<TKikimrSessionContext> sessionCtx)
+            : TSecretSchemaModifier<TSecretSchemaOp>(gateway, sessionCtx)
         {
         }
 
@@ -3848,8 +3779,8 @@ public:
     template<class TSecretSchemaOp>
     class TAlterSecretSchemaModifier : public TSecretSchemaModifier<TSecretSchemaOp> {
     public:
-        TAlterSecretSchemaModifier(TIntrusivePtr<IKqpGateway> gateway, TIntrusivePtr<TKikimrSessionContext> sessionCtx, TActorSystem* actorSystem)
-            : TSecretSchemaModifier<TSecretSchemaOp>(gateway, sessionCtx, actorSystem)
+        TAlterSecretSchemaModifier(TIntrusivePtr<IKqpGateway> gateway, TIntrusivePtr<TKikimrSessionContext> sessionCtx)
+            : TSecretSchemaModifier<TSecretSchemaOp>(gateway, sessionCtx)
         {
         }
 
@@ -3885,8 +3816,8 @@ public:
     template<class TSecretSchemaOp>
     class TDropSecretSchemaModifier : public TSecretSchemaModifier<TSecretSchemaOp> {
     public:
-        TDropSecretSchemaModifier(TIntrusivePtr<IKqpGateway> gateway, TIntrusivePtr<TKikimrSessionContext> sessionCtx, TActorSystem* actorSystem)
-            : TSecretSchemaModifier<TSecretSchemaOp>(gateway, sessionCtx, actorSystem)
+        TDropSecretSchemaModifier(TIntrusivePtr<IKqpGateway> gateway, TIntrusivePtr<TKikimrSessionContext> sessionCtx)
+            : TSecretSchemaModifier<TSecretSchemaOp>(gateway, sessionCtx)
         {
         }
 
@@ -3914,19 +3845,19 @@ public:
     TFuture<TGenericResult> CreateSecret(const TString& cluster, const NYql::TSecretSettings& settings) override {
         CHECK_PREPARED_DDL(CreateSecret);
 
-        return TCreateSecretSchemaModifier<NKikimrSchemeOp::TSecretSchemaOp>(Gateway, SessionCtx, ActorSystem).StartModification(cluster, settings);
+        return TCreateSecretSchemaModifier<NKikimrSchemeOp::TSecretSchemaOp>(Gateway, SessionCtx).StartModification(cluster, settings);
     }
 
     TFuture<TGenericResult> AlterSecret(const TString& cluster, const NYql::TSecretSettings& settings) override {
         CHECK_PREPARED_DDL(AlterSecret);
 
-        return TAlterSecretSchemaModifier<NKikimrSchemeOp::TSecretSchemaOp>(Gateway, SessionCtx, ActorSystem).StartModification(cluster, settings);
+        return TAlterSecretSchemaModifier<NKikimrSchemeOp::TSecretSchemaOp>(Gateway, SessionCtx).StartModification(cluster, settings);
     }
 
     TFuture<TGenericResult> DropSecret(const TString& cluster, const NYql::TSecretSettings& settings) override {
         CHECK_PREPARED_DDL(DropSecret);
 
-        return TDropSecretSchemaModifier<NKikimrSchemeOp::TDrop>(Gateway, SessionCtx, ActorSystem).StartModification(cluster, settings);
+        return TDropSecretSchemaModifier<NKikimrSchemeOp::TDrop>(Gateway, SessionCtx).StartModification(cluster, settings);
     }
 
     TVector<NKikimrKqp::TKqpTableMetadataProto> GetCollectedSchemeData() override {

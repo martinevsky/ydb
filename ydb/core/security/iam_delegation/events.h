@@ -78,9 +78,6 @@ struct TEvIamDelegation {
         EvGetSystemToken,
         EvSystemTokenReady,
 
-        // durable delegation records
-        EvDelegationRecordsResult,
-
         EvEnd
     };
 
@@ -140,21 +137,6 @@ struct TEvIamDelegation {
         bool IsSuccess() const {
             return Status == Ydb::StatusIds::SUCCESS;
         }
-    };
-
-    // A delegation whose outcome is not final yet (see kqp_iam_delegation_records.h in KQP).
-    struct TDelegationRecord {
-        TString Database;
-        TString SecretPath;
-        TDelegationSpec Spec;
-        TInstant LeaseDeadline; // the operation that wrote the record is considered in progress until then
-    };
-
-    // Result of a query over the durable delegation records (kqp_iam_delegation_records.h in KQP); Records is filled by a listing.
-    struct TEvDelegationRecordsResult : NActors::TEventLocal<TEvDelegationRecordsResult, EvDelegationRecordsResult> {
-        Ydb::StatusIds::StatusCode Status = Ydb::StatusIds::SUCCESS;
-        NYql::TIssues Issues;
-        std::vector<TDelegationRecord> Records;
     };
 
     // Request of the system token service: answered with TEvSystemTokenReady to the sender, with the cookie.

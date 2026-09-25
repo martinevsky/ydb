@@ -172,6 +172,7 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTestReboots) {
                 t.TestEnv->TestWaitNotification(runtime, t.TxId);
             }
 
+            // the replacement is staged first (the secret keeps its delegation) and promoted afterwards
             TestAlterSecret(runtime, ++t.TxId, "/MyRoot/dir",
                 R"(
                     Name: "sa-secret"
@@ -181,6 +182,28 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTestReboots) {
                         CloudId: "b1g-cloud-1"
                         ReferrerId: "referrer-2"
                     }
+                    IamDelegationAlter: IAM_DELEGATION_ALTER_STAGE
+                )"
+            );
+            t.TestEnv->TestWaitNotification(runtime, t.TxId);
+
+            {
+                TInactiveZone inactive(activeZone);
+                const auto describeResult = DescribePath(runtime, "/MyRoot/dir/sa-secret");
+                const auto& secret = describeResult.GetPathDescription().GetSecretDescription();
+                UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 1u);
+                UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), "referrer-1");
+                UNIT_ASSERT_VALUES_EQUAL(secret.GetPendingIamDelegation().GetReferrerId(), "referrer-2");
+            }
+
+            TestAlterSecret(runtime, ++t.TxId, "/MyRoot/dir",
+                R"(
+                    Name: "sa-secret"
+                    Type: SECRET_TYPE_IAM_DELEGATION
+                    IamDelegation {
+                        ReferrerId: "referrer-2"
+                    }
+                    IamDelegationAlter: IAM_DELEGATION_ALTER_PROMOTE
                 )"
             );
             t.TestEnv->TestWaitNotification(runtime, t.TxId);
@@ -191,12 +214,13 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTestReboots) {
                 TestDescribeResult(describeResult, {NLs::Finished, NLs::IsSecret});
                 const auto& secret = describeResult.GetPathDescription().GetSecretDescription();
                 UNIT_ASSERT_VALUES_EQUAL(secret.GetName(), "sa-secret");
-                UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 1u);
+                UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 2u);
                 UNIT_ASSERT(secret.GetValue().empty()); // no value even when explicitly requested
                 UNIT_ASSERT_EQUAL(secret.GetType(), NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
                 UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa-2");
                 UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetCloudId(), "b1g-cloud-1");
                 UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), "referrer-2");
+                UNIT_ASSERT(!secret.HasPendingIamDelegation());
             }
         });
     }

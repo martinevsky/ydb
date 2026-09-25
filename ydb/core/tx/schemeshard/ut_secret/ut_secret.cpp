@@ -1,8 +1,50 @@
+#include <ydb/core/security/iam_delegation/events.h>
+#include <ydb/core/security/iam_delegation/services.h>
 #include <ydb/core/tx/schemeshard/ut_helpers/helpers.h>
+
+#include <util/string/join.h>
 
 namespace {
     using namespace NSchemeShardUT_Private;
     using NKikimrScheme::EStatus;
+    using NIamDelegation::TEvIamDelegation;
+
+    TString DelegationSecretScheme(const TString& name, const TString& serviceAccountId, const TString& cloudId, const TString& referrerId,
+        const TString& alter = "")
+    {
+        return TStringBuilder()
+            << "Name: \"" << name << "\"\n"
+            << "Type: SECRET_TYPE_IAM_DELEGATION\n"
+            << "IamDelegation { ServiceAccountId: \"" << serviceAccountId << "\" CloudId: \"" << cloudId << "\" ReferrerId: \"" << referrerId << "\" }\n"
+            << (alter ? "IamDelegationAlter: " + alter + "\n" : TString());
+    }
+
+    // The IAM delegation service of the node, stood in for by an edge actor: the test receives the revoke
+    // requests of the schemeshard's revokers and answers them.
+    TActorId RegisterFakeIamDelegationService(TTestBasicRuntime& runtime) {
+        const TActorId edge = runtime.AllocateEdgeActor();
+        runtime.RegisterService(NIamDelegation::MakeIamDelegationServiceId(), edge);
+        return edge;
+    }
+
+    TEvIamDelegation::TEvRevokeDelegation::TPtr GrabRevoke(TTestBasicRuntime& runtime, const TActorId& iam) {
+        auto ev = runtime.GrabEdgeEvent<TEvIamDelegation::TEvRevokeDelegation>(iam);
+        UNIT_ASSERT(ev);
+        return ev;
+    }
+
+    TEvIamDelegation::TEvRevokeDelegation::TPtr GrabRevoke(TTestBasicRuntime& runtime, const TActorId& iam, const TString& expectedReferrerId) {
+        auto ev = GrabRevoke(runtime, iam);
+        UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Spec.ReferrerId, expectedReferrerId);
+        return ev;
+    }
+
+    void AnswerRevoke(TTestBasicRuntime& runtime, const TActorId& iam, const TEvIamDelegation::TEvRevokeDelegation::TPtr& request, Ydb::StatusIds::StatusCode status) {
+        auto result = status == Ydb::StatusIds::SUCCESS
+            ? NIamDelegation::TDelegationResult::Success()
+            : NIamDelegation::TDelegationResult::Error(status, "emulated failure");
+        runtime.Send(new IEventHandle(request->Sender, iam, new TEvIamDelegation::TEvRevokeDelegationResult(std::move(result)), 0, request->Cookie));
+    }
 
     void ExpectEqualSecretDescription(
         const NKikimrScheme::TEvDescribeSchemeResult& describeResult,
@@ -1094,6 +1136,195 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
         UNIT_ASSERT(!plain.GetPathDescription().GetSecretDescription().HasIamDelegation());
     }
 
+    // Dropping a delegation secret writes the revocation of its delegation into the schemeshard's outbox in the
+    // transaction of the drop; a revoker then has the delegation service of the node revoke it, and the outbox
+    // forgets the delegation once IAM has accepted.
+    Y_UNIT_TEST(DropIamDelegationSecretRevokesItsDelegation) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+        const TActorId iam = RegisterFakeIamDelegationService(runtime);
+
+        TestCreateSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "aje-sa-1", "b1g-cloud-1", "referrer-1"));
+        env.TestWaitNotification(runtime, txId);
+        TestCreateSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret-2", "aje-sa-2", "b1g-cloud-1", "referrer-2"));
+        env.TestWaitNotification(runtime, txId);
+
+        // the drop commits, then the delegation the secret named is revoked
+        TestDropSecret(runtime, ++txId, "/MyRoot", "sa-secret");
+        env.TestWaitNotification(runtime, txId);
+        TestLs(runtime, "/MyRoot/sa-secret", false, NLs::PathNotExist);
+        {
+            const auto revoke = GrabRevoke(runtime, iam, "referrer-1");
+            UNIT_ASSERT_VALUES_EQUAL(revoke->Get()->Spec.ServiceAccountId, "aje-sa-1");
+            UNIT_ASSERT_VALUES_EQUAL(revoke->Get()->Spec.CloudId, "b1g-cloud-1");
+            AnswerRevoke(runtime, iam, revoke, Ydb::StatusIds::SUCCESS);
+        }
+
+        // the accepted revocation is forgotten: a restarted schemeshard resumes only the pending ones, so the
+        // first revoke after the restart is the one of the secret dropped next
+        TestMkDir(runtime, ++txId, "/MyRoot", "dir-after-the-acceptance"); // committed after the acceptance was recorded
+        env.TestWaitNotification(runtime, txId);
+        {
+            const TActorId sender = runtime.AllocateEdgeActor();
+            RebootTablet(runtime, TTestTxConfig::SchemeShard, sender);
+        }
+        TestDropSecret(runtime, ++txId, "/MyRoot", "sa-secret-2");
+        env.TestWaitNotification(runtime, txId);
+        {
+            const auto revoke = GrabRevoke(runtime, iam, "referrer-2");
+            AnswerRevoke(runtime, iam, revoke, Ydb::StatusIds::SUCCESS);
+        }
+    }
+
+    // A refused revocation is retried by the same revoker after a delay; a revocation without an answer survives
+    // a restart of the schemeshard, which resumes it from its local database with a new revoker.
+    Y_UNIT_TEST(IamDelegationRevocationIsRetriedAndResumed) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+        const TActorId iam = RegisterFakeIamDelegationService(runtime);
+
+        TestCreateSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "aje-sa-1", "b1g-cloud-1", "referrer-1"));
+        env.TestWaitNotification(runtime, txId);
+        TestCreateSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret-2", "aje-sa-2", "b1g-cloud-1", "referrer-2"));
+        env.TestWaitNotification(runtime, txId);
+
+        TestDropSecret(runtime, ++txId, "/MyRoot", "sa-secret");
+        env.TestWaitNotification(runtime, txId);
+        auto revoke = GrabRevoke(runtime, iam, "referrer-1");
+        const TActorId revoker = revoke->Sender;
+        runtime.EnableScheduleForActor(revoker); // its retries are timers
+        AnswerRevoke(runtime, iam, revoke, Ydb::StatusIds::UNAVAILABLE);
+
+        // the retry comes from the same revoker once its delay has passed
+        env.SimulateSleep(runtime, TDuration::Seconds(15));
+        revoke = GrabRevoke(runtime, iam, "referrer-1");
+        UNIT_ASSERT_VALUES_EQUAL(revoke->Sender, revoker);
+
+        // no answer, the schemeshard restarts: the revocation is resumed by a new revoker
+        {
+            const TActorId sender = runtime.AllocateEdgeActor();
+            RebootTablet(runtime, TTestTxConfig::SchemeShard, sender);
+        }
+        revoke = GrabRevoke(runtime, iam, "referrer-1");
+        UNIT_ASSERT_VALUES_UNEQUAL(revoke->Sender, revoker);
+        AnswerRevoke(runtime, iam, revoke, Ydb::StatusIds::SUCCESS);
+
+        // accepted: another restart resumes nothing, the next revoke is the one of the next drop
+        TestMkDir(runtime, ++txId, "/MyRoot", "dir-after-the-acceptance");
+        env.TestWaitNotification(runtime, txId);
+        {
+            const TActorId sender = runtime.AllocateEdgeActor();
+            RebootTablet(runtime, TTestTxConfig::SchemeShard, sender);
+        }
+        TestDropSecret(runtime, ++txId, "/MyRoot", "sa-secret-2");
+        env.TestWaitNotification(runtime, txId);
+        AnswerRevoke(runtime, iam, GrabRevoke(runtime, iam, "referrer-2"), Ydb::StatusIds::SUCCESS);
+    }
+
+    // ALTER of a delegation secret stages the replacement next to the current delegation, then promotes or
+    // cancels it; whatever delegation the secret stops naming is revoked.
+    Y_UNIT_TEST(AlterIamDelegationSecretStagesPromotesAndCancels) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+        const TActorId iam = RegisterFakeIamDelegationService(runtime);
+        const auto describe = [&]() {
+            return DescribePath(runtime, "/MyRoot/sa-secret").GetPathDescription().GetSecretDescription();
+        };
+
+        TestCreateSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "aje-sa-1", "b1g-cloud-1", "referrer-1"));
+        env.TestWaitNotification(runtime, txId);
+
+        // the delegation is never changed in place: an ALTER that does not say what to do must name the current one
+        TestAlterSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "aje-sa-2", "b1g-cloud-1", "referrer-2"),
+            {{NKikimrScheme::StatusInvalidParameter, "must equal the current delegation"}});
+        TestAlterSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "aje-sa-1", "b1g-cloud-1", "referrer-1"));
+        env.TestWaitNotification(runtime, txId);
+        UNIT_ASSERT_VALUES_EQUAL(describe().GetVersion(), 1u);
+
+        // staging keeps the current delegation for the readers and names the replacement
+        TestAlterSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "aje-sa-2", "b1g-cloud-1", "referrer-2", "IAM_DELEGATION_ALTER_STAGE"));
+        env.TestWaitNotification(runtime, txId);
+        {
+            const auto secret = describe();
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 2u);
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), "referrer-1");
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetPendingIamDelegation().GetServiceAccountId(), "aje-sa-2");
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetPendingIamDelegation().GetReferrerId(), "referrer-2");
+        }
+        // a delegation the secret names cannot be staged again
+        TestAlterSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "aje-sa-1", "b1g-cloud-1", "referrer-1", "IAM_DELEGATION_ALTER_STAGE"),
+            {{NKikimrScheme::StatusInvalidParameter, "is already named by the secret"}});
+        // only the staged delegation can be promoted or cancelled
+        TestAlterSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "", "", "referrer-9", "IAM_DELEGATION_ALTER_PROMOTE"),
+            {{NKikimrScheme::StatusPreconditionFailed, "is not staged for the secret"}});
+
+        // promotion: the replacement becomes the delegation and the previous one is revoked
+        TestAlterSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "", "", "referrer-2", "IAM_DELEGATION_ALTER_PROMOTE"));
+        env.TestWaitNotification(runtime, txId);
+        {
+            const auto secret = describe();
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 3u);
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa-2");
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), "referrer-2");
+            UNIT_ASSERT(!secret.HasPendingIamDelegation());
+        }
+        AnswerRevoke(runtime, iam, GrabRevoke(runtime, iam, "referrer-1"), Ydb::StatusIds::SUCCESS);
+
+        // staging over a staged delegation replaces it: the earlier one is revoked
+        TestAlterSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "aje-sa-3", "b1g-cloud-1", "referrer-3", "IAM_DELEGATION_ALTER_STAGE"));
+        env.TestWaitNotification(runtime, txId);
+        TestAlterSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "aje-sa-4", "b1g-cloud-1", "referrer-4", "IAM_DELEGATION_ALTER_STAGE"));
+        env.TestWaitNotification(runtime, txId);
+        AnswerRevoke(runtime, iam, GrabRevoke(runtime, iam, "referrer-3"), Ydb::StatusIds::SUCCESS);
+        UNIT_ASSERT_VALUES_EQUAL(describe().GetPendingIamDelegation().GetReferrerId(), "referrer-4");
+
+        // cancelling drops the staged delegation and revokes it
+        TestAlterSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "", "", "referrer-4", "IAM_DELEGATION_ALTER_CANCEL"));
+        env.TestWaitNotification(runtime, txId);
+        AnswerRevoke(runtime, iam, GrabRevoke(runtime, iam, "referrer-4"), Ydb::StatusIds::SUCCESS);
+        {
+            const auto secret = describe();
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 6u);
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), "referrer-2");
+            UNIT_ASSERT(!secret.HasPendingIamDelegation());
+        }
+        TestAlterSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "", "", "referrer-4", "IAM_DELEGATION_ALTER_CANCEL"),
+            {{NKikimrScheme::StatusPreconditionFailed, "is not staged for the secret"}});
+
+        // dropping revokes everything the secret names, the staged delegation included
+        TestAlterSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "aje-sa-5", "b1g-cloud-1", "referrer-5", "IAM_DELEGATION_ALTER_STAGE"));
+        env.TestWaitNotification(runtime, txId);
+        TestDropSecret(runtime, ++txId, "/MyRoot", "sa-secret");
+        env.TestWaitNotification(runtime, txId);
+        {
+            TSet<TString> revoked;
+            for (ui32 i = 0; i < 2; ++i) {
+                const auto revoke = GrabRevoke(runtime, iam);
+                revoked.insert(revoke->Get()->Spec.ReferrerId);
+                AnswerRevoke(runtime, iam, revoke, Ydb::StatusIds::SUCCESS);
+            }
+            UNIT_ASSERT_VALUES_EQUAL(JoinSeq(",", revoked), "referrer-2,referrer-5");
+        }
+
+        // a value secret has no delegation to stage
+        TestCreateSecret(runtime, ++txId, "/MyRoot", R"(
+            Name: "plain-secret"
+            Value: "v"
+        )");
+        env.TestWaitNotification(runtime, txId);
+        TestAlterSecret(runtime, ++txId, "/MyRoot", R"(
+            Name: "plain-secret"
+            Value: "v2"
+            IamDelegationAlter: IAM_DELEGATION_ALTER_STAGE
+        )", {{NKikimrScheme::StatusInvalidParameter, "allowed only for secrets of type IAM_DELEGATION"}});
+    }
+
     Y_UNIT_TEST(IamDelegationSecretOnlyWhereTokenIsExpected) {
         TTestBasicRuntime runtime;
         TTestEnv env(runtime, TTestEnvOptions().RunFakeConfigDispatcher(true));
@@ -1494,6 +1725,7 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
         );
         env.TestWaitNotification(runtime, txId);
 
+        // the replacement is staged, then promoted
         TestAlterSecret(runtime, ++txId, "/MyRoot",
             R"(
                 Name: "sa-secret"
@@ -1503,6 +1735,15 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
                     CloudId: "b1g-cloud-1"
                     ReferrerId: "referrer-2"
                 }
+                IamDelegationAlter: IAM_DELEGATION_ALTER_STAGE
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+        TestAlterSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                IamDelegation { ReferrerId: "referrer-2" }
+                IamDelegationAlter: IAM_DELEGATION_ALTER_PROMOTE
             )"
         );
         env.TestWaitNotification(runtime, txId);
@@ -1510,7 +1751,7 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
         const auto check = [&]() {
             const auto describeResult = DescribePath(runtime, "/MyRoot/sa-secret");
             TestDescribeResult(describeResult, {NLs::Finished, NLs::IsSecret});
-            ExpectEqualSecretDescription(describeResult, "sa-secret", Nothing(), 1);
+            ExpectEqualSecretDescription(describeResult, "sa-secret", Nothing(), 2);
             const auto& secret = describeResult.GetPathDescription().GetSecretDescription();
             UNIT_ASSERT_EQUAL(secret.GetType(), NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa-2");
@@ -1597,7 +1838,7 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
         );
         env.TestWaitNotification(runtime, txId);
 
-        // CREATE OR REPLACE over an existing delegation secret is converted to ALTER
+        // CREATE OR REPLACE over an existing delegation secret is converted to ALTER: it stages the replacement
         TestCreateSecretOrReplace(runtime, ++txId, "/MyRoot",
             R"(
                 Name: "sa-secret"
@@ -1607,12 +1848,21 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
                     CloudId: "b1g-cloud-2"
                     ReferrerId: "referrer-2"
                 }
+                IamDelegationAlter: IAM_DELEGATION_ALTER_STAGE
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+        TestAlterSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                IamDelegation { ReferrerId: "referrer-2" }
+                IamDelegationAlter: IAM_DELEGATION_ALTER_PROMOTE
             )"
         );
         env.TestWaitNotification(runtime, txId);
 
         const auto describeResult = DescribePath(runtime, "/MyRoot/sa-secret");
-        ExpectEqualSecretDescription(describeResult, "sa-secret", Nothing(), 1);
+        ExpectEqualSecretDescription(describeResult, "sa-secret", Nothing(), 2);
         const auto& secret = describeResult.GetPathDescription().GetSecretDescription();
         UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa-2");
         UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetCloudId(), "b1g-cloud-2");
@@ -1703,12 +1953,21 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
                     CloudId: "b1g-cloud-2"
                     ReferrerId: "referrer-2"
                 }
+                IamDelegationAlter: IAM_DELEGATION_ALTER_STAGE
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+        TestAlterSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                IamDelegation { ReferrerId: "referrer-2" }
+                IamDelegationAlter: IAM_DELEGATION_ALTER_PROMOTE
             )"
         );
         env.TestWaitNotification(runtime, txId);
         {
             const auto describeResult = DescribePath(runtime, "/MyRoot/sa-secret");
-            ExpectEqualSecretDescription(describeResult, "sa-secret", Nothing(), 1);
+            ExpectEqualSecretDescription(describeResult, "sa-secret", Nothing(), 2);
             const auto& secret = describeResult.GetPathDescription().GetSecretDescription();
             UNIT_ASSERT_EQUAL(secret.GetType(), NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa-2");
@@ -1745,7 +2004,7 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
         // nothing changed
         {
             const auto describeResult = DescribePath(runtime, "/MyRoot/sa-secret");
-            ExpectEqualSecretDescription(describeResult, "sa-secret", Nothing(), 1);
+            ExpectEqualSecretDescription(describeResult, "sa-secret", Nothing(), 2);
             UNIT_ASSERT_VALUES_EQUAL(describeResult.GetPathDescription().GetSecretDescription().GetIamDelegation().GetServiceAccountId(), "aje-sa-2");
         }
     }

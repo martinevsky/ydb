@@ -26,7 +26,6 @@
 #include <ydb/core/kqp/federated_query/actors/kqp_federated_query_actors.h>
 #include <ydb/core/kqp/federated_query/actors/pq_checkpoint_provider_integration/pq_checkpoint_provider_integration.h>
 #include <ydb/core/protos/auth.pb.h>
-#include <ydb/core/kqp/iam_delegation/kqp_iam_delegation_records.h>
 #include <ydb/core/security/iam_delegation/iam_delegated_token_service.h>
 #include <ydb/core/security/iam_delegation/iam_delegation_service.h>
 #include <ydb/core/security/iam_delegation/services.h>
@@ -2168,9 +2167,7 @@ private:
         const auto running = [actorSystem](const TActorId& serviceId) {
             return bool(actorSystem->LookupLocalService(serviceId));
         };
-        if (running(NIamDelegation::MakeIamDelegatedTokenServiceId()) && running(NIamDelegation::MakeIamDelegationServiceId())
-            && running(MakeIamDelegationReconciliationServiceId()))
-        {
+        if (running(NIamDelegation::MakeIamDelegatedTokenServiceId()) && running(NIamDelegation::MakeIamDelegationServiceId())) {
             return;
         }
         const auto settings = NIamDelegation::TIamDelegationSettings::FromConfig(AppData()->IamConfig, AppData()->ReplicationConfig);
@@ -2196,11 +2193,6 @@ private:
         if (!running(NIamDelegation::MakeIamDelegationServiceId())) {
             actorSystem->RegisterLocalService(NIamDelegation::MakeIamDelegationServiceId(),
                 TActivationContext::Register(NIamDelegation::CreateIamDelegationService(settings, NIamDelegation::MakeIamSystemTokenServiceId())));
-        }
-        // revokes the recorded delegations no secret names; it needs the delegation service, so it comes with it
-        if (!running(MakeIamDelegationReconciliationServiceId())) {
-            actorSystem->RegisterLocalService(MakeIamDelegationReconciliationServiceId(),
-                TActivationContext::Register(CreateIamDelegationReconciliationService()));
         }
     }
 

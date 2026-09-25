@@ -722,10 +722,8 @@ public:
             case NKqpProto::TKqpSchemeOperation::kDropSecret: {
                 const auto& modifyScheme = schemeOp.GetDropSecret();
                 ev->Record.MutableTransaction()->MutableModifyScheme()->CopyFrom(modifyScheme);
-                // the orchestrator revokes the delegation of IAM_DELEGATION secrets after the drop; it runs
-                // regardless of the feature flag so that a secret created before the flag was turned off
-                // does not leave an orphan delegation behind
-                return StartIamDelegationSecretOrchestrator(std::move(ev), &CreateIamDelegationSecretDropper, EFeatureFlagCheck::Skipped);
+                // the schemeshard revokes the delegations of a dropped IAM_DELEGATION secret itself
+                break;
             }
 
             case NKqpProto::TKqpSchemeOperation::kTruncateTable: {
@@ -787,19 +785,11 @@ public:
         Become(&TKqpSchemeExecuter::ExecuteState);
     }
 
-    // CREATE/ALTER/DROP of secrets of type IAM_DELEGATION: the delegation is set up / revoked around the
-    // schemeshard operation by a dedicated actor which completes the same way as the scheme request handler.
-    // Runs the orchestrator of a delegation secret operation. Creating and altering delegation secrets requires
-    // the feature flag; dropping does not (see the kDropSecret case).
-    enum class EFeatureFlagCheck {
-        Required, // the statement is refused while EnableIamDelegationSecrets is off
-        Skipped,  // DROP: a delegation secret that exists must be droppable whatever the flag says
-    };
-
-    void StartIamDelegationSecretOrchestrator(THolder<TEvTxUserProxy::TEvProposeTransaction> ev, IActor* (*createOrchestrator)(TIamDelegationSecretOperation),
-        EFeatureFlagCheck flagCheck = EFeatureFlagCheck::Required)
-    {
-        if (flagCheck == EFeatureFlagCheck::Required && !AppData()->FeatureFlags.GetEnableIamDelegationSecrets()) {
+    // CREATE/ALTER of secrets of type IAM_DELEGATION: the delegation is set up in IAM between the schemeshard
+    // operations by a dedicated actor which completes the same way as the scheme request handler. Both
+    // statements require the feature flag; DROP needs no orchestration (the schemeshard revokes).
+    void StartIamDelegationSecretOrchestrator(THolder<TEvTxUserProxy::TEvProposeTransaction> ev, IActor* (*createOrchestrator)(TIamDelegationSecretOperation)) {
+        if (!AppData()->FeatureFlags.GetEnableIamDelegationSecrets()) {
             return ReplyErrorAndDie(Ydb::StatusIds::PRECONDITION_FAILED,
                 NYql::TIssue("IAM delegation secrets are disabled. Please contact your system administrator to enable it"));
         }

@@ -398,6 +398,7 @@ void TSchemeShard::ActivateAfterInitialization(const TActorContext& ctx, TActiva
     ResumeCdcStreamScans(opts.CdcStreamScans, ctx);
     ResumeIncrementalBackups(opts.IncrementalBackupIds, ctx);
     ResumeFullBackups(opts.FullBackupIds, ctx);
+    RunIamDelegationRevocations(ctx);
 
     ParentDomainLink.SendSync(ctx);
 
@@ -4075,6 +4076,9 @@ void TSchemeShard::PersistSecretRemove(NIceDb::TNiceDb& db, TPathId pathId) {
         PersistSecretAlterRemove(db, pathId);
     }
 
+    // whatever delegations the secret named are revoked once the removal is committed
+    PersistIamDelegationRevocations(db, pathId, secretInfo->Description, nullptr);
+
     Secrets.erase(pathId);
     db.Table<Schema::Secrets>().Key(pathId.LocalPathId).Delete();
 }
@@ -5787,6 +5791,9 @@ void TSchemeShard::Die(const TActorContext &ctx) {
     for (TActorId continuousBackupCleaner : RunningContinuousBackupCleaners) {
         ctx.Send(continuousBackupCleaner, new TEvents::TEvPoisonPill());
     }
+    for (const auto& [_, revoker] : RunningIamDelegationRevokers) {
+        ctx.Send(revoker, new TEvents::TEvPoisonPill());
+    }
 
     IndexBuildPipes.Shutdown(ctx);
     SetColumnConstraintPipes.Shutdown(ctx);
@@ -6184,6 +6191,11 @@ void TSchemeShard::StateWork(STFUNC_SIG) {
         HFuncTraced(TEvForcedCompaction::TEvListRequest, Handle);
         HFuncTraced(TEvPrivate::TEvProgressForcedCompaction, Handle);
         // } // NForcedCompaction
+
+        // namespace NIamDelegation {
+        HFuncTraced(TEvPrivate::TEvRunIamDelegationRevocations, Handle);
+        HFuncTraced(TEvPrivate::TEvIamDelegationRevoked, Handle);
+        // } // NIamDelegation
 
         //namespace NCdcStreamScan {
         HFuncTraced(TEvPrivate::TEvRunCdcStreamScan, Handle);

@@ -5,6 +5,7 @@ FORK_SUBTESTS()
 SIZE(MEDIUM)
 
 PEERDIR(
+    ydb/core/security/iam_delegation
     ydb/core/testlib/basics/default
     ydb/core/tx/schemeshard/ut_helpers
 )

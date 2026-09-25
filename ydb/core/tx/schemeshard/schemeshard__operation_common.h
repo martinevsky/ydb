@@ -295,6 +295,8 @@ TString InterruptInheritanceExceptDescribe(const TString& initialAcl);
 // Validates the parameters of an IAM delegation secret; returns an error message on failure.
 std::optional<TString> ValidateIamDelegation(const NKikimrSchemeOp::TIamDelegation& delegation);
 
+bool SameIamDelegation(const NKikimrSchemeOp::TIamDelegation& a, const NKikimrSchemeOp::TIamDelegation& b);
+
 } // namespace NKikimr::NSchemeShard
 
 namespace NKikimr::NSchemeShard::NTableIndexVersion {

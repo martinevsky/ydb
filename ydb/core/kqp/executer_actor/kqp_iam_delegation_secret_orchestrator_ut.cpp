@@ -71,6 +71,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
             iamConfig.SetTokenServiceEndpoint("localhost:1"); // never called: the IAM services are fakes
             iamConfig.SetServiceControlEndpoint("localhost:1");
             iamConfig.SetServiceId("ydb");
+            iamConfig.SetMicroserviceId("data-plane");
             iamConfig.SetResourceType("resource-manager.cloud");
             appConfig.MutableAuthConfig()->SetAccessServiceDomain(BUILTIN_ACL_DOMAIN); // builtin logins stand for cloud subjects
             return appConfig;
@@ -326,15 +327,17 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
         }
     }
 
-    // The orchestrator is poisoned while it waits for IAM (the crash window between SetupDelegation and the
-    // schema write): it must complete its promise, so that the executer waiting on it does not hang. It
-    // compensates nothing itself: the delegation stays recorded, and the reconciliation revokes it after the lease.
+    // The orchestrator is poisoned while it waits for IAM (the crash window between the schema write and the
+    // answer of SetupDelegation): it must complete its promise, so that the executer waiting on it does not
+    // hang. It compensates nothing itself: the secret names the delegation, so whatever IAM did with it is
+    // revoked by the schemeshard when the secret is dropped or altered.
     Y_UNIT_TEST(PoisonedAfterSetupCompletesPromise) {
         NKikimrConfig::TAppConfig appConfig;
         auto& iamConfig = *appConfig.MutableIamConfig();
         iamConfig.SetTokenServiceEndpoint("localhost:1"); // never called: the delegation service is a fake
         iamConfig.SetServiceControlEndpoint("localhost:1");
         iamConfig.SetServiceId("ydb");
+        iamConfig.SetMicroserviceId("data-plane");
         iamConfig.SetResourceType("resource-manager.cloud");
         appConfig.MutableAuthConfig()->SetAccessServiceDomain(BUILTIN_ACL_DOMAIN); // builtin logins stand for cloud subjects
         NKikimrConfig::TFeatureFlags featureFlags;
@@ -391,7 +394,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
         UNIT_ASSERT_STRING_CONTAINS(result.Issues().ToString(), "cancelled");
 
         // the orchestrator died in the same turn that completed the promise, so the late IAM reply reaches
-        // nobody: no schema write, no revoke; the delegation stays in IAM and in the durable record
+        // nobody: no drop, no revoke; the secret stays and names the delegation IAM has set up
         NSecret::ReleaseHeldDelegationReplies(runtime);
         {
             // a tracked event to the orchestrator comes back undelivered: it is gone
@@ -400,20 +403,16 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
             const auto undelivered = runtime.GrabEdgeEvent<TEvents::TEvUndelivered>(probe, TDuration::Seconds(120));
             UNIT_ASSERT(undelivered);
         }
-        const auto navigate = Navigate(runtime, runtime.AllocateEdgeActor(), "/Root/sa-secret", NSchemeCache::TSchemeCacheNavigate::EOp::OpUnknown);
-        UNIT_ASSERT_UNEQUAL(navigate->ResultSet.at(0).Status, NSchemeCache::TSchemeCacheNavigate::EStatus::Ok);
         const auto recorded = calls->Snapshot();
         UNIT_ASSERT_VALUES_EQUAL(recorded.size(), 1u);
         UNIT_ASSERT_VALUES_EQUAL(recorded[0].Method, "Setup");
         UNIT_ASSERT_VALUES_EQUAL(recorded[0].SubjectId, "bob");
-        {
-            const auto records = kikimr.GetQueryClient().ExecuteQuery(
-                "SELECT referrer_id FROM `/Root/.metadata/iam_delegation/delegations`;", NYdb::NQuery::TTxControl::NoTx()).ExtractValueSync();
-            UNIT_ASSERT_C(records.IsSuccess(), records.GetIssues().ToString());
-            NYdb::TResultSetParser parser(records.GetResultSet(0));
-            UNIT_ASSERT(parser.TryNextRow());
-            UNIT_ASSERT_VALUES_EQUAL(parser.ColumnParser("referrer_id").GetOptionalUtf8().value_or(""), recorded[0].Spec.ReferrerId);
-        }
+        const auto navigate = Navigate(runtime, runtime.AllocateEdgeActor(), "/Root/sa-secret", NSchemeCache::TSchemeCacheNavigate::EOp::OpUnknown);
+        const auto& entry = navigate->ResultSet.at(0);
+        UNIT_ASSERT_VALUES_EQUAL(entry.Status, NSchemeCache::TSchemeCacheNavigate::EStatus::Ok);
+        UNIT_ASSERT(entry.SecretInfo);
+        UNIT_ASSERT_VALUES_EQUAL(entry.SecretInfo->Description.GetIamDelegation().GetReferrerId(), recorded[0].Spec.ReferrerId);
+        UNIT_ASSERT(!entry.SecretInfo->Description.HasPendingIamDelegation());
     }
 
     Y_UNIT_TEST(NewReferrerId) {
