@@ -30,6 +30,7 @@ TEST_SRCS(
     test_explicit_partitioning_1.py
     test_format_setting.py
     test_formats.py
+    test_http_gateway_config.py
     test_inference.py
     test_inflight.py
     test_insert.py
