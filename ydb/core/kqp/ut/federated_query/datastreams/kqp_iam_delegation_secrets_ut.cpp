@@ -652,7 +652,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
             const auto undelivered = runtime.GrabEdgeEvent<TEvents::TEvUndelivered>(probe, TDuration::Seconds(120));
             UNIT_ASSERT(undelivered);
         }
-        ExecAsCloudUser(CreateDelegationSecretQuery("down_secret2", "delegated-down2"), EStatus::UNAVAILABLE, "IAM delegation service is not running on this node");
+        ExecAsCloudUser(CreateDelegationSecretQuery("down_secret2", "delegated-down2"), EStatus::PRECONDITION_FAILED, "IAM delegation service is not running on this node");
         UNIT_ASSERT(!SecretExists("/Root/down_secret2"));
 
         // but existing secrets can still be dropped: the revocation waits in the schemeshard for the service

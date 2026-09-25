@@ -355,7 +355,8 @@ protected:
             co_return TDelegationResult::Error(Ydb::StatusIds::TIMEOUT, TStringBuilder() << method << ": timeout");
         }
         if ((*ev)->GetTypeRewrite() == TEvents::TEvUndelivered::EventType) {
-            co_return TDelegationResult::Error(Ydb::StatusIds::UNAVAILABLE, "IAM delegation service is not running on this node");
+            // a configuration state, not an outage: not retryable, or every retry would stage and cancel again
+            co_return TDelegationResult::Error(Ydb::StatusIds::PRECONDITION_FAILED, "IAM delegation service is not running on this node");
         }
         if ((*ev)->GetTypeRewrite() != TResult::EventType) {
             co_return TDelegationResult::Error(Ydb::StatusIds::INTERNAL_ERROR, TStringBuilder() << method << ": unexpected reply " << (*ev)->GetTypeName());

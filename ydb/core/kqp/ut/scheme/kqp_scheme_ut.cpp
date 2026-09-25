@@ -15835,18 +15835,17 @@ END DO)",
         const auto before = t.Describe("/Root/sa-secret");
 
         // the delegation service dies: from now on every IAM call fails as undelivered. The ALTER stages the
-        // replacement, cannot set it up, and cancels it: the secret keeps its delegation, two versions later per
-        // attempt (an UNAVAILABLE statement is retried before it is reported)
+        // replacement, cannot set it up, and cancels it: the secret keeps its delegation, two versions later.
+        // The failure is not retryable (a missing service is a configuration state), so it is a single attempt.
         t.Runtime.Send(new IEventHandle(NIamDelegation::MakeIamDelegationServiceId(), t.Runtime.AllocateEdgeActor(), new TEvents::TEvPoison()));
-        t.ExecFails(t.CloudUser, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-2");)", EStatus::UNAVAILABLE, "IAM delegation service is not running on this node");
-        ui64 version = 0;
+        t.ExecFails(t.CloudUser, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-2");)", EStatus::PRECONDITION_FAILED, "IAM delegation service is not running on this node");
+        const ui64 version = 2;
         {
             const auto secret = t.Describe("/Root/sa-secret");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), before.GetIamDelegation().GetReferrerId());
             UNIT_ASSERT(!secret.HasPendingIamDelegation());
-            version = secret.GetVersion();
-            UNIT_ASSERT_C(version >= 2 && version % 2 == 0, version);
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), version);
         }
 
         // statements that change nothing in IAM do not call it
