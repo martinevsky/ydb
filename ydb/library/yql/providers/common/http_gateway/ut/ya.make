@@ -10,14 +10,17 @@ SRCS(
     yql_http_default_retry_policy_ut.cpp
     yql_http_gateway_budget_ut.cpp
     yql_http_gateway_config_ut.cpp
+    yql_http_gateway_lifetime_ut.cpp
     yql_http_gateway_sigv4_ut.cpp
     yql_http_gateway_timeout_ut.cpp
     yql_http_gateway_transport_ut.cpp
+    yql_http_pool_cap_pusher_ut.cpp
 )
 
 PEERDIR(
     contrib/libs/openssl
     library/cpp/testing/unittest
+    ydb/library/actors/testlib
     ydb/library/yql/providers/common/http_gateway/mock
     ydb/library/yql/providers/common/ut_helpers/transport
     ydb/library/yql/providers/common/ut_helpers/transport/yql
