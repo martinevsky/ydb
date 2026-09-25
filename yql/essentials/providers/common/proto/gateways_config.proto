@@ -78,6 +78,16 @@ message THttpGatewayConfig {
     optional uint64 LowSpeedBytesLimit = 9;
     optional TDnsResolverConfig DnsResolverConfig = 10;
     optional uint64 MaxRetries = 11;
+    // TLS server verification for https:// URLs.
+    // CaFile: path to a PEM bundle of trusted CAs (CURLOPT_CAINFO). Setting it turns verification on
+    //   unless VerifyPeer is explicitly false.
+    // VerifyPeer: explicit switch. true: verify the peer certificate chain and host name
+    //   (CURLOPT_SSL_VERIFYPEER=1, CURLOPT_SSL_VERIFYHOST=2) against CaFile or the default CA store;
+    //   false: explicit opt-out, no chain verification (CaFile is ignored).
+    // When neither field is set, the legacy behaviour applies: no chain verification
+    //   (CURLOPT_SSL_VERIFYPEER=0).
+    optional string CaFile = 12;
+    optional bool VerifyPeer = 13;
 }
 
 /////////////////////////////// YT ///////////////////////////////

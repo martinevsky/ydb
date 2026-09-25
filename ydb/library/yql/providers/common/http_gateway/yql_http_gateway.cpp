@@ -75,6 +75,9 @@ struct TCurlInitConfig {
     ui64 ConnectionTimeout = 15;
     ui64 BytesPerSecondLimit = 0;
     ui64 BufferSize = CURL_MAX_WRITE_SIZE;
+    // THttpGatewayConfig.VerifyPeer / CaFile. Off by default (legacy behaviour).
+    bool VerifyPeer = false;
+    TString CaFile;
 };
 
 // some WinNT macros clash
@@ -163,7 +166,15 @@ public:
         curl_easy_setopt(Handle, CURLOPT_URL, Url.c_str());
         curl_easy_setopt(Handle, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
         curl_easy_setopt(Handle, CURLOPT_USERAGENT, "YQ HTTP gateway");
-        curl_easy_setopt(Handle, CURLOPT_SSL_VERIFYPEER, 0L);
+        if (Config.VerifyPeer) {
+            curl_easy_setopt(Handle, CURLOPT_SSL_VERIFYPEER, 1L);
+            curl_easy_setopt(Handle, CURLOPT_SSL_VERIFYHOST, 2L);
+            if (Config.CaFile) {
+                curl_easy_setopt(Handle, CURLOPT_CAINFO, Config.CaFile.c_str());
+            }
+        } else {
+            curl_easy_setopt(Handle, CURLOPT_SSL_VERIFYPEER, 0L);
+        }
         curl_easy_setopt(Handle, CURLOPT_CONNECTTIMEOUT, Config.ConnectionTimeout);
         curl_easy_setopt(Handle, CURLOPT_MAX_RECV_SPEED_LARGE, Config.BytesPerSecondLimit);
         curl_easy_setopt(Handle, CURLOPT_BUFFERSIZE, Config.BufferSize);
@@ -701,6 +712,14 @@ public:
             if (httpGatewaysCfg->HasDownloadBufferBytesLimit()) {
                 InitConfig.BufferSize = httpGatewaysCfg->GetDownloadBufferBytesLimit();
             }
+
+            if (httpGatewaysCfg->HasCaFile()) {
+                InitConfig.CaFile = httpGatewaysCfg->GetCaFile();
+            }
+
+            InitConfig.VerifyPeer = httpGatewaysCfg->HasVerifyPeer()
+                ? httpGatewaysCfg->GetVerifyPeer()
+                : !InitConfig.CaFile.empty();
         }
 
         PoolCaps.emplace(DefaultPoolKey(), MaxHandlers);
