@@ -10,6 +10,7 @@
 
 #include <ydb/library/actors/testlib/test_runtime.h>
 
+#include <library/cpp/logger/backend.h>
 #include <library/cpp/retry/retry.h>
 #include <library/cpp/testing/unittest/registar.h>
 
@@ -185,7 +186,8 @@ private:
 };
 
 struct TFakeCASetup {
-    explicit TFakeCASetup(ui32 nodeCount = 1);
+    // logBackend: where the actor system logs go (default: stderr), e.g. to capture them in a test.
+    explicit TFakeCASetup(ui32 nodeCount = 1, TAutoPtr<TLogBackend> logBackend = nullptr);
     ~TFakeCASetup();
 
     // Passes away async input / output actors owned by the fake compute actor while the actor

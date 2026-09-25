@@ -81,7 +81,7 @@ NKikimr::NMiniKQL::THolderFactory& TFakeActor::GetHolderFactory() {
     return HolderFactory;
 }
 
-TFakeCASetup::TFakeCASetup(ui32 nodeCount)
+TFakeCASetup::TFakeCASetup(ui32 nodeCount, TAutoPtr<TLogBackend> logBackend)
     : Runtime(new NActors::TTestActorRuntimeBase(nodeCount, true))
     , FakeActorId(0, "FakeActor")
 {
@@ -102,7 +102,7 @@ TFakeCASetup::TFakeCASetup(ui32 nodeCount)
             NActors::TMailboxType::Simple,
             0));
 
-    Runtime->SetLogBackend(CreateStderrBackend());
+    Runtime->SetLogBackend(logBackend ? logBackend : CreateStderrBackend());
 
     Runtime->Initialize();
 
