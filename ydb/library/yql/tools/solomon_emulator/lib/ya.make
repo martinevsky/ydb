@@ -2,8 +2,9 @@ PY3_LIBRARY()
 
 PEERDIR(
     contrib/python/aiohttp
+    contrib/python/cryptography
     contrib/python/grpcio
-    
+
     library/python/monlib
     library/python/testing/recipe
     library/python/testing/yatest_common
@@ -16,6 +17,7 @@ PY_SRCS(
     config.py
     multi_shard.py
     shard.py
+    tls.py
     webapp.py
 )
 

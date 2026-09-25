@@ -178,7 +178,7 @@ class Shard(object):
 
         return (result, len(matching_metrics))
 
-    def get_metrics(self, selectors):
+    def get_metrics(self, selectors, page_size=None):
         result = []
 
         matching_metrics = self.get_matching_metrics(selectors)
@@ -189,8 +189,11 @@ class Shard(object):
             labels["service"] = self._service
             result.append({"labels": labels, "type": metric.kind})
 
-        if len(matching_metrics) > 1000:
-            return (None, "Too many lines for one listing request, should be under 2k, have: {}".format(len(matching_metrics)))
+        # The reader never follows pages, so a listing must fit into a single page.
+        # Failing here asserts that the reader splits big listings on its own.
+        limit = min(page_size, 1000) if page_size else 1000
+        if len(matching_metrics) > limit:
+            return (None, "Too many lines for one listing request, should be at most {}, have: {}".format(limit, len(matching_metrics)))
 
         return (sorted(result, key=lambda x: str(x)), None)
 
@@ -236,6 +239,20 @@ class Shard(object):
         result["values"] = values
 
         return (result, "")
+
+    def count_points(self, selectors, from_ms, to_ms):
+        """Answers `count(<selectors>)` the way the points count request of the reader expects."""
+        matching_metrics = self.get_matching_metrics(selectors)
+        if len(matching_metrics) == 0:
+            return (None, "Not able to apply function count on vector with size 0")
+        if len(matching_metrics) != 1:
+            return (None, "Invalid amount of metrics matching selectors, should be 1, have: {}".format(len(matching_metrics)))
+
+        count = 0
+        for ts, _ in matching_metrics[0].data:
+            if not isinstance(ts, str) and from_ms <= ts <= to_ms:
+                count += 1
+        return (count, None)
 
     def as_text(self):
         m = list()

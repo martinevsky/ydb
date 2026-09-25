@@ -37,6 +37,9 @@ def start(argv):
     pm = library.python.port_manager.PortManager()
     http_port = pm.get_port()
     grpc_port = pm.get_port()
+    https_port = pm.get_port()
+    grpcs_port = pm.get_port()
+    tls_dir = ya_common.output_path(f"{DAEMON_NAME}_tls")
     binary_path = ya_common.binary_path(f"ydb/library/yql/tools/{DAEMON_NAME}/bin/{DAEMON_NAME}")
     assert binary_path
     cmd = [
@@ -44,7 +47,13 @@ def start(argv):
         "--http-port",
         str(http_port),
         "--grpc-port",
-        str(grpc_port)
+        str(grpc_port),
+        "--https-port",
+        str(https_port),
+        "--grpcs-port",
+        str(grpcs_port),
+        "--tls-dir",
+        tls_dir,
     ]
 
     if args.auth:
@@ -69,6 +78,10 @@ def start(argv):
     set_env("SOLOMON_GRPC_ENDPOINT", grpc_endpoint)
     set_env("SOLOMON_HTTP_PORT", str(http_port))
     set_env("SOLOMON_GRPC_PORT", str(grpc_port))
+    # The same API over TLS, with a self-signed certificate that is its own CA.
+    set_env("SOLOMON_HTTPS_ENDPOINT", f"localhost:{https_port}")
+    set_env("SOLOMON_GRPCS_ENDPOINT", f"localhost:{grpcs_port}")
+    set_env("SOLOMON_TLS_CA_FILE", f"{tls_dir}/cert.pem")
 
     logger.debug(f"Solomon recipe has been started, http_endpoint: {http_endpoint}, grpc_endpoint: {grpc_endpoint}")
 

@@ -90,3 +90,28 @@ def get_api_calls_count():
 def cleanup_api_calls():
     url = "{}/cleanup/api/calls".format(get_api_url())
     _do_request("POST", url)
+
+
+def set_read_auth(expected):
+    """Make every read call require this exact Authorization value, None accepts anything."""
+    _do_request("POST", "{}/config/read_auth".format(get_api_url()), {"expected": expected})
+
+
+def get_read_auth_calls():
+    """(method, Authorization value) of every read call since the last cleanup."""
+    return [tuple(c) for c in _do_request("GET", "{}/api/read_auth".format(get_api_url())).json()["calls"]]
+
+
+def fail_read(method, count=1, **fault):
+    """Answer the next ``count`` read calls of ``method`` with a fault.
+
+    ``method`` is one of "names", "labels", "sensors", "data" (HTTP) or "read" (gRPC).
+    ``fault`` keys: delay_ms, status and message (HTTP), grpc_code and message (gRPC),
+    mode ("malformed" for HTTP, "mismatch" for gRPC).
+    """
+    _do_request("POST", "{}/fail/read".format(get_api_url()), dict(fault, method=method, count=count))
+
+
+def get_read_requests():
+    """Parameters of every gRPC Read call since the last cleanup."""
+    return _do_request("GET", "{}/api/read_requests".format(get_api_url())).json()["requests"]
