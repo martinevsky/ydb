@@ -15835,15 +15835,18 @@ END DO)",
         const auto before = t.Describe("/Root/sa-secret");
 
         // the delegation service dies: from now on every IAM call fails as undelivered. The ALTER stages the
-        // replacement, cannot set it up, and cancels it: the secret keeps its delegation (two versions later)
+        // replacement, cannot set it up, and cancels it: the secret keeps its delegation, two versions later per
+        // attempt (an UNAVAILABLE statement is retried before it is reported)
         t.Runtime.Send(new IEventHandle(NIamDelegation::MakeIamDelegationServiceId(), t.Runtime.AllocateEdgeActor(), new TEvents::TEvPoison()));
         t.ExecFails(t.CloudUser, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-2");)", EStatus::UNAVAILABLE, "IAM delegation service is not running on this node");
+        ui64 version = 0;
         {
             const auto secret = t.Describe("/Root/sa-secret");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), before.GetIamDelegation().GetReferrerId());
             UNIT_ASSERT(!secret.HasPendingIamDelegation());
-            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 2u);
+            version = secret.GetVersion();
+            UNIT_ASSERT_C(version >= 2 && version % 2 == 0, version);
         }
 
         // statements that change nothing in IAM do not call it
@@ -15852,13 +15855,13 @@ END DO)",
             const auto secret = t.Describe("/Root/sa-secret");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), before.GetIamDelegation().GetReferrerId());
-            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 2u);
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), version);
         }
         t.ExecOk(t.CloudUser, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa");)");
         {
             const auto secret = t.Describe("/Root/sa-secret");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), before.GetIamDelegation().GetReferrerId());
-            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 3u);
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), version + 1);
         }
         t.ExecOk(t.CloudUser, R"(ALTER SECRET IF EXISTS `/Root/missing-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa");)");
         t.ExecOk(t.CloudUser, "DROP SECRET IF EXISTS `/Root/missing-secret`;");
