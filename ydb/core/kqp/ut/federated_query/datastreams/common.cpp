@@ -166,6 +166,20 @@ std::shared_ptr<TKikimrRunner> TStreamingTestFixture::GetKikimrRunner() {
             iamServiceControl.SetMicroserviceId("data-plane");
             iamServiceControl.SetResourceType("resource-manager.cloud");
 
+            // IAM delegation secrets. The emulator serves the token service, the IAM control plane
+            // and Resource Manager on one port; in a real cloud these are three endpoints of three
+            // different services, ts.private-api.<env>:4282, iam.private-api.<env>:4283 and
+            // rm.private-api.<env>:4284
+            auto& iamConfig = *AppConfig->MutableIamConfig();
+            iamConfig.SetTokenServiceEndpoint(iamEndpoint);
+            iamConfig.SetServiceControlEndpoint(iamEndpoint);
+            iamConfig.SetResourceManagerEndpoint(iamEndpoint);
+            iamConfig.SetEnableSsl(false);
+
+            iamConfig.SetServiceId("ydb");
+            iamConfig.SetMicroserviceId("data-plane");
+            iamConfig.SetResourceType("resource-manager.cloud");
+
             authConfig.SetAccessServiceEndpoint(iamEndpoint);
             authConfig.SetUseAccessServiceTLS(false);
         }

@@ -465,12 +465,19 @@ struct TEvDescribeSecretsResponse : public TEventLocal<TEvDescribeSecretsRespons
             , Issues(std::move(issues))
         {}
 
-        explicit TDescription(std::vector<TString> secretValues)
+        // reReadOnUse[i] marks a secret whose value changes over time (a secret of type IAM_DELEGATION): a task
+        // that uses it keeps its reference and re-reads it while it runs. usableUntil[i] is the moment after which
+        // such a value must not be handed out any more. Empty means none.
+        explicit TDescription(std::vector<TString> secretValues, std::vector<bool> reReadOnUse = {}, std::vector<TInstant> usableUntil = {})
             : SecretValues(std::move(secretValues))
+            , ReReadOnUse(std::move(reReadOnUse))
+            , UsableUntil(std::move(usableUntil))
             , Status(Ydb::StatusIds::SUCCESS)
         {}
 
         const std::vector<TString> SecretValues;
+        const std::vector<bool> ReReadOnUse;
+        const std::vector<TInstant> UsableUntil;
         const Ydb::StatusIds::StatusCode Status = Ydb::StatusIds::STATUS_CODE_UNSPECIFIED;
         const NYql::TIssues Issues;
     };

@@ -1240,6 +1240,12 @@ void TPathDescriber::DescribeSecret(const TActorContext&, TPathId pathId, TPathE
         entry->SetValue(secretInfo->Description.GetValue());
     }
     entry->SetVersion(secretInfo->Description.GetVersion());
+    // Type and delegation parameters are not sensitive and are always described:
+    // consumers need them to obtain tokens and the scheme cache carries them.
+    entry->SetType(secretInfo->Description.GetType());
+    if (secretInfo->Description.HasIamDelegation()) {
+        entry->MutableIamDelegation()->CopyFrom(secretInfo->Description.GetIamDelegation());
+    }
 }
 
 void TPathDescriber::DescribeStreamingQuery(TPathId pathId, TPathElement::TPtr pathEl) {

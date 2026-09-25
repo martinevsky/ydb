@@ -127,6 +127,18 @@ def get_ydb_config(request, enable_fq_connector=None):
         },
     }
 
+    # IAM delegation secrets. The emulator serves IamTokenService, ServiceControlService and
+    # OperationService on the same port; in a real cloud the token service and the IAM control
+    # plane are two endpoints of two different services.
+    iam_config = {
+        "token_service_endpoint": iam_emulator_endpoint,
+        "service_control_endpoint": iam_emulator_endpoint,
+        "service_id": "ydb",
+        "microservice_id": "data-plane",
+        "resource_type": "resource-manager.cloud",
+        "enable_ssl": False,
+    }
+
     config = KikimrConfigGenerator(
         erasure=Erasure.NONE,
         pq_client_service_types=["yandex-query"],
@@ -173,6 +185,7 @@ def get_ydb_config(request, enable_fq_connector=None):
     }
     config.yaml_config["auth_config"]["access_service_endpoint"] = iam_emulator_endpoint
     config.yaml_config["auth_config"]["use_access_service_tls"] = False
+    config.yaml_config["iam_config"] = iam_config
     return config
 
 

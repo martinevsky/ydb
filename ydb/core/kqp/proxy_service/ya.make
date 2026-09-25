@@ -29,6 +29,8 @@ PEERDIR(
     ydb/core/mind
     ydb/core/mon
     ydb/core/protos
+    ydb/core/kqp/iam_delegation
+    ydb/core/security/iam_delegation
     ydb/core/tx/scheme_cache
     ydb/core/tx/schemeshard
     ydb/core/tx/tx_proxy

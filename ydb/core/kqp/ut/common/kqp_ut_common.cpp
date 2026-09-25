@@ -134,7 +134,9 @@ TKikimrRunner::TKikimrRunner(const TKikimrSettings& settings) {
 
     effectiveKqpSettings.insert(effectiveKqpSettings.end(), settings.KqpSettings.begin(), settings.KqpSettings.end());
 
-    NKikimrProto::TAuthConfig authConfig;
+    // the ticket parser is configured from the server settings, not from AppConfig: let tests
+    // enable external authentication (e.g. an access service emulator) through AppConfig.AuthConfig
+    NKikimrProto::TAuthConfig authConfig = settings.AppConfig.GetAuthConfig();
     authConfig.SetUseBuiltinDomain(true);
     ServerSettings.Reset(MakeHolder<Tests::TServerSettings>(mbusPort, authConfig, settings.PQConfig));
     ServerSettings->SetDomainName(settings.DomainRoot);

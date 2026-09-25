@@ -32,6 +32,21 @@ TString InterruptInheritanceExceptDescribe(const TString& initialAcl) {
     return resultAcl;
 }
 
+// Validates the parameters of an IAM delegation secret coming from KQP.
+// Returns an error message or nothing when the parameters are complete.
+std::optional<TString> ValidateIamDelegation(const NKikimrSchemeOp::TIamDelegation& delegation) {
+    if (delegation.GetServiceAccountId().empty()) {
+        return "IamDelegation.ServiceAccountId must be set for secrets of type IAM_DELEGATION";
+    }
+    if (delegation.GetCloudId().empty()) {
+        return "IamDelegation.CloudId must be set for secrets of type IAM_DELEGATION";
+    }
+    if (delegation.GetReferrerId().empty()) {
+        return "IamDelegation.ReferrerId must be set for secrets of type IAM_DELEGATION";
+    }
+    return std::nullopt;
+}
+
 } // namespace NKikimr::NSchemeShard
 
 namespace {
@@ -275,7 +290,35 @@ public:
 
         NKikimrSchemeOp::TSecretDescription secretDescription;
         secretDescription.SetName(createSecretProto.GetName());
-        secretDescription.SetValue(createSecretProto.GetValue());
+        secretDescription.SetType(createSecretProto.GetType());
+        switch (createSecretProto.GetType()) {
+            case NKikimrSchemeOp::SECRET_TYPE_VALUE:
+                if (createSecretProto.HasIamDelegation()) {
+                    result->SetError(NKikimrScheme::StatusInvalidParameter,
+                        "IamDelegation is allowed only for secrets of type IAM_DELEGATION");
+                    return result;
+                }
+                secretDescription.SetValue(createSecretProto.GetValue());
+                break;
+            case NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION: {
+                if (!AppData()->FeatureFlags.GetEnableIamDelegationSecrets()) {
+                    result->SetError(NKikimrScheme::StatusPreconditionFailed,
+                        "IAM delegation secrets are disabled. Please contact your system administrator to enable it");
+                    return result;
+                }
+                if (createSecretProto.HasValue()) {
+                    result->SetError(NKikimrScheme::StatusInvalidParameter,
+                        "Value is not allowed for secrets of type IAM_DELEGATION");
+                    return result;
+                }
+                if (const auto error = ValidateIamDelegation(createSecretProto.GetIamDelegation())) {
+                    result->SetError(NKikimrScheme::StatusInvalidParameter, *error);
+                    return result;
+                }
+                secretDescription.MutableIamDelegation()->CopyFrom(createSecretProto.GetIamDelegation());
+                break;
+            }
+        }
 
         const auto secretInfo = TSecretInfo::Create(std::move(secretDescription));
         context.SS->Secrets.Set(secretPathId, secretInfo);
@@ -363,6 +406,10 @@ ISubOperation::TPtr CreateNewSecret(TOperationId id, const TTxTransaction& tx, T
             }
             if (createSecretProto.HasInheritPermissions()) {
                 alterSecret->SetInheritPermissions(createSecretProto.GetInheritPermissions());
+            }
+            alterSecret->SetType(createSecretProto.GetType());
+            if (createSecretProto.HasIamDelegation()) {
+                alterSecret->MutableIamDelegation()->CopyFrom(createSecretProto.GetIamDelegation());
             }
             return CreateAlterSecret(id, alterTx);
         }

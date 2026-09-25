@@ -1037,4 +1037,753 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
             UNIT_ASSERT_C(foundUser2, "ACL should contain user2's DescribeSchema grant (picked up from parent)");
         }
     }
+
+    Y_UNIT_TEST(CreateIamDelegationSecret) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+
+        TestMkDir(runtime, ++txId, "/MyRoot", "dir");
+        env.TestWaitNotification(runtime, txId);
+
+        TestCreateSecret(runtime, ++txId, "/MyRoot/dir",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-1"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-1"
+                }
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        const auto check = [&]() {
+            // delegation parameters are described without ReturnSecretValue
+            const auto describeResult = DescribePath(runtime, "/MyRoot/dir/sa-secret");
+            TestDescribeResult(describeResult, {NLs::Finished, NLs::IsSecret});
+            ExpectEqualSecretDescription(describeResult, "sa-secret", Nothing(), 0);
+            const auto& secret = describeResult.GetPathDescription().GetSecretDescription();
+            UNIT_ASSERT_EQUAL(secret.GetType(), NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa-1");
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetCloudId(), "b1g-cloud-1");
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), "referrer-1");
+
+            // no value even when explicitly requested
+            const auto withValue = DescribePathWithSecretValue(runtime, "/MyRoot/dir/sa-secret");
+            UNIT_ASSERT(withValue.GetPathDescription().GetSecretDescription().GetValue().empty());
+        };
+        check();
+
+        TActorId sender = runtime.AllocateEdgeActor();
+        RebootTablet(runtime, TTestTxConfig::SchemeShard, sender);
+        check();
+
+        // plain secrets keep the default type
+        TestCreateSecret(runtime, ++txId, "/MyRoot/dir",
+            R"(
+                Name: "plain-secret"
+                Value: "test-value"
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+        const auto plain = DescribePath(runtime, "/MyRoot/dir/plain-secret");
+        UNIT_ASSERT_EQUAL(plain.GetPathDescription().GetSecretDescription().GetType(), NKikimrSchemeOp::SECRET_TYPE_VALUE);
+        UNIT_ASSERT(!plain.GetPathDescription().GetSecretDescription().HasIamDelegation());
+    }
+
+    Y_UNIT_TEST(IamDelegationSecretOnlyWhereTokenIsExpected) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime, TTestEnvOptions().RunFakeConfigDispatcher(true));
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+
+        TestCreateSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-1"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-1"
+                }
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+        TestCreateSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "plain-secret"
+                Value: "signature"
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        // the value of a delegation secret is an IAM token: it cannot be used as a key signature or a password
+        TestCreateExternalDataSource(runtime, ++txId, "/MyRoot", R"(
+                Name: "SaSource"
+                SourceType: "ObjectStorage"
+                Location: "https://s3.cloud.net/my_bucket"
+                Auth {
+                    ServiceAccount {
+                        Id: "aje-sa-1"
+                        SecretName: "/MyRoot/sa-secret"
+                    }
+                }
+            )", {{NKikimrScheme::StatusSchemeError, "has type IAM_DELEGATION"}});
+        TestCreateExternalDataSource(runtime, ++txId, "/MyRoot", R"(
+                Name: "BasicSource"
+                SourceType: "PostgreSQL"
+                Location: "localhost:5432"
+                Auth {
+                    Basic {
+                        Login: "user"
+                        PasswordSecretName: "/MyRoot/sa-secret"
+                    }
+                }
+                Properties {
+                    Properties {
+                        key: "database_name",
+                        value: "postgres"
+                    }
+                }
+            )", {{NKikimrScheme::StatusSchemeError, "has type IAM_DELEGATION"}});
+
+        // where a token is expected it is accepted; a value secret is accepted everywhere as before
+        TestCreateExternalDataSource(runtime, ++txId, "/MyRoot", R"(
+                Name: "TokenSource"
+                SourceType: "Ydb"
+                Location: "localhost:2135"
+                Auth {
+                    Token {
+                        TokenSecretName: "/MyRoot/sa-secret"
+                    }
+                }
+                Properties {
+                    Properties {
+                        key: "database_name",
+                        value: "/Root"
+                    }
+                }
+            )", {NKikimrScheme::StatusAccepted});
+        env.TestWaitNotification(runtime, txId);
+        TestCreateExternalDataSource(runtime, ++txId, "/MyRoot", R"(
+                Name: "PlainSaSource"
+                SourceType: "ObjectStorage"
+                Location: "https://s3.cloud.net/my_bucket"
+                Auth {
+                    ServiceAccount {
+                        Id: "aje-sa-1"
+                        SecretName: "/MyRoot/plain-secret"
+                    }
+                }
+            )", {NKikimrScheme::StatusAccepted});
+        env.TestWaitNotification(runtime, txId);
+        TestLs(runtime, "/MyRoot/TokenSource", false, NLs::PathExist);
+        TestLs(runtime, "/MyRoot/PlainSaSource", false, NLs::PathExist);
+    }
+
+    // The remaining places a secret value is interpreted as something other than a token (AWS keys, MDB basic),
+    // and the alter of a data source that switches to such a place over a delegation secret
+    Y_UNIT_TEST(IamDelegationSecretRejectedByAwsMdbAndAlter) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime, TTestEnvOptions().RunFakeConfigDispatcher(true));
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+
+        TestCreateSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-1"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-1"
+                }
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+        TestCreateSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "plain-secret"
+                Value: "plain"
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        TestCreateExternalDataSource(runtime, ++txId, "/MyRoot", R"(
+                Name: "AwsSource"
+                SourceType: "ObjectStorage"
+                Location: "https://s3.cloud.net/my_bucket"
+                Auth {
+                    Aws {
+                        AwsAccessKeyIdSecretName: "/MyRoot/plain-secret"
+                        AwsSecretAccessKeySecretName: "/MyRoot/sa-secret"
+                        AwsRegion: "ru-central1"
+                    }
+                }
+            )", {{NKikimrScheme::StatusSchemeError, "has type IAM_DELEGATION"}});
+        TestCreateExternalDataSource(runtime, ++txId, "/MyRoot", R"(
+                Name: "AwsSource"
+                SourceType: "ObjectStorage"
+                Location: "https://s3.cloud.net/my_bucket"
+                Auth {
+                    Aws {
+                        AwsAccessKeyIdSecretName: "/MyRoot/sa-secret"
+                        AwsSecretAccessKeySecretName: "/MyRoot/plain-secret"
+                        AwsRegion: "ru-central1"
+                    }
+                }
+            )", {{NKikimrScheme::StatusSchemeError, "has type IAM_DELEGATION"}});
+        TestCreateExternalDataSource(runtime, ++txId, "/MyRoot", R"(
+                Name: "MdbSource"
+                SourceType: "PostgreSQL"
+                Location: "localhost:5432"
+                Auth {
+                    MdbBasic {
+                        ServiceAccountId: "aje-sa-1"
+                        ServiceAccountSecretName: "/MyRoot/sa-secret"
+                        Login: "user"
+                        PasswordSecretName: "/MyRoot/plain-secret"
+                    }
+                }
+                Properties {
+                    Properties {
+                        key: "database_name",
+                        value: "postgres"
+                    }
+                }
+            )", {{NKikimrScheme::StatusSchemeError, "has type IAM_DELEGATION"}});
+        TestCreateExternalDataSource(runtime, ++txId, "/MyRoot", R"(
+                Name: "MdbSource"
+                SourceType: "PostgreSQL"
+                Location: "localhost:5432"
+                Auth {
+                    MdbBasic {
+                        ServiceAccountId: "aje-sa-1"
+                        ServiceAccountSecretName: "/MyRoot/plain-secret"
+                        Login: "user"
+                        PasswordSecretName: "/MyRoot/sa-secret"
+                    }
+                }
+                Properties {
+                    Properties {
+                        key: "database_name",
+                        value: "postgres"
+                    }
+                }
+            )", {{NKikimrScheme::StatusSchemeError, "has type IAM_DELEGATION"}});
+        TestLs(runtime, "/MyRoot/AwsSource", false, NLs::PathNotExist);
+        TestLs(runtime, "/MyRoot/MdbSource", false, NLs::PathNotExist);
+
+        // a data source created over the delegation secret as a token cannot be altered to use it as a key signature
+        TestCreateExternalDataSource(runtime, ++txId, "/MyRoot", R"(
+                Name: "TokenSource"
+                SourceType: "Ydb"
+                Location: "localhost:2135"
+                Auth {
+                    Token {
+                        TokenSecretName: "/MyRoot/sa-secret"
+                    }
+                }
+                Properties {
+                    Properties {
+                        key: "database_name",
+                        value: "/Root"
+                    }
+                }
+            )", {NKikimrScheme::StatusAccepted});
+        env.TestWaitNotification(runtime, txId);
+        TestCreateExternalDataSourceOrReplace(runtime, ++txId, "/MyRoot", R"(
+                Name: "TokenSource"
+                SourceType: "Ydb"
+                Location: "localhost:2135"
+                Auth {
+                    ServiceAccount {
+                        Id: "aje-sa-1"
+                        SecretName: "/MyRoot/sa-secret"
+                    }
+                }
+                Properties {
+                    Properties {
+                        key: "database_name",
+                        value: "/Root"
+                    }
+                }
+            )", {{NKikimrScheme::StatusSchemeError, "has type IAM_DELEGATION"}});
+        {
+            const auto describe = DescribePath(runtime, "/MyRoot/TokenSource");
+            UNIT_ASSERT_VALUES_EQUAL(describe.GetPathDescription().GetExternalDataSourceDescription().GetAuth().GetToken().GetTokenSecretName(), "/MyRoot/sa-secret");
+        }
+        // ... but to another token secret
+        TestCreateExternalDataSourceOrReplace(runtime, ++txId, "/MyRoot", R"(
+                Name: "TokenSource"
+                SourceType: "Ydb"
+                Location: "localhost:2135"
+                Auth {
+                    Token {
+                        TokenSecretName: "/MyRoot/plain-secret"
+                    }
+                }
+                Properties {
+                    Properties {
+                        key: "database_name",
+                        value: "/Root"
+                    }
+                }
+            )", {NKikimrScheme::StatusAccepted});
+        env.TestWaitNotification(runtime, txId);
+        {
+            const auto describe = DescribePath(runtime, "/MyRoot/TokenSource");
+            UNIT_ASSERT_VALUES_EQUAL(describe.GetPathDescription().GetExternalDataSourceDescription().GetAuth().GetToken().GetTokenSecretName(), "/MyRoot/plain-secret");
+        }
+    }
+
+    // DROP DATABASE (the force drop of a subdomain) removes a delegation secret like any other path, without
+    // revoking its delegation in IAM: the schemeshard talks to no IAM service, so the delegation named by the
+    // dropped record stays in IAM until IAM support revokes it by its referrer (the RFC accepts this: only
+    // DROP SECRET through the query service revokes). This test pins that the drop is a plain schema operation.
+    Y_UNIT_TEST(ForceDropSubDomainLeavesTheDelegationInIam) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+
+        TestCreateSubDomain(runtime, ++txId, "/MyRoot", R"(
+            Name: "SubDomain"
+        )");
+        env.TestWaitNotification(runtime, txId);
+        TestCreateSecret(runtime, ++txId, "/MyRoot/SubDomain",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-1"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "ydb.delegation.0000000000000000000000000000000d"
+                }
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+        TestLs(runtime, "/MyRoot/SubDomain/sa-secret", false, NLs::PathExist);
+
+        // the whole subdomain is dropped with the secret inside: accepted at once, nothing waits for IAM
+        TestForceDropSubDomain(runtime, ++txId, "/MyRoot", "SubDomain");
+        env.TestWaitNotification(runtime, txId);
+        TestLs(runtime, "/MyRoot/SubDomain/sa-secret", false, NLs::PathNotExist);
+        TestLs(runtime, "/MyRoot/SubDomain", false, NLs::PathNotExist);
+
+        // the secret is gone for good: the same path can be created again with another delegation
+        TestCreateSubDomain(runtime, ++txId, "/MyRoot", R"(
+            Name: "SubDomain"
+        )");
+        env.TestWaitNotification(runtime, txId);
+        TestCreateSecret(runtime, ++txId, "/MyRoot/SubDomain",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-2"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "ydb.delegation.0000000000000000000000000000000e"
+                }
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+        const auto describe = DescribePath(runtime, "/MyRoot/SubDomain/sa-secret");
+        UNIT_ASSERT_VALUES_EQUAL(describe.GetPathDescription().GetSecretDescription().GetIamDelegation().GetServiceAccountId(), "aje-sa-2");
+    }
+
+    Y_UNIT_TEST(IamDelegationSecretDisabledByFeatureFlag) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(false);
+        ui64 txId = 100;
+
+        TestCreateSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-1"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-1"
+                }
+            )",
+            {EStatus::StatusPreconditionFailed}
+        );
+        env.TestWaitNotification(runtime, txId);
+        TestLs(runtime, "/MyRoot/sa-secret", false, NLs::PathNotExist);
+    }
+
+    Y_UNIT_TEST(IamDelegationSecretValidation) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+
+        // value is not allowed for delegation secrets
+        TestCreateSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                Value: "test-value"
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-1"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-1"
+                }
+            )",
+            {EStatus::StatusInvalidParameter}
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        // incomplete delegation parameters
+        for (const TString& delegation : TVector<TString>{
+            R"(CloudId: "b1g-cloud-1" ReferrerId: "referrer-1")",
+            R"(ServiceAccountId: "aje-sa-1" ReferrerId: "referrer-1")",
+            R"(ServiceAccountId: "aje-sa-1" CloudId: "b1g-cloud-1")",
+        }) {
+            TestCreateSecret(runtime, ++txId, "/MyRoot",
+                Sprintf(R"(
+                    Name: "sa-secret"
+                    Type: SECRET_TYPE_IAM_DELEGATION
+                    IamDelegation { %s }
+                )", delegation.data()),
+                {EStatus::StatusInvalidParameter}
+            );
+            env.TestWaitNotification(runtime, txId);
+        }
+
+        // delegation parameters are not allowed for plain secrets
+        TestCreateSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "plain-secret"
+                Value: "test-value"
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-1"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-1"
+                }
+            )",
+            {EStatus::StatusInvalidParameter}
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        TestLs(runtime, "/MyRoot/sa-secret", false, NLs::PathNotExist);
+        TestLs(runtime, "/MyRoot/plain-secret", false, NLs::PathNotExist);
+    }
+
+    Y_UNIT_TEST(AlterIamDelegationSecret) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+
+        TestCreateSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-1"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-1"
+                }
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        TestAlterSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-2"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-2"
+                }
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        const auto check = [&]() {
+            const auto describeResult = DescribePath(runtime, "/MyRoot/sa-secret");
+            TestDescribeResult(describeResult, {NLs::Finished, NLs::IsSecret});
+            ExpectEqualSecretDescription(describeResult, "sa-secret", Nothing(), 1);
+            const auto& secret = describeResult.GetPathDescription().GetSecretDescription();
+            UNIT_ASSERT_EQUAL(secret.GetType(), NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa-2");
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), "referrer-2");
+        };
+        check();
+
+        TActorId sender = runtime.AllocateEdgeActor();
+        RebootTablet(runtime, TTestTxConfig::SchemeShard, sender);
+        check();
+
+        // type cannot be changed, value is not allowed
+        TestAlterSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_VALUE
+                Value: "test-value"
+            )",
+            {EStatus::StatusInvalidParameter}
+        );
+        env.TestWaitNotification(runtime, txId);
+        TestAlterSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Value: "test-value"
+            )",
+            {EStatus::StatusInvalidParameter}
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        // a plain secret cannot become a delegation secret
+        TestCreateSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "plain-secret"
+                Value: "test-value"
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+        TestAlterSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "plain-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-1"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-1"
+                }
+            )",
+            {EStatus::StatusInvalidParameter}
+        );
+        env.TestWaitNotification(runtime, txId);
+        TestAlterSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "plain-secret"
+                Value: "test-value-2"
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-1"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-1"
+                }
+            )",
+            {EStatus::StatusInvalidParameter}
+        );
+        env.TestWaitNotification(runtime, txId);
+        check();
+    }
+
+    Y_UNIT_TEST(CreateOrReplaceIamDelegationSecret) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+
+        TestCreateSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-1"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-1"
+                }
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        // CREATE OR REPLACE over an existing delegation secret is converted to ALTER
+        TestCreateSecretOrReplace(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-2"
+                    CloudId: "b1g-cloud-2"
+                    ReferrerId: "referrer-2"
+                }
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        const auto describeResult = DescribePath(runtime, "/MyRoot/sa-secret");
+        ExpectEqualSecretDescription(describeResult, "sa-secret", Nothing(), 1);
+        const auto& secret = describeResult.GetPathDescription().GetSecretDescription();
+        UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa-2");
+        UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetCloudId(), "b1g-cloud-2");
+        UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), "referrer-2");
+
+        // CREATE OR REPLACE cannot change the type
+        TestCreateSecretOrReplace(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Value: "test-value"
+            )",
+            {EStatus::StatusInvalidParameter}
+        );
+        env.TestWaitNotification(runtime, txId);
+    }
+
+    Y_UNIT_TEST(IamDelegationSecretAlterDisabledByFeatureFlag) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+
+        TestCreateSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-1"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-1"
+                }
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        // the feature is switched off: existing delegation secrets cannot be altered any more
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(false);
+        TestAlterSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-2"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-2"
+                }
+            )",
+            {EStatus::StatusPreconditionFailed}
+        );
+        env.TestWaitNotification(runtime, txId);
+        {
+            const auto describeResult = DescribePath(runtime, "/MyRoot/sa-secret");
+            ExpectEqualSecretDescription(describeResult, "sa-secret", Nothing(), 0);
+            UNIT_ASSERT_VALUES_EQUAL(describeResult.GetPathDescription().GetSecretDescription().GetIamDelegation().GetServiceAccountId(), "aje-sa-1");
+        }
+
+        // but they can still be dropped
+        TestDropSecret(runtime, ++txId, "/MyRoot", "sa-secret");
+        env.TestWaitNotification(runtime, txId);
+        TestLs(runtime, "/MyRoot/sa-secret", false, NLs::PathNotExist);
+    }
+
+    Y_UNIT_TEST(AlterIamDelegationSecretValidation) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+
+        TestCreateSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-1"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-1"
+                }
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        // the type may be omitted: the stored one is kept
+        TestAlterSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-2"
+                    CloudId: "b1g-cloud-2"
+                    ReferrerId: "referrer-2"
+                }
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+        {
+            const auto describeResult = DescribePath(runtime, "/MyRoot/sa-secret");
+            ExpectEqualSecretDescription(describeResult, "sa-secret", Nothing(), 1);
+            const auto& secret = describeResult.GetPathDescription().GetSecretDescription();
+            UNIT_ASSERT_EQUAL(secret.GetType(), NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa-2");
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetCloudId(), "b1g-cloud-2");
+            UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), "referrer-2");
+        }
+
+        // incomplete delegation parameters are rejected
+        for (const TString& delegation : TVector<TString>{
+            R"(CloudId: "b1g-cloud-3" ReferrerId: "referrer-3")",
+            R"(ServiceAccountId: "aje-sa-3" ReferrerId: "referrer-3")",
+            R"(ServiceAccountId: "aje-sa-3" CloudId: "b1g-cloud-3")",
+        }) {
+            TestAlterSecret(runtime, ++txId, "/MyRoot",
+                Sprintf(R"(
+                    Name: "sa-secret"
+                    IamDelegation { %s }
+                )", delegation.data()),
+                {EStatus::StatusInvalidParameter}
+            );
+            env.TestWaitNotification(runtime, txId);
+        }
+
+        // the type alone without delegation parameters is rejected
+        TestAlterSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "sa-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+            )",
+            {EStatus::StatusInvalidParameter}
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        // nothing changed
+        {
+            const auto describeResult = DescribePath(runtime, "/MyRoot/sa-secret");
+            ExpectEqualSecretDescription(describeResult, "sa-secret", Nothing(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(describeResult.GetPathDescription().GetSecretDescription().GetIamDelegation().GetServiceAccountId(), "aje-sa-2");
+        }
+    }
+
+    Y_UNIT_TEST(CreateOrReplaceValueSecretWithDelegationFails) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+
+        TestCreateSecret(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "plain-secret"
+                Value: "test-value"
+            )"
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        // CREATE OR REPLACE over a plain secret cannot turn it into a delegation secret
+        TestCreateSecretOrReplace(runtime, ++txId, "/MyRoot",
+            R"(
+                Name: "plain-secret"
+                Type: SECRET_TYPE_IAM_DELEGATION
+                IamDelegation {
+                    ServiceAccountId: "aje-sa-1"
+                    CloudId: "b1g-cloud-1"
+                    ReferrerId: "referrer-1"
+                }
+            )",
+            {EStatus::StatusInvalidParameter}
+        );
+        env.TestWaitNotification(runtime, txId);
+
+        const auto describeResult = DescribePathWithSecretValue(runtime, "/MyRoot/plain-secret");
+        TestDescribeResult(describeResult, {NLs::Finished, NLs::IsSecret});
+        ExpectEqualSecretDescription(describeResult, "plain-secret", "test-value", 0);
+        const auto& secret = describeResult.GetPathDescription().GetSecretDescription();
+        UNIT_ASSERT_EQUAL(secret.GetType(), NKikimrSchemeOp::SECRET_TYPE_VALUE);
+        UNIT_ASSERT(!secret.HasIamDelegation());
+    }
 }

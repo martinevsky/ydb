@@ -20,12 +20,15 @@ SRCS(
     datastreams_ut.cpp
     kqp_has_path_ut.cpp
     streaming_aggregation_ut.cpp
+    kqp_iam_delegation_secrets_ut.cpp
     streaming_ddl_ut.cpp
     streaming_deferrd_commit_write_ut.cpp
     streaming_sys_view_ut.cpp
 )
 
 PEERDIR(
+    ydb/services/scheme_secret
+    ydb/services/scheme_secret/ut/common
     library/cpp/protobuf/interop
     library/cpp/threading/local_executor
     ydb/core/base
@@ -35,6 +38,7 @@ PEERDIR(
     ydb/core/kqp/ut/federated_query/common
     ydb/core/protos
     ydb/core/sys_view/common
+    ydb/core/security/iam_delegation
     ydb/core/testlib
     ydb/library/grpc/server/actors
     ydb/library/testlib/common

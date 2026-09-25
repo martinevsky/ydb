@@ -12,6 +12,8 @@ PEERDIR(
     ydb/core/kqp/query_compiler
     ydb/core/kqp/ut/common
     ydb/core/resource_pools
+    ydb/services/scheme_secret/ut/common
+    yql/essentials/providers/common/structured_token
     yql/essentials/ast
     yql/essentials/sql/pg_dummy
     yql/essentials/sql/v1/translation

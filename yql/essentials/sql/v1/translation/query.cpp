@@ -4363,6 +4363,14 @@ private:
                 options = L(options, Q(Y(BuildQuotedAtom(Pos_, "inherit_permissions"))));
             }
         }
+        const auto addStringOption = [&](const TString& name, const TMaybe<TDeferredAtom>& value) {
+            if (value && value->HasNode()) {
+                options = L(options, Q(Y(BuildQuotedAtom(Pos_, name), value->Build())));
+            }
+        };
+        addStringOption("type", Params_.Type);
+        addStringOption("service_account_id", Params_.ServiceAccountId);
+        addStringOption("resource", Params_.CloudId);
         return options;
     }
 

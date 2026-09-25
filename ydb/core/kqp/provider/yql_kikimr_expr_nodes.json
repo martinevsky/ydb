@@ -676,7 +676,10 @@
                 {"Index": 4, "Name": "InheritPermissions", "Type": "TCoAtom"},
                 {"Index": 5, "Name": "ValueParamName", "Type": "TCoAtom"},
                 {"Index": 6, "Name": "ReplaceIfExists", "Type": "TCoAtom"},
-                {"Index": 7, "Name": "ExistingOk", "Type": "TCoAtom"}
+                {"Index": 7, "Name": "ExistingOk", "Type": "TCoAtom"},
+                {"Index": 8, "Name": "Type", "Type": "TCoAtom"},
+                {"Index": 9, "Name": "ServiceAccountId", "Type": "TCoAtom"},
+                {"Index": 10, "Name": "CloudId", "Type": "TCoAtom"}
             ]
         },
         {
@@ -689,7 +692,10 @@
                 {"Index": 2, "Name": "Secret", "Type": "TCoAtom"},
                 {"Index": 3, "Name": "Value", "Type": "TCoAtom"},
                 {"Index": 4, "Name": "ValueParamName", "Type": "TCoAtom"},
-                {"Index": 5, "Name": "MissingOk", "Type": "TCoAtom"}
+                {"Index": 5, "Name": "MissingOk", "Type": "TCoAtom"},
+                {"Index": 6, "Name": "Type", "Type": "TCoAtom"},
+                {"Index": 7, "Name": "ServiceAccountId", "Type": "TCoAtom"},
+                {"Index": 8, "Name": "CloudId", "Type": "TCoAtom"}
             ]
         },
         {

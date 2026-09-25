@@ -1497,6 +1497,11 @@ public:
 
     TMaybe<TDeferredAtom> InheritPermissions;
 
+    // TYPE="VALUE" (default) or TYPE="IAM_DELEGATION"; parameters of IAM delegation secrets:
+    TMaybe<TDeferredAtom> Type;
+    TMaybe<TDeferredAtom> ServiceAccountId;
+    TMaybe<TDeferredAtom> CloudId;
+
     bool ValidateParameters(TContext& ctx, TPosition stmBeginPos, TSecretParameters::EOperationMode mode);
 };
 

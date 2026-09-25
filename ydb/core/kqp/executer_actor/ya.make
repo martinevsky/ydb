@@ -6,6 +6,7 @@ SRCS(
     kqp_scheme_executer.cpp
     kqp_executer_impl.cpp
     kqp_executer_stats.cpp
+    kqp_iam_delegation_secret_orchestrator.cpp
     kqp_literal_executer.cpp
     kqp_locks_helper.cpp
     kqp_partition_helper.cpp
@@ -36,13 +37,17 @@ PEERDIR(
     ydb/core/kqp/executer_actor/shards_resolver
     ydb/core/kqp/federated_query/actors
     ydb/core/kqp/gateway/local_rpc
+    ydb/core/kqp/iam_delegation
     ydb/core/kqp/query_compiler
     ydb/core/kqp/rm_service
     ydb/core/kqp/topics
     ydb/core/protos
+    ydb/core/security/iam_delegation
+    ydb/services/scheme_secret
     ydb/core/sys_view/common
     ydb/core/tx/long_tx_service/public
     ydb/core/ydb_convert
+    ydb/library/actors/async
     ydb/library/actors/core
     ydb/library/mkql_proto
     ydb/library/mkql_proto/protos

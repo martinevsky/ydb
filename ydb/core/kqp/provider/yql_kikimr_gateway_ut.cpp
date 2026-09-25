@@ -4,6 +4,8 @@
 #include <ydb/core/kqp/gateway/kqp_metadata_loader.h>
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
 #include <ydb/core/resource_pools/resource_pool_settings.h>
+#include <ydb/services/scheme_secret/ut/common/helpers.h>
+#include <yql/essentials/providers/common/structured_token/yql_token_builder.h>
 
 #include <util/generic/maybe.h>
 
@@ -698,6 +700,120 @@ Y_UNIT_TEST_SUITE(KikimrIcGateway) {
         UNIT_ASSERT_C(response.Success(), response.Issues().ToOneLineString());
         UNIT_ASSERT_VALUES_EQUAL(response.Metadata->ExternalSource.Token, secretTokenValue);
         UNIT_ASSERT_VALUES_EQUAL(response.Metadata->ExternalSource.Properties.GetProperties().size(), 0);
+    }
+
+    Y_UNIT_TEST(TestLoadIamDelegationSecretFromExternalDataSourceMetadata) {
+        NKikimrConfig::TAppConfig appCfg;
+        appCfg.MutableQueryServiceConfig()->AddAvailableExternalDataSources("Ydb");
+        TKikimrRunner kikimr{ NKqp::TKikimrSettings(appCfg) };
+        auto& runtime = *kikimr.GetTestServer().GetRuntime();
+        auto& featureFlags = runtime.GetAppData(0).FeatureFlags;
+        featureFlags.SetEnableExternalDataSources(true);
+        featureFlags.SetEnableSchemaSecrets(true);
+        featureFlags.SetEnableIamDelegationSecrets(true);
+        auto db = kikimr.GetTableClient();
+        auto session = db.CreateSession().GetValueSync().GetSession();
+
+        // the secret is created directly and the tokens come from a stand-in of the token service: no IAM
+        const TString secretPath = "/Root/sa-delegation";
+        NSecret::CreateIamDelegationSecretDirect(runtime, secretPath, "aje-1", "b1g-1", "referrer-1");
+        NSecret::RegisterFakeIamDelegatedTokenService(runtime, {{"aje-1", "b1g-1"}, {"aje-2", "b1g-1"}});
+
+        const TString externalDataSourceName = "/Root/DelegatedDataSource";
+        const auto createSource = [&](const TString& authSettings) {
+            return session.ExecuteSchemeQuery(TStringBuilder() << R"(
+                CREATE EXTERNAL DATA SOURCE `)" << externalDataSourceName << R"(` WITH (
+                    SOURCE_TYPE="Ydb",
+                    LOCATION="localhost:2135",
+                    DATABASE_NAME="/Root",
+                    )" << authSettings << R"(
+                );)").GetValueSync();
+        };
+
+        { // a delegation secret is a token secret: it cannot stand where a key signature is expected
+            const auto result = createSource(TStringBuilder() << R"(AUTH_METHOD="SERVICE_ACCOUNT", SERVICE_ACCOUNT_ID="aje-1", SERVICE_ACCOUNT_SECRET_PATH=")" << secretPath << '"');
+            UNIT_ASSERT_C(!result.IsSuccess(), result.GetIssues().ToString());
+            UNIT_ASSERT_STRING_CONTAINS(result.GetIssues().ToOneLineString(), "has type IAM_DELEGATION");
+        }
+        {
+            const auto result = createSource(TStringBuilder() << R"(AUTH_METHOD="TOKEN", TOKEN_SECRET_PATH=")" << secretPath << '"');
+            UNIT_ASSERT_C(result.GetStatus() == NYdb::EStatus::SUCCESS, result.GetIssues().ToString());
+        }
+
+        // the metadata loader reads the secret like any token secret and gets the current token
+        auto gateway = GetIcGateway(kikimr.GetTestServer());
+        const auto loadSource = [&]() {
+            auto responseFuture = gateway->LoadTableMetadata(TestCluster, externalDataSourceName, IKikimrGateway::TLoadTableMetadataSettings().WithAuthInfo(true));
+            responseFuture.Wait();
+            return responseFuture.GetValue();
+        };
+        {
+            const auto response = loadSource();
+            UNIT_ASSERT_C(response.Success(), response.Issues().ToOneLineString());
+            const auto& source = response.Metadata->ExternalSource;
+            UNIT_ASSERT(source.DataSourceAuth.HasToken());
+            UNIT_ASSERT_VALUES_EQUAL(source.Token, "delegated-token-b1g-1/aje-1");
+        }
+        { // after ALTER the next read returns a token of the new service account
+            NSecret::AlterIamDelegationSecretDirect(runtime, secretPath, "aje-2", "b1g-1", "referrer-2");
+            const auto response = loadSource();
+            UNIT_ASSERT_C(response.Success(), response.Issues().ToOneLineString());
+            UNIT_ASSERT_VALUES_EQUAL(response.Metadata->ExternalSource.Token, "delegated-token-b1g-1/aje-2");
+        }
+    }
+
+    Y_UNIT_TEST(PlainServiceAccountSecretStillUsesSignature) {
+        NKikimrConfig::TAppConfig appCfg;
+        appCfg.MutableQueryServiceConfig()->AddAvailableExternalDataSources("ObjectStorage");
+        TKikimrRunner kikimr{ NKqp::TKikimrSettings(appCfg) };
+        auto& featureFlags = kikimr.GetTestServer().GetRuntime()->GetAppData(0).FeatureFlags;
+        featureFlags.SetEnableExternalDataSources(true);
+        featureFlags.SetEnableSchemaSecrets(true);
+        featureFlags.SetEnableIamDelegationSecrets(true);
+        auto db = kikimr.GetTableClient();
+        auto session = db.CreateSession().GetValueSync().GetSession();
+
+        // a plain value and a structured token without IAM auth are both used as the signature
+        const TVector<std::pair<TString, TString>> secrets = {
+            {"/Root/plain-signature", "mySaSignature"},
+            {"/Root/structured-signature", NYql::ComposeStructuredTokenJsonForServiceAccount("aje-1", "signature", "")},
+        };
+        ui32 index = 0;
+        for (const auto& [secretPath, secretValue] : secrets) {
+            {
+                const auto result = session.ExecuteSchemeQuery(TStringBuilder() << "CREATE SECRET `" << secretPath << "` WITH (VALUE = '" << secretValue << "');").GetValueSync();
+                UNIT_ASSERT_C(result.GetStatus() == NYdb::EStatus::SUCCESS, result.GetIssues().ToString());
+            }
+            const TString externalDataSourceName = TStringBuilder() << "/Root/SignatureDataSource" << index;
+            const TString externalTableName = TStringBuilder() << "/Root/SignatureTable" << index;
+            ++index;
+            const auto result = session.ExecuteSchemeQuery(TStringBuilder() << R"(
+                CREATE EXTERNAL DATA SOURCE `)" << externalDataSourceName << R"(` WITH (
+                    SOURCE_TYPE="ObjectStorage",
+                    LOCATION="my-bucket",
+                    AUTH_METHOD="SERVICE_ACCOUNT",
+                    SERVICE_ACCOUNT_ID="aje-1",
+                    SERVICE_ACCOUNT_SECRET_PATH=")" << secretPath << R"("
+                );
+                CREATE EXTERNAL TABLE `)" << externalTableName << R"(` (
+                    Key Uint64,
+                    Value String
+                ) WITH (
+                    DATA_SOURCE=")" << externalDataSourceName << R"(",
+                    LOCATION="/"
+                );)").GetValueSync();
+            UNIT_ASSERT_C(result.GetStatus() == NYdb::EStatus::SUCCESS, result.GetIssues().ToString());
+
+            auto gateway = GetIcGateway(kikimr.GetTestServer());
+            auto responseFuture = gateway->LoadTableMetadata(TestCluster, externalTableName, IKikimrGateway::TLoadTableMetadataSettings());
+            responseFuture.Wait();
+            auto response = responseFuture.GetValue();
+            UNIT_ASSERT_C(response.Success(), response.Issues().ToOneLineString());
+            const auto& source = response.Metadata->ExternalSource;
+            UNIT_ASSERT(!source.DataSourceAuth.HasIam());
+            UNIT_ASSERT_VALUES_EQUAL(source.DataSourceAuth.GetServiceAccount().GetId(), "aje-1");
+            UNIT_ASSERT_VALUES_EQUAL(source.ServiceAccountIdSignature, secretValue);
+        }
     }
 
     Y_UNIT_TEST_TWIN(TestSecretsExistingValidation, UseSchemaSecrets) {
