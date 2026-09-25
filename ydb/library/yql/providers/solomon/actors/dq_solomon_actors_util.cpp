@@ -41,15 +41,31 @@ TMaybe<TInstant> ParseTimestamp(
         return {};
     }
 
+    // Solomon has no points before the epoch, which only the wide types can express.
+    const auto nonNegative = [](i64 value) {
+        Y_ENSURE(value >= 0, "Timestamps before 1970-01-01 can't be written to monitoring");
+        return static_cast<ui64>(value);
+    };
+
     switch (scheme.GetDataTypeId()) {
         case NUdf::TDataType<NUdf::TDate>::Id:
         case NUdf::TDataType<NUdf::TTzDate>::Id:
+            return TInstant::Days(timestampValue.Get<ui16>());
         case NUdf::TDataType<NUdf::TDatetime>::Id:
         case NUdf::TDataType<NUdf::TTzDatetime>::Id:
             return TInstant::Seconds(timestampValue.Get<ui32>());
         case NUdf::TDataType<NUdf::TTimestamp>::Id:
         case NUdf::TDataType<NUdf::TTzTimestamp>::Id:
             return TInstant::MicroSeconds(timestampValue.Get<ui64>());
+        case NUdf::TDataType<NUdf::TDate32>::Id:
+        case NUdf::TDataType<NUdf::TTzDate32>::Id:
+            return TInstant::Days(nonNegative(timestampValue.Get<i32>()));
+        case NUdf::TDataType<NUdf::TDatetime64>::Id:
+        case NUdf::TDataType<NUdf::TTzDatetime64>::Id:
+            return TInstant::Seconds(nonNegative(timestampValue.Get<i64>()));
+        case NUdf::TDataType<NUdf::TTimestamp64>::Id:
+        case NUdf::TDataType<NUdf::TTzTimestamp64>::Id:
+            return TInstant::MicroSeconds(nonNegative(timestampValue.Get<i64>()));
         default:
             Y_ENSURE(false, "Bad type for timestamp " << scheme.GetDataTypeId());
     }

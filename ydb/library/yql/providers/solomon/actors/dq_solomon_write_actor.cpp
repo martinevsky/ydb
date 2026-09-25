@@ -65,7 +65,10 @@ const auto RetryPolicy = NYql::NDq::THttpSenderRetryPolicy::GetExponentialBackof
             return ERetryErrorClass::ShortRetry;
         }
 
-        if (resp->Response->Status == "401") {
+        // A request rejected for good (bad request, no access, no shard, too large) fails
+        // the same way on every retry. Timeouts and rate limiting are worth another try.
+        ui32 status = 0;
+        if (TryFromString(resp->Response->Status, status) && status >= 400 && status < 500 && status != 408 && status != 429) {
             return ERetryErrorClass::NoRetry;
         }
 

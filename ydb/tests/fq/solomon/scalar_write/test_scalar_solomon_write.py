@@ -1,3 +1,4 @@
+import datetime
 import logging
 import math
 import os
@@ -670,3 +671,69 @@ class TestScalarSolomonWriteInYdb(SolomonTestBase):
         # The whole query must fail atomically: none of the "Ok" statements are committed.
         self._expect_error(kikimr, sql)
         assert self.read_metrics(shard) == []
+
+
+def _epoch_seconds(ts) -> float:
+    """Emulator timestamps are ISO strings or numbers, in seconds or milliseconds."""
+    if isinstance(ts, str):
+        return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    return ts / 1000 if ts > 10 ** 11 else ts
+
+
+class TestSolomonWriteTimestamps(SolomonTestBase):
+    DAY = datetime.datetime(2026, 5, 14, tzinfo=datetime.timezone.utc).timestamp()
+    MOMENT = datetime.datetime(2026, 5, 14, 9, 0, 0, tzinfo=datetime.timezone.utc).timestamp()
+
+    @pytest.mark.parametrize("ts_expr, expected", [
+        ('Date("2026-05-14")', DAY),
+        ('AddTimezone(Date("2026-05-14"), "UTC")', DAY),
+        ('Datetime("2026-05-14T09:00:00Z")', MOMENT),
+        ('Timestamp("2026-05-14T09:00:00.000000Z")', MOMENT),
+        ('Date32("2026-05-14")', DAY),
+        ('Datetime64("2026-05-14T09:00:00Z")', MOMENT),
+        ('Timestamp64("2026-05-14T09:00:00.000000Z")', MOMENT),
+    ], ids=["Date", "TzDate", "Datetime", "Timestamp", "Date32", "Datetime64", "Timestamp64"])
+    def test_timestamp_is_written_as_is(
+        self, kikimr: Kikimr, entity_name: Callable[[str], str], ts_expr: str, expected: float
+    ) -> None:
+        """Every timestamp type the write accepts must reach solomon as the same moment."""
+        source_name, (shard,) = self.prepare(kikimr, entity_name, "write_ts")
+
+        kikimr.ydb_client.query(
+            f"""INSERT INTO {shard.ref(source_name)}
+                SELECT {ts_expr} AS Ts, "my_series" AS Label, 42 AS Sensor;"""
+        )
+
+        (metric,) = self.assert_shard(shard, [42])
+        assert _epoch_seconds(metric["ts"]) == expected, f"{ts_expr} was written as {metric['ts']}"
+
+    def test_write_survives_dropped_connection(
+        self, kikimr: Kikimr, entity_name: Callable[[str], str]
+    ) -> None:
+        """Solomon closes the connection without answering: the write is retried, the node survives."""
+        source_name, (shard,) = self.prepare(kikimr, entity_name, "write_dropped")
+        fail_solomon_push(shard.project, shard.cluster, shard.service, count=3, status=0)
+
+        for i in range(3):
+            kikimr.ydb_client.query(
+                f"""INSERT INTO {shard.ref(source_name)}
+                    SELECT CurrentUtcTimestamp() AS Ts, "my_series_{i}" AS Label, {i} AS Sensor;"""
+            )
+        self.assert_shard(shard, [0, 1, 2])
+
+    @pytest.mark.parametrize("status", [400, 403, 404, 413])
+    def test_permanent_error_is_not_retried(
+        self, kikimr: Kikimr, entity_name: Callable[[str], str], status: int
+    ) -> None:
+        """Retrying a request solomon rejected for good only delays the error by a minute."""
+        source_name, (shard,) = self.prepare(kikimr, entity_name, "write_permanent")
+        fail_solomon_push(shard.project, shard.cluster, shard.service, count=1000, status=status)
+
+        started = time.time()
+        self._expect_error(
+            kikimr,
+            f"""INSERT INTO {shard.ref(source_name)}
+                SELECT CurrentUtcTimestamp() AS Ts, "my_series" AS Label, 42 AS Sensor;""",
+            [str(status)],
+        )
+        assert time.time() - started < 20, "a permanent error was retried"
