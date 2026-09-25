@@ -1,5 +1,6 @@
 #include "dq_solomon_write_actor.h"
 #include "dq_solomon_actors_util.h"
+#include "dq_solomon_write_actor_retry.h"
 
 #include <ydb/library/actors/core/actor.h>
 #include <ydb/library/actors/core/event_local.h>
@@ -47,6 +48,23 @@
 #define SINK_LOG(prio, s) \
     LOG_LOG_S(*NActors::TlsActivationContext, prio, NKikimrServices::KQP_COMPUTE, LogPrefix << s)
 
+namespace NYql::NSo {
+
+ERetryErrorClass SinkHttpRetryClass(const NHttp::TEvHttpProxy::TEvHttpIncomingResponse* resp) {
+    if (!resp || !resp->Response) {
+        // Connection wasn't established. Should retry.
+        return ERetryErrorClass::ShortRetry;
+    }
+
+    if (resp->Response->Status == "401") {
+        return ERetryErrorClass::NoRetry;
+    }
+
+    return ERetryErrorClass::ShortRetry;
+}
+
+} // namespace NYql::NSo
+
 namespace NYql::NDq {
 
 using namespace NActors;
@@ -59,18 +77,7 @@ const ui64 MaxMetricsPerRequest = 1000; // Max allowed count is 10000
 const ui64 MaxRequestsInflight = 3;
 
 const auto RetryPolicy = NYql::NDq::THttpSenderRetryPolicy::GetExponentialBackoffPolicy(
-    [](const NHttp::TEvHttpProxy::TEvHttpIncomingResponse* resp){
-        if (!resp || !resp->Response) {
-            // Connection wasn't established. Should retry.
-            return ERetryErrorClass::ShortRetry;
-        }
-
-        if (resp->Response->Status == "401") {
-            return ERetryErrorClass::NoRetry;
-        }
-
-        return ERetryErrorClass::ShortRetry;
-    },
+    NSo::SinkHttpRetryClass,
     TDuration::MilliSeconds(10),
     TDuration::MilliSeconds(200),
     TDuration::Seconds(10),
@@ -106,7 +113,8 @@ public:
         const ::NMonitoring::TDynamicCounterPtr& counters,
         std::shared_ptr<NYdb::ICredentialsProvider> credentialsProvider,
         i64 freeSpace,
-        bool enableStreamingQueriesCounters)
+        bool enableStreamingQueriesCounters,
+        TDuration requestTimeout)
         : TActor<TDqSolomonWriteActor>(&TDqSolomonWriteActor::StateFunc)
         , OutputIndex(outputIndex)
         , TxId(txId)
@@ -120,6 +128,7 @@ public:
             WriteParams.Shard.GetScheme(),
             WriteParams.Shard.GetClusterType() == NSo::NProto::ESolomonClusterType::CT_MONITORING)
         , CredentialsProvider(credentialsProvider)
+        , RequestTimeout(requestTimeout)
     {
         SINK_LOG_D("Init");
         EgressStats.Level = statsLevel;
@@ -423,7 +432,7 @@ private:
 
             const size_t bodySize = metricsToSend.Data.size();
             const TActorId httpSenderId = Register(CreateHttpSenderActor(SelfId(), HttpProxyId, RetryPolicy));
-            Send(httpSenderId, new NHttp::TEvHttpProxy::TEvHttpOutgoingRequest(*httpRequest), /*flags=*/0, Cookie);
+            Send(httpSenderId, new NHttp::TEvHttpProxy::TEvHttpOutgoingRequest(*httpRequest, RequestTimeout), /*flags=*/0, Cookie);
             SINK_LOG_T("Sent " << metricsToSend.MetricsCount << " metrics with size of " << metricsToSend.Data.size() << " bytes to solomon");
 
             *Metrics.SentMetrics += metricsToSend.MetricsCount;
@@ -562,6 +571,7 @@ private:
 
     TMetricsEncoder UserMetricsEncoder;
     std::shared_ptr<NYdb::ICredentialsProvider> CredentialsProvider;
+    const TDuration RequestTimeout; // zero: the NHttp default
     ui64 Cookie = 0;
 };
 
@@ -578,7 +588,8 @@ std::pair<NYql::NDq::IDqComputeActorAsyncOutput*, NActors::IActor*> CreateDqSolo
     const ::NMonitoring::TDynamicCounterPtr& counters,
     IStructuredTokenCredentialsFactory::TPtr credentialsFactory,
     i64 freeSpace,
-    bool enableStreamingQueriesCounters)
+    bool enableStreamingQueriesCounters,
+    TDuration requestTimeout)
 {
     const TString& tokenName = settings.GetToken().GetName();
     const TString token = secureParams.Value(tokenName, TString());
@@ -600,7 +611,8 @@ std::pair<NYql::NDq::IDqComputeActorAsyncOutput*, NActors::IActor*> CreateDqSolo
         counters,
         credentialsProvider,
         freeSpace,
-        enableStreamingQueriesCounters);
+        enableStreamingQueriesCounters,
+        requestTimeout);
     return {actor, actor};
 }
 
