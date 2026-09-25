@@ -157,6 +157,12 @@ TScriptedResponse TScriptedResponse::Redirect(ui16 status, TString location) {
     return response;
 }
 
+TScriptedResponse TScriptedResponse::CloseAfterRequest() {
+    TScriptedResponse response;
+    response.CloseWithoutAnswer = true;
+    return response;
+}
+
 TScriptedResponse TScriptedResponse::StallForever() {
     TScriptedResponse response;
     response.Stall = true;
@@ -768,6 +774,9 @@ bool TLoopbackHttpServer::TImpl::GateOpen(const TString& gate) const {
 bool TLoopbackHttpServer::TImpl::Respond(TConnection& connection, const TReceivedRequest& request, const TScriptedResponse& response) {
     if (response.Stall) {
         connection.Hold({});
+        return false;
+    }
+    if (response.CloseWithoutAnswer) {
         return false;
     }
     const auto released = [&]() {

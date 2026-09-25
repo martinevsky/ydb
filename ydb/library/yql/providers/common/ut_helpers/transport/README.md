@@ -61,7 +61,8 @@ TString url = server.Url("/obj");                            // Url("/obj", "loc
 ```
 
 Responses (`TScriptedResponse`): `Ok(body)`, `WithStatus(code, body)`, `Redirect(code, location)`,
-`StallForever()` (read the request, never answer), `BigBody(bytes)` (generated body; counts
+`StallForever()` (read the request, never answer), `CloseAfterRequest()` (read the request, close without
+answering: curl gets `CURLE_GOT_NOTHING`), `BigBody(bytes)` (generated body; counts
 `BlockedOnSendCount()` whenever the socket buffer is full), `EchoRequestHeaders(code)`; modifiers
 `.AddHeader()`, `.Gated(name)`, `.Trickle(bytes, every)`, `.CloseMidBody(afterBytes)`, `.NoRange()` (a 200
 answers a `Range` request with the full body; by default it becomes 206 with the slice), `.KeepConnection()`
@@ -129,7 +130,7 @@ still holds the gateway).
 Loopback listener with a saturated accept queue: `connect()` to `Url()` hangs until the client's connect
 timeout (replaces the non-routable IP trick).
 
-## Gateway test hooks (seams S1, S2, S4, S11)
+## Gateway test hooks (seams S1, S2, S3, S4, S11)
 
 `http_gateway/yql_http_gateway_test_hooks.h`, namespace `NYql::NHttpGatewayTest`. Empty options = today's
 behaviour.
@@ -139,6 +140,8 @@ behaviour.
     due check). With H8 a retry never becomes due until the test advances the clock.
   - `.DnsResolve` (S11): resolver for `DnsResolverConfig.ExplicitDNSRecord` hosts (throw
     `TNetworkResolutionError` to fail).
+  - `.CurlMulti` (S3): wraps `curl_multi_perform` / `curl_multi_poll` of the worker loop
+    (`ECurlMultiCall::Perform` / `Poll`); return another `CURLMcode` to inject a CURLM failure.
 - `RefreshDnsNow(gateway)` (S11): re-resolve the explicit records now.
 - `GetFqHTTPRetryPolicy(clock)` (S2, `yql_http_default_retry_policy.h`): the FQ dns retry budget on a clock.
 - `IHTTPGateway::GetEffectiveConfig()` (S4): the config in force; a later `Make` with a different non-null

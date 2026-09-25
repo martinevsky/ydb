@@ -70,6 +70,8 @@ struct TScriptedResponse {
 
     // Accept and read the request, never answer. Held until the peer closes or the server stops.
     bool Stall = false;
+    // Read the request, then close the connection without sending anything (curl: CURLE_GOT_NOTHING).
+    bool CloseWithoutAnswer = false;
     // Hold the response until Release(Gate). Gates are also keyed by request path, see Gate().
     TString Gate;
     // Send the body in pieces of TrickleBytes, pausing TrickleEvery between them (the only sleep in
@@ -94,6 +96,7 @@ struct TScriptedResponse {
     static TScriptedResponse WithStatus(ui16 status, TString body = {});
     static TScriptedResponse Redirect(ui16 status, TString location);
     static TScriptedResponse StallForever();
+    static TScriptedResponse CloseAfterRequest();
     static TScriptedResponse BigBody(ui64 size, char fill = 'x');
     static TScriptedResponse EchoRequestHeaders(ui16 status = 200);
 

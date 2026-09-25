@@ -665,6 +665,7 @@ public:
         const NHttpGatewayTest::TGatewayTestOptions& testOptions = {})
         : EffectiveConfig(httpGatewaysCfg ? *httpGatewaysCfg : THttpGatewayConfig{})
         , Clock(testOptions.Now)
+        , CurlMultiHook(testOptions.CurlMulti)
         , DnsGateway(
             httpGatewaysCfg ? httpGatewaysCfg->GetDnsResolverConfig(): TDnsResolverConfig{},
             counters->GetSubgroup("subsystem", "dns_gateway"),
@@ -801,6 +802,8 @@ private:
     const THttpGatewayConfig EffectiveConfig;
     THashSet<TString> IgnoredConfigs; // S4: configs already reported as ignored; guarded by CreateSync
     const std::function<TInstant()> Clock; // S1; empty: wall clock
+    // S3; empty: curl_multi_perform / curl_multi_poll are called directly
+    const std::function<CURLMcode(NHttpGatewayTest::ECurlMultiCall, const std::function<CURLMcode()>&)> CurlMultiHook;
 
     TInstant Now() const {
         return Clock ? Clock() : TInstant::Now();
@@ -847,7 +850,10 @@ private:
             OutputMemory->Set(OutputSize);
 
             int running = 0;
-            if (const auto c = curl_multi_perform(Handle.get(), &running); CURLM_OK != c) {
+            const auto perform = [&]() {
+                return curl_multi_perform(Handle.get(), &running);
+            };
+            if (const auto c = CurlMultiHook ? CurlMultiHook(NHttpGatewayTest::ECurlMultiCall::Perform, perform) : perform(); CURLM_OK != c) {
                 Fail(c);
                 break;
             }
@@ -862,7 +868,10 @@ private:
                 }
             } else {
                 const int timeoutMs = 300;
-                if (const auto c = curl_multi_poll(Handle.get(), nullptr, 0, timeoutMs, nullptr); CURLM_OK != c) {
+                const auto poll = [&]() {
+                    return curl_multi_poll(Handle.get(), nullptr, 0, timeoutMs, nullptr);
+                };
+                if (const auto c = CurlMultiHook ? CurlMultiHook(NHttpGatewayTest::ECurlMultiCall::Poll, poll) : poll(); CURLM_OK != c) {
                     Fail(c);
                     break;
                 }
