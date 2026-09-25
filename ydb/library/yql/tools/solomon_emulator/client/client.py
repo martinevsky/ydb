@@ -62,14 +62,15 @@ def add_monitoring_metrics(folderId, service, metrics):
     return add_solomon_metrics(folderId, folderId, service, metrics)
 
 
-def fail_solomon_push(project, cluster, service, count=1):
-    """Make the emulator answer the next ``count`` pushes to the shard with a retriable error."""
-    url = "{url}/fail/push?project={project}&cluster={cluster}&service={service}&count={count}".format(
+def fail_solomon_push(project, cluster, service, count=1, status=503):
+    """Make the emulator answer the next ``count`` pushes to the shard with an HTTP ``status`` error."""
+    url = "{url}/fail/push?project={project}&cluster={cluster}&service={service}&count={count}&status={status}".format(
         url=get_api_url(),
         project=project,
         cluster=cluster,
         service=service,
-        count=count)
+        count=count,
+        status=status)
     _do_request("POST", url)
 
 
@@ -114,6 +115,11 @@ def fail_read(method, count=1, **fault):
     mode ("malformed" for HTTP, "mismatch" for gRPC).
     """
     _do_request("POST", "{}/fail/read".format(get_api_url()), dict(fault, method=method, count=count))
+
+
+def set_listing_page_size(size):
+    """Make metrics listings come in pages of ``size`` metrics, None turns paging off."""
+    _do_request("POST", "{}/config/listing_page_size".format(get_api_url()), {"size": size})
 
 
 def clear_read_faults():

@@ -84,6 +84,8 @@ class SolomonEmulator(object):
         self.read_faults = defaultdict(list)
         # Parameters of every gRPC Read call, in arrival order.
         self.read_requests = []
+        # When set, metrics listings are split into pages of this size.
+        self.listing_page_size = None
 
     def _get_shard(self, project, cluster, service):
         return self._data.get_or_create(project, cluster, service)
@@ -130,6 +132,9 @@ class SolomonEmulator(object):
             return _json_error(fault["status"], fault.get("message", f"Injected {method} failure"))
         if fault.get("mode") == "malformed":
             return web.Response(text="{this is not json", content_type=CONTENT_TYPE_JSON)
+        if "scalar" in fault:
+            # A points count answer with whatever number the test wants.
+            return web.json_response({"scalar": fault["scalar"]})
         return None
 
     @staticmethod
@@ -171,11 +176,15 @@ class SolomonEmulator(object):
         service = request.rel_url.query['service']
 
         key = (project, cluster, service)
-        remaining = self._push_failures.get(key, 0)
+        remaining, status = self._push_failures.get(key, (0, 503))
         if remaining > 0:
-            self._push_failures[key] = remaining - 1
-            logger.debug(f"injecting transient push failure for {key}, {remaining - 1} left")
-            return web.HTTPServiceUnavailable(text="Injected transient failure")
+            self._push_failures[key] = (remaining - 1, status)
+            logger.debug(f"injecting push failure {status} for {key}, {remaining - 1} left")
+            if status == 0:
+                # Status 0: close the connection without any response.
+                request.transport.close()
+                raise asyncio.CancelledError()
+            return _json_error(status, f"Injected push failure {status}")
 
         shard = self._get_shard(project, cluster, service)
         content_type = request.headers['content-type']
@@ -257,6 +266,18 @@ class SolomonEmulator(object):
             return web.HTTPBadRequest(text="Invalid query params")
 
         shard = self._get_shard(selectors["project"], selectors["cluster"], selectors["service"])
+
+        if self.listing_page_size:
+            # Paginate like the real api when it caps the page below what was asked for.
+            metrics, _ = shard.get_metrics(selectors, page_size=10 ** 9)
+            size = self.listing_page_size
+            page = int(request.rel_url.query.get("page", params.get("page", 0)))
+            pages_count = max(1, (len(metrics) + size - 1) // size)
+            return web.json_response({
+                "result": metrics[page * size:(page + 1) * size],
+                "page": {"pagesCount": pages_count, "totalCount": len(metrics), "pageSize": size, "current": page},
+            })
+
         metrics, error = shard.get_metrics(selectors, params.get("_pageSize"))
 
         if error is not None:
@@ -312,8 +333,9 @@ class SolomonEmulator(object):
         cluster = request.rel_url.query['cluster']
         service = request.rel_url.query['service']
         count = int(request.rel_url.query.get('count', 1))
+        status = int(request.rel_url.query.get('status', 503))
 
-        self._push_failures[(project, cluster, service)] = count
+        self._push_failures[(project, cluster, service)] = (count, status)
         return web.Response(status=200)
 
     async def fail_read(self, request):
@@ -334,6 +356,10 @@ class SolomonEmulator(object):
             return web.HTTPBadRequest(text=f"Unknown read method {method}, expected one of {READ_METHODS}")
         count = int(fault.pop("count", 1))
         self.read_faults[method].extend(dict(fault) for _ in range(count))
+        return web.Response(status=200)
+
+    async def set_listing_page_size(self, request):
+        self.listing_page_size = (await request.json()).get("size")
         return web.Response(status=200)
 
     async def set_read_auth(self, request):
@@ -532,6 +558,7 @@ def create_web_app(emulator):
         web.post("/cleanup", emulator.cleanup),
         web.post("/cleanup/api/calls", emulator.cleanup_api_calls),
         web.post("/config/read_auth", emulator.set_read_auth),
+        web.post("/config/listing_page_size", emulator.set_listing_page_size),
         web.post("/fail/push", emulator.fail_push),
         web.post("/fail/read", emulator.fail_read),
     ])
