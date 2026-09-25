@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <queue>
+#include <vector>
 
 namespace NYql::NDq {
 
@@ -56,9 +57,17 @@ namespace {
     };
 }
 
+struct TAsyncInputError {
+    TIssues Issues;
+    NYql::NDqProto::StatusIds::StatusCode FatalCode = NYql::NDqProto::StatusIds::UNSPECIFIED; // UNSPECIFIED: a retriable error
+};
+
 struct TAsyncInputPromises {
     NThreading::TPromise<void> NewAsyncInputDataArrived = NThreading::NewPromise();
     NThreading::TPromise<TIssues> FatalError = NThreading::NewPromise<TIssues>();
+    // Every TEvAsyncInputError in arrival order. The fake actor appends to it; read it on the fake
+    // actor's thread (inside TFakeCASetup::Execute).
+    std::vector<TAsyncInputError> Errors;
 };
 
 struct TAsyncOutputPromises {
@@ -80,7 +89,7 @@ class TFakeActor : public NActors::TActor<TFakeActor> {
         }
 
         void OnAsyncInputError(ui64, const TIssues& issues, NYql::NDqProto::StatusIds::StatusCode fatalCode) {
-            Y_UNUSED(fatalCode);
+            Parent.AsyncInputPromises->Errors.push_back({issues, fatalCode});
             Parent.AsyncInputPromises->FatalError.SetValue(issues);
             Parent.AsyncInputPromises->FatalError = NThreading::NewPromise<TIssues>();
         }
