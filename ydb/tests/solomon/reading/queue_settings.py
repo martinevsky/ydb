@@ -34,12 +34,15 @@ class TestPrefetchBelowBatchLimit(SolomonReadingTestBase):
                 to = "1970-01-01T00:01:00Z"
             )
         """
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(self.execute_query_once, query)
-            try:
-                result, error = future.result(timeout=QUERY_DEADLINE_SEC)
-            except concurrent.futures.TimeoutError:
-                raise AssertionError(f"the read did not finish in {QUERY_DEADLINE_SEC} s")
+        # Not a context manager: leaving it would wait for the stuck query and defeat the timeout.
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(self.execute_query_once, query)
+        try:
+            result, error = future.result(timeout=QUERY_DEADLINE_SEC)
+        except concurrent.futures.TimeoutError:
+            raise AssertionError(f"the read did not finish in {QUERY_DEADLINE_SEC} s")
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
         assert error is None, self.issue_messages(error)
         labels = sorted(int(row["test_label"]) for row in result[0].rows)

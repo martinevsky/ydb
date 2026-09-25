@@ -707,6 +707,24 @@ class TestSolomonWriteTimestamps(SolomonTestBase):
         (metric,) = self.assert_shard(shard, [42])
         assert _epoch_seconds(metric["ts"]) == expected, f"{ts_expr} was written as {metric['ts']}"
 
+    @pytest.mark.parametrize("ts_expr", [
+        'Date32("1969-12-31")',
+        'Datetime64("1969-12-31T23:59:59Z")',
+        'Timestamp64("1969-12-31T23:59:59.000000Z")',
+    ], ids=["Date32", "Datetime64", "Timestamp64"])
+    def test_timestamp_before_epoch_is_rejected(
+        self, kikimr: Kikimr, entity_name: Callable[[str], str], ts_expr: str
+    ) -> None:
+        """Solomon has no points before 1970; the error must say so, and nothing is written."""
+        source_name, (shard,) = self.prepare(kikimr, entity_name, "write_pre_epoch")
+        self._expect_error(
+            kikimr,
+            f"""INSERT INTO {shard.ref(source_name)}
+                SELECT {ts_expr} AS Ts, "my_series" AS Label, 42 AS Sensor;""",
+            ["before 1970-01-01"],
+        )
+        assert self.read_metrics(shard) == []
+
     def test_write_survives_dropped_connection(
         self, kikimr: Kikimr, entity_name: Callable[[str], str]
     ) -> None:

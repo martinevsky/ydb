@@ -69,6 +69,14 @@ class TestSettingsValidationEdgeCases(SolomonReadingTestBase):
 
     @pytest.mark.parametrize("cluster_type", CLUSTER_TYPES)
     @pytest.mark.parametrize("program", [False, True], ids=["selectors", "program"])
+    def test_to_before_default_from(self, cluster_type, program):
+        # Only `to` is given: the error must say where the conflicting `from` comes from.
+        self.check_error(
+            self.query(cluster_type, ', to = "2005-01-01T00:00:00Z"', program),
+            "default 2010-01-01T00:00:00Z")
+
+    @pytest.mark.parametrize("cluster_type", CLUSTER_TYPES)
+    @pytest.mark.parametrize("program", [False, True], ids=["selectors", "program"])
     def test_future_range_is_empty(self, cluster_type, program):
         # Both ends are clamped to now: an empty range, not an error.
         rows = self.check_ok(self.query(cluster_type, ', from = "9998-01-01T00:00:00Z", to = "9999-01-01T00:00:00Z"', program))

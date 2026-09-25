@@ -68,6 +68,7 @@ public:
                 NSo::NProto::TDqSolomonSource source = NSo::FillSolomonSource(clusterDesc, soReadObject.Object().Project().StringValue());
 
                 TInstant from;
+                const bool fromIsDefault = !ExtractSetting(settings, "from");
                 if (auto time = ExtractSetting(settings, "from")) {
                     if (!TInstant::TryParseIso8601(*time, from)) {
                         ctx.AddError(TIssue(ctx.GetPosition(n->Pos()), "couldn't parse `from`, use ISO8601 format, e.g. 2025-03-12T14:40:39Z"));
@@ -92,7 +93,8 @@ public:
                 from = std::min(now, from);
                 to = std::min(now, to);
                 if (from > to) {
-                    ctx.AddError(TIssue(ctx.GetPosition(n->Pos()), "`from` must not be later than `to`"));
+                    ctx.AddError(TIssue(ctx.GetPosition(n->Pos()), TStringBuilder()
+                        << "`from`" << (fromIsDefault ? " (default 2010-01-01T00:00:00Z)" : "") << " must not be later than `to`"));
                     return TStatus::Error;
                 }
 

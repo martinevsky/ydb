@@ -133,6 +133,7 @@ public:
             auto& settingsRef = settings.Ref();
             const TInstant now = TInstant::Now();
             TInstant from = TInstant::ParseIso8601("2010-01-01T00:00:00Z");
+            bool fromIsDefault = true;
             TInstant to = now;
             TString program;
             TString selectors;
@@ -153,6 +154,7 @@ public:
                         return {};
                     }
                     from = std::min(now, userFrom);
+                    fromIsDefault = false;
                     continue;
                 }
                 if (settingsRef.Child(i)->Head().IsAtom("to"sv)) {
@@ -243,7 +245,8 @@ public:
             }
 
             if (from > to) {
-                ctx.AddError(TIssue(ctx.GetPosition(settingsRef.Pos()), "`from` must not be later than `to`"));
+                ctx.AddError(TIssue(ctx.GetPosition(settingsRef.Pos()), TStringBuilder()
+                    << "`from`" << (fromIsDefault ? " (default 2010-01-01T00:00:00Z)" : "") << " must not be later than `to`"));
                 return {};
             }
 
