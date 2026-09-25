@@ -21,3 +21,7 @@ END()
 RECURSE(
     ut_helpers
 )
+
+RECURSE_FOR_TESTS(
+    ut
+)
