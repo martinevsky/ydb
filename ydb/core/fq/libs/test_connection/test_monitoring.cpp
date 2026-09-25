@@ -130,7 +130,14 @@ public:
 
     void Handle(NYql::NDq::TEvHttpBase::TEvSendResult::TPtr& ev) {
         const auto* res = ev->Get();
-        if (res->HttpIncomingResponse->Get()->Response->Status == "400") {
+        const auto& response = res->HttpIncomingResponse->Get()->Response;
+        if (!response) {
+            // Connection failures come with an error and without any response.
+            const TString& error = res->HttpIncomingResponse->Get()->GetError();
+            ReplyError(error ? error : TString("no response from the monitoring api"));
+            return;
+        }
+        if (response->Status == "400") {
             YDB_LOG_TRACE("Ok",
                 {"scope", Scope},
                 {"user", User},

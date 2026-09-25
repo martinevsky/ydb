@@ -63,6 +63,15 @@ struct TExternalDataSource : public IExternalSource {
             throw TExternalSourceException() << proto.GetSourceType() << " source must provide service_name";
         }
 
+        // Solomon: CLUSTER is the cloud folder and only means something with PROJECT, the
+        // cloud. Alone it would be dropped and the source would address another installation.
+        if (proto.GetSourceType() == ToString(NYql::EDatabaseType::Solomon) || proto.GetSourceType() == ToString(NYql::EDatabaseType::MoniumMetrics)) {
+            const auto& props = proto.GetProperties().GetProperties();
+            if (props.contains("cluster") && !props.contains("project")) {
+                throw TExternalSourceException() << proto.GetSourceType() << " source with CLUSTER must also provide PROJECT";
+            }
+        }
+
         // Ydb source requires at least one non-empty database_name or database_id.
         if (proto.GetSourceType() == ToString(NYql::EDatabaseType::Ydb)) {
             const auto& props = proto.GetProperties().GetProperties();
