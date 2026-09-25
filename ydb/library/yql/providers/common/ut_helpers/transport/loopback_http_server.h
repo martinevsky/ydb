@@ -1,6 +1,6 @@
 #pragma once
 
-// H1: TLoopbackHttpServer, a raw HTTP/1.1 server on 127.0.0.1:<port 0>, one thread per connection,
+// H1: TLoopbackHttpServer, a raw HTTP/1.1 server on 127.0.0.1:<port 0> (address and port configurable), one thread per connection,
 // optionally speaking TLS (H2 mode). It exists to script transport faults for the curl gateway,
 // the Solomon accessor and friends. Framework-neutral: failures are reported by throwing yexception.
 //
@@ -109,6 +109,11 @@ struct TLoopbackHttpServerOptions {
     // TLS mode: the server presents this certificate (CertPem + KeyPem are used; files are ignored).
     std::optional<TTestCert> Tls;
     int ListenBacklog = 128;
+    // IPv4 loopback address to listen on (any of 127.0.0.0/8 works on Linux), e.g. "127.0.0.2" for a
+    // second server that a DNS test routes to.
+    TString BindAddress = "127.0.0.1";
+    // 0 = an ephemeral port. A fixed port lets two servers on different BindAddress share one port.
+    ui16 Port = 0;
 };
 
 class TLoopbackHttpServer {
@@ -123,7 +128,8 @@ public:
 
     ui16 Port() const;
     bool IsTls() const;
-    // "http(s)://<host>:<port><path>". Use host "localhost" for certificate-name checks.
+    // "http(s)://<host>:<port><path>". Use host "localhost" for certificate-name checks. The default
+    // host is 127.0.0.1 regardless of BindAddress.
     TString Url(TStringBuf path = "/obj", TStringBuf host = "127.0.0.1") const;
 
     // Scripting (may be changed while running; affects requests parsed afterwards).

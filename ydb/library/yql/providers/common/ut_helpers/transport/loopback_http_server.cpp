@@ -604,8 +604,9 @@ TLoopbackHttpServer::TImpl::TImpl(TLoopbackHttpServerOptions options)
     setsockopt(ListenFd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     sockaddr_in address{};
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = 0;
+    Y_ENSURE(inet_pton(AF_INET, Options.BindAddress.c_str(), &address.sin_addr) == 1,
+        "bad IPv4 BindAddress: " << Options.BindAddress);
+    address.sin_port = htons(Options.Port);
     Y_ENSURE(bind(ListenFd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0, "bind failed: " << LastSystemErrorText());
     socklen_t length = sizeof(address);
     Y_ENSURE(getsockname(ListenFd, reinterpret_cast<sockaddr*>(&address), &length) == 0, "getsockname failed");

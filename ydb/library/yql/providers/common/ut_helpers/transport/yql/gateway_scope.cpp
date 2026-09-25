@@ -6,11 +6,11 @@
 
 namespace NYql::NTransportTest {
 
-TGatewayScope::TGatewayScope(const THttpGatewayConfig& config)
+TGatewayScope::TGatewayScope(const THttpGatewayConfig& config, const TFactory& factory)
     : Config_(config)
     , Counters_(MakeIntrusive<::NMonitoring::TDynamicCounters>())
     , Inspector_(Counters_)
-    , Gateway_(IHTTPGateway::Make(&Config_, Counters_))
+    , Gateway_(factory ? factory(&Config_, Counters_) : IHTTPGateway::Make(&Config_, Counters_))
 {
     // A freshly constructed THTTPMultiGateway creates its gauges on the counters it was given and sets
     // MaxInFlight from the config (default 1024). A reused singleton never touches these counters.

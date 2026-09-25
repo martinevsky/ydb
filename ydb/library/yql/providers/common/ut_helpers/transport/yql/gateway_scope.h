@@ -18,11 +18,17 @@
 #include <ydb/library/yql/providers/common/http_gateway/yql_http_gateway.h>
 #include <yql/essentials/providers/common/proto/gateways_config.pb.h>
 
+#include <functional>
+
 namespace NYql::NTransportTest {
 
 class TGatewayScope {
 public:
-    explicit TGatewayScope(const THttpGatewayConfig& config = {});
+    // Makes the gateway; IHTTPGateway::Make by default. Tests that need seams pass e.g.
+    // NHttpGatewayTest::MakeHttpGatewayForTest bound to their TGatewayTestOptions.
+    using TFactory = std::function<IHTTPGateway::TPtr(const THttpGatewayConfig*, ::NMonitoring::TDynamicCounterPtr)>;
+
+    explicit TGatewayScope(const THttpGatewayConfig& config = {}, const TFactory& factory = {});
     ~TGatewayScope();
 
     TGatewayScope(const TGatewayScope&) = delete;

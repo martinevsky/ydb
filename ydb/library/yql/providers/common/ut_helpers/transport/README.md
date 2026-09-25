@@ -48,6 +48,9 @@ Decision-gated contract variants use the id `DG-<test id>`.
 
 ### H1 `TLoopbackHttpServer` (`loopback_http_server.h`)
 Raw HTTP/1.1 on `127.0.0.1:<port 0>`, one thread per connection, plain or TLS.
+Options: `.Tls`, `.BindAddress` (any 127.0.0.0/8 address, default `127.0.0.1`), `.Port` (default 0 =
+ephemeral). Two servers can share a port on different loopback addresses (DNS routing tests):
+`TLoopbackHttpServer second({.BindAddress = "127.0.0.2", .Port = first.Port()});`
 
 ```cpp
 TLoopbackHttpServer server;                                  // or ({.Tls = pki.Leaf()})
@@ -119,10 +122,30 @@ Records `Calls()` (method, url, headers, body, offset, size limit, per-url `Atte
 returned an existing singleton. `gateway->Download(...)`, `gateway.Counters()`, `gateway.Inspector()`.
 End every test with `gateway.Inspector().AssertSettled(); gateway.Close();` (`Close()` throws if anything
 still holds the gateway).
+`TGatewayScope gateway(config, factory);` makes the gateway with `factory(&config, counters)` instead of
+`IHTTPGateway::Make`, e.g. `NHttpGatewayTest::MakeHttpGatewayForTest` with test options (below).
 
 ### H12 `TBlackholeListener` (`blackhole.h`, Linux only)
 Loopback listener with a saturated accept queue: `connect()` to `Url()` hangs until the client's connect
 timeout (replaces the non-routable IP trick).
+
+## Gateway test hooks (seams S1, S2, S4, S11)
+
+`http_gateway/yql_http_gateway_test_hooks.h`, namespace `NYql::NHttpGatewayTest`. Empty options = today's
+behaviour.
+
+- `MakeHttpGatewayForTest(cfg, counters, TGatewayTestOptions{...})`: same singleton path as `Make`.
+  - `.Now` (S1): clock for SigV4 signing (`x-amz-date`) and for the retry `Delayed` queue (deadline and
+    due check). With H8 a retry never becomes due until the test advances the clock.
+  - `.DnsResolve` (S11): resolver for `DnsResolverConfig.ExplicitDNSRecord` hosts (throw
+    `TNetworkResolutionError` to fail).
+- `RefreshDnsNow(gateway)` (S11): re-resolve the explicit records now.
+- `GetFqHTTPRetryPolicy(clock)` (S2, `yql_http_default_retry_policy.h`): the FQ dns retry budget on a clock.
+- `IHTTPGateway::GetEffectiveConfig()` (S4): the config in force; a later `Make` with a different non-null
+  config logs one WARN "HTTP gateway is already created ... effective config: {...} ignored config: {...}".
+
+Shared test helpers for target A (`TBufferedCall`, `TStreamConsumer`, `WaitPerformCycles`,
+`ClosedLoopbackPort`) are in `http_gateway/yql_http_gateway_ut_common.h`.
 
 ## Gateway TLS knobs (seam S6)
 
