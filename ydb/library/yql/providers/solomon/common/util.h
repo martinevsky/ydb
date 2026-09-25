@@ -66,6 +66,13 @@ struct TSolomonReadActorConfig {
     // Configurable to allow reducing the page size for clusters with many labels.
     // Must be >= 1.
     ui64 LabelsListingLimit;
+    // Per-call deadline for GetData gRPC requests. Zero (the default) means no
+    // deadline. Not read from the source settings.
+    TDuration GrpcRequestTimeout = TDuration::Zero();
+    // PEM bundle of root CAs trusted by the gRPC channel when the source uses
+    // SSL. Empty (the default) means gRPC's default root store. Not read from
+    // the source settings.
+    TString GrpcRootCertsPem;
 
     // ── retry policy ────────────────────────────────────────────────────────
     TSolomonRetryConfig RetryConfig;

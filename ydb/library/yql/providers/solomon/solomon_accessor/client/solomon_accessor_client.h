@@ -2,6 +2,7 @@
 
 #include <library/cpp/threading/future/core/future.h>
 #include <ydb/public/sdk/cpp/include/ydb-cpp-sdk/client/types/credentials/credentials.h>
+#include <ydb/library/yql/providers/common/http_gateway/yql_http_gateway.h>
 #include <ydb/library/yql/providers/solomon/proto/dq_solomon_shard.pb.h>
 #include <ydb/library/yql/providers/solomon/solomon_accessor/client/solomon_client_utils.h>
 
@@ -14,11 +15,14 @@ public:
 
     virtual ~ISolomonAccessorClient() = default;
 
+    // httpGateway: the curl gateway for the HTTP API calls. When null (the default)
+    // the client gets one from IHTTPGateway::Make (the process-wide gateway).
     static TPtr Make(
         NYql::NSo::NProto::TDqSolomonSource source,
         std::shared_ptr<NYdb::ICredentialsProvider> credentialsProvider,
-        const TSolomonReadActorConfig& cfg);
-    
+        const TSolomonReadActorConfig& cfg,
+        IHTTPGateway::TPtr httpGateway = nullptr);
+
 public:
     virtual NThreading::TFuture<TGetLabelsResponse> GetLabelNames(const TSelectors& selectors, TInstant from, TInstant to) const = 0;
     virtual NThreading::TFuture<TListMetricsResponse> ListMetrics(const TSelectors& selectors, TInstant from, TInstant to) const = 0;

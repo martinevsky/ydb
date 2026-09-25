@@ -1,4 +1,5 @@
 #include "solomon_accessor_client.h"
+#include "solomon_accessor_retry.h"
 
 #include <library/cpp/json/writer/json.h>
 #include <library/cpp/protobuf/interop/cast.h>
@@ -381,48 +382,20 @@ public:
     TSolomonAccessorClient(
         NYql::NSo::NProto::TDqSolomonSource&& settings,
         std::shared_ptr<NYdb::ICredentialsProvider> credentialsProvider,
-        const TSolomonReadActorConfig& cfg)
+        const TSolomonReadActorConfig& cfg,
+        IHTTPGateway::TPtr httpGateway)
         : EnableSolomonClientPostApi(cfg.EnablePostApi)
         , MaxListingPageSize(cfg.MaxListingPageSize)
         , LabelsListingLimit(cfg.LabelsListingLimit)
         , Settings(std::move(settings))
-        , CredentialsProvider(credentialsProvider) {
+        , CredentialsProvider(credentialsProvider)
+        , GrpcRequestTimeout(cfg.GrpcRequestTimeout) {
 
         HttpConfig.SetMaxInFlightCount(cfg.MaxApiInflight);
-        HttpGateway = IHTTPGateway::Make(&HttpConfig);
+        HttpGateway = httpGateway ? std::move(httpGateway) : IHTTPGateway::Make(&HttpConfig);
 
         HttpRetryPolicy = IHTTPGateway::TRetryPolicy::GetExponentialBackoffPolicy(
-            [](CURLcode curlCode, long httpCode) {
-                // Retry only on transient transport-level errors (connection
-                // reset, timeouts, partial transfers, DNS hiccups, etc.).
-                // Configuration errors (malformed URL, unsupported protocol,
-                // ...) are deterministic and will fail again on retry, so we
-                // skip retrying them to avoid burning the retry budget and
-                // adding latency.
-                switch (curlCode) {
-                    case CURLE_OK:
-                        break;
-                    case CURLE_COULDNT_RESOLVE_PROXY:
-                    case CURLE_COULDNT_RESOLVE_HOST:
-                    case CURLE_COULDNT_CONNECT:
-                    case CURLE_OPERATION_TIMEDOUT:
-                    case CURLE_SEND_ERROR:
-                    case CURLE_RECV_ERROR:
-                    case CURLE_GOT_NOTHING:
-                    case CURLE_PARTIAL_FILE:
-                    case CURLE_HTTP2:
-                    case CURLE_HTTP2_STREAM:
-                    case CURLE_AGAIN:
-                        return ERetryErrorClass::ShortRetry;
-                    default:
-                        return ERetryErrorClass::NoRetry;
-                }
-                const auto& codes = NConstants::RetriableHttpCodes;
-                if (std::find(codes.begin(), codes.end(), httpCode) != codes.end()) {
-                    return ERetryErrorClass::ShortRetry;
-                }
-                return ERetryErrorClass::NoRetry;
-            },
+            SolomonHttpRetryClass,
             cfg.RetryConfig.MinDelay,
             cfg.RetryConfig.MinLongRetryDelay,
             cfg.RetryConfig.MaxDelay,
@@ -432,6 +405,9 @@ public:
 
         GrpcConfig.Locator = GetGrpcSolomonEndpoint();
         GrpcConfig.EnableSsl = Settings.GetUseSsl();
+        if (cfg.GrpcRootCertsPem) {
+            GrpcConfig.SslCredentials.pem_root_certs = cfg.GrpcRootCertsPem;
+        }
         GrpcClient = std::make_shared<NYdbGrpc::TGRpcClientLow>();
         GrpcConnection = GrpcClient->CreateGRpcServiceConnection<DataService>(GrpcConfig);
     }
@@ -577,6 +553,9 @@ public:
             callMeta.Aux.emplace_back("authorization", authInfo);
         }
         callMeta.Aux.emplace_back("x-client-id", TString(NConstants::ClientId));
+        if (GrpcRequestTimeout) {
+            callMeta.Timeout = NYdb::TDeadline::SafeDurationCast(GrpcRequestTimeout);
+        }
 
         auto resultPromise = NThreading::NewPromise<TGetDataResponse>();
 
@@ -868,6 +847,7 @@ private:
     const ui64 LabelsListingLimit;
     const NYql::NSo::NProto::TDqSolomonSource Settings;
     const std::shared_ptr<NYdb::ICredentialsProvider> CredentialsProvider;
+    const TDuration GrpcRequestTimeout;
 
     THttpGatewayConfig HttpConfig;
     IHTTPGateway::TPtr HttpGateway;
@@ -879,12 +859,45 @@ private:
 
 } // namespace
 
+ERetryErrorClass SolomonHttpRetryClass(CURLcode curlCode, long httpCode) {
+    // Retry only on transient transport-level errors (connection
+    // reset, timeouts, partial transfers, DNS hiccups, etc.).
+    // Configuration errors (malformed URL, unsupported protocol,
+    // ...) are deterministic and will fail again on retry, so we
+    // skip retrying them to avoid burning the retry budget and
+    // adding latency.
+    switch (curlCode) {
+        case CURLE_OK:
+            break;
+        case CURLE_COULDNT_RESOLVE_PROXY:
+        case CURLE_COULDNT_RESOLVE_HOST:
+        case CURLE_COULDNT_CONNECT:
+        case CURLE_OPERATION_TIMEDOUT:
+        case CURLE_SEND_ERROR:
+        case CURLE_RECV_ERROR:
+        case CURLE_GOT_NOTHING:
+        case CURLE_PARTIAL_FILE:
+        case CURLE_HTTP2:
+        case CURLE_HTTP2_STREAM:
+        case CURLE_AGAIN:
+            return ERetryErrorClass::ShortRetry;
+        default:
+            return ERetryErrorClass::NoRetry;
+    }
+    const auto& codes = NConstants::RetriableHttpCodes;
+    if (std::find(codes.begin(), codes.end(), httpCode) != codes.end()) {
+        return ERetryErrorClass::ShortRetry;
+    }
+    return ERetryErrorClass::NoRetry;
+}
+
 ISolomonAccessorClient::TPtr
 ISolomonAccessorClient::Make(
     NYql::NSo::NProto::TDqSolomonSource source,
     std::shared_ptr<NYdb::ICredentialsProvider> credentialsProvider,
-    const TSolomonReadActorConfig& cfg) {
-    return std::make_shared<TSolomonAccessorClient>(std::move(source), credentialsProvider, cfg);
+    const TSolomonReadActorConfig& cfg,
+    IHTTPGateway::TPtr httpGateway) {
+    return std::make_shared<TSolomonAccessorClient>(std::move(source), credentialsProvider, cfg, std::move(httpGateway));
 }
 
 } // namespace NYql::NSo
