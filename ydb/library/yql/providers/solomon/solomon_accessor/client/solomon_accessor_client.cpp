@@ -360,6 +360,10 @@ TGetDataResponse ProcessGetDataResponse(NYdbGrpc::TGrpcStatus&& status, ReadResp
         }
         std::vector<int64_t> timestamps(queryResponse.timestamp_values().values().begin(), queryResponse.timestamp_values().values().end());
         std::vector<double> values(queryResponse.double_values().values().begin(), queryResponse.double_values().values().end());
+        if (timestamps.size() != values.size()) {
+            return TGetDataResponse(TStringBuilder() << "Monitoring api get data response is invalid: "
+                << timestamps.size() << " timestamps but " << values.size() << " values");
+        }
 
         if (TString name = queryResponse.name()) {
             selectors["name"] = {"==", name};
@@ -383,6 +387,7 @@ public:
         std::shared_ptr<NYdb::ICredentialsProvider> credentialsProvider,
         const TSolomonReadActorConfig& cfg)
         : EnableSolomonClientPostApi(cfg.EnablePostApi)
+        , DataRequestTimeout(cfg.DataRequestTimeout)
         , MaxListingPageSize(cfg.MaxListingPageSize)
         , LabelsListingLimit(cfg.LabelsListingLimit)
         , Settings(std::move(settings))
@@ -569,6 +574,9 @@ public:
         const auto request = BuildGetDataRequest(program, from, to);
 
         NYdbGrpc::TCallMeta callMeta;
+        // Without a deadline a hung server blocks the read until the whole query times out,
+        // and DEADLINE_EXCEEDED, which is retriable, is never produced.
+        callMeta.Timeout = NYdb::TDeadline::SafeDurationCast(DataRequestTimeout);
         TString authInfo;
         if (auto error = GetAuthInfo(authInfo)) {
             return NThreading::MakeFuture(TGetDataResponse(*error));
@@ -864,6 +872,7 @@ private:
 
 private:
     const bool EnableSolomonClientPostApi;
+    const TDuration DataRequestTimeout;
     const ui64 MaxListingPageSize;
     const ui64 LabelsListingLimit;
     const NYql::NSo::NProto::TDqSolomonSource Settings;

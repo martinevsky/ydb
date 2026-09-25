@@ -233,6 +233,20 @@ Y_UNIT_TEST_SUITE(TestParseSolomonReadActorConfig) {
         UNIT_ASSERT_EQUAL(cfg.PoisonTimeout,          TDuration::Hours(3));
         UNIT_ASSERT_EQUAL(cfg.RoundRobinStageTimeout, TDuration::Seconds(3));
         UNIT_ASSERT_VALUES_EQUAL(cfg.LabelsListingLimit,          100'000u);
+        UNIT_ASSERT_EQUAL(cfg.DataRequestTimeout,     TDuration::Minutes(2));
+    }
+
+    Y_UNIT_TEST(DataRequestTimeoutParsed) {
+        auto cfg = ParseSolomonReadActorConfig(MakeSettings({
+            {"dataRequestTimeoutMs", "1500"},
+        }));
+        UNIT_ASSERT_EQUAL(cfg.DataRequestTimeout, TDuration::MilliSeconds(1500));
+
+        // Zero would make every call time out at once, so it is clamped to the minimum.
+        cfg = ParseSolomonReadActorConfig(MakeSettings({
+            {"dataRequestTimeoutMs", "0"},
+        }));
+        UNIT_ASSERT_EQUAL(cfg.DataRequestTimeout, TDuration::MilliSeconds(1));
     }
 
     Y_UNIT_TEST(OverrideNewFields) {

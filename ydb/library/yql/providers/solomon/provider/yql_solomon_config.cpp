@@ -27,6 +27,7 @@ TSolomonConfiguration::TSolomonConfiguration()
     REGISTER_SETTING(*this, PoisonTimeoutSec);
     REGISTER_SETTING(*this, RoundRobinStageTimeoutMs);
     REGISTER_SETTING(*this, LabelsListingLimit);
+    REGISTER_SETTING(*this, DataRequestTimeoutMs);
 }
 
 TSolomonSettings::TConstPtr TSolomonConfiguration::Snapshot() const {

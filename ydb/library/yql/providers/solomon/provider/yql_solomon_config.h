@@ -28,6 +28,7 @@ public:
     NCommon::TConfSetting<ui64, Static> PoisonTimeoutSec;
     NCommon::TConfSetting<ui64, Static> RoundRobinStageTimeoutMs;
     NCommon::TConfSetting<ui64, Static> LabelsListingLimit;
+    NCommon::TConfSetting<ui64, Static> DataRequestTimeoutMs;
 };
 
 struct TSolomonConfiguration

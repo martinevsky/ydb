@@ -296,6 +296,8 @@ TSolomonReadActorConfig ParseSolomonReadActorConfig(
         ParseSettingWithMin<ui64>(settings, "roundRobinStageTimeoutMs", 3000, 1));
 
     cfg.LabelsListingLimit = ParseSettingWithMinMax<ui64>(settings, "labelsListingLimit", 100'000, 1, 100'000);
+    cfg.DataRequestTimeout = TDuration::MilliSeconds(
+        ParseSettingWithMin<ui64>(settings, "dataRequestTimeoutMs", 120'000, 1));
 
     cfg.RetryConfig.MinDelay = TDuration::MilliSeconds(
         ParseSettingWithMin<ui64>(settings, "retryMinDelayMs", 50, 1));

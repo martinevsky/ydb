@@ -131,8 +131,9 @@ public:
 
             auto settings = soReadObject.Object().Settings();
             auto& settingsRef = settings.Ref();
+            const TInstant now = TInstant::Now();
             TInstant from = TInstant::ParseIso8601("2010-01-01T00:00:00Z");
-            TInstant to = TInstant::Now();
+            TInstant to = now;
             TString program;
             TString selectors;
             std::optional<bool> downsamplingDisabled;
@@ -151,7 +152,7 @@ public:
                         ctx.AddError(TIssue(ctx.GetPosition(settingsRef.Child(i)->Head().Pos()), "couldn't parse `from`, use ISO8601 format, e.g. 2025-03-12T14:40:39Z"));
                         return {};
                     }
-                    from = std::min(TInstant::Now(), userFrom);
+                    from = std::min(now, userFrom);
                     continue;
                 }
                 if (settingsRef.Child(i)->Head().IsAtom("to"sv)) {
@@ -164,7 +165,7 @@ public:
                         ctx.AddError(TIssue(ctx.GetPosition(settingsRef.Child(i)->Head().Pos()), "couldn't parse `to`, use ISO8601 format, e.g. 2025-03-12T14:40:39Z"));
                         return {};
                     }
-                    to = std::min(TInstant::Now(), userTo);
+                    to = std::min(now, userTo);
                     continue;
                 }
                 if (settingsRef.Child(i)->Head().IsAtom("program"sv)) {
@@ -229,7 +230,7 @@ public:
                         return {};
                     }
                     ui32 intValue = 0;
-                    if (!TryFromString(value, intValue)) {
+                    if (!TryFromString(value, intValue) || intValue == 0) {
                         ctx.AddError(TIssue(ctx.GetPosition(settingsRef.Child(i)->Head().Pos()), TStringBuilder() << "downsampling.grid_interval must be positive number, but has " << value));
                         return {};
                     }
@@ -238,6 +239,11 @@ public:
                 }
 
                 ctx.AddError(TIssue(ctx.GetPosition(settingsRef.Child(i)->Head().Pos()), TStringBuilder() << "Unknown setting " << settingsRef.Child(i)->Head().Content()));
+                return {};
+            }
+
+            if (from > to) {
+                ctx.AddError(TIssue(ctx.GetPosition(settingsRef.Pos()), "`from` must not be later than `to`"));
                 return {};
             }
 
@@ -348,7 +354,7 @@ public:
         downsampling.SetDisabled(isDisabled);
         downsampling.SetAggregation(settings.DownsamplingAggregation().StringValue());
         downsampling.SetFill(settings.DownsamplingFill().StringValue());
-        const ui32 gridIntervalSec = FromString<ui32>(settings.DownsamplingGridSec().Literal().Value());
+        const ui64 gridIntervalSec = FromString<ui32>(settings.DownsamplingGridSec().Literal().Value());
         downsampling.SetGridMs(gridIntervalSec * 1000);
 
         source.MutableToken()->SetName(settings.Token().Name().StringValue());
@@ -392,6 +398,7 @@ public:
         InsertSettingIfSet(source, "poisonTimeoutSec", solomonConfig->PoisonTimeoutSec.Get());
         InsertSettingIfSet(source, "roundRobinStageTimeoutMs", solomonConfig->RoundRobinStageTimeoutMs.Get());
         InsertSettingIfSet(source, "labelsListingLimit", solomonConfig->LabelsListingLimit.Get());
+        InsertSettingIfSet(source, "dataRequestTimeoutMs", solomonConfig->DataRequestTimeoutMs.Get());
 
         if (!selectors.empty()) {
             ui64 totalMetricsCount;

@@ -66,6 +66,9 @@ struct TSolomonReadActorConfig {
     // Configurable to allow reducing the page size for clusters with many labels.
     // Must be >= 1.
     ui64 LabelsListingLimit;
+    // Deadline of a single GetData gRPC call. A call that exceeds it fails with
+    // DEADLINE_EXCEEDED and is retried by the read actor.
+    TDuration DataRequestTimeout;
 
     // ── retry policy ────────────────────────────────────────────────────────
     TSolomonRetryConfig RetryConfig;

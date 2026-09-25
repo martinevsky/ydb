@@ -86,7 +86,16 @@ public:
                 } else {
                     to = TInstant::Now();
                 }
-                
+
+                // Same clamping as in WrapRead, so both stages accept and reject the same ranges.
+                const TInstant now = TInstant::Now();
+                from = std::min(now, from);
+                to = std::min(now, to);
+                if (from > to) {
+                    ctx.AddError(TIssue(ctx.GetPosition(n->Pos()), "`from` must not be later than `to`"));
+                    return TStatus::Error;
+                }
+
                 NSo::TSelectors selectors;
                 if (auto error = NSo::BuildSelectorValues(source, *maybeSelectors, selectors)) {
                     ctx.AddError(TIssue(ctx.GetPosition(n->Pos()), *error));
