@@ -2,6 +2,7 @@
 
 #include <ydb/services/scheme_secret/resolver.h>
 
+#include <ydb/core/security/iam_delegation/events.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
@@ -14,6 +15,7 @@
 #include <util/generic/strbuf.h>
 
 #include <memory>
+#include <optional>
 
 namespace NKikimr::NSecret {
 
@@ -30,6 +32,7 @@ public:
         EvResolveSecret = EventSpaceBegin(TKikimrEvents::ES_PRIVATE),
         EvResolveSecretSchemeCacheRetry,
         EvResolveSecretSchemeShardRetry,
+        EvResolveSecretTokenRetry,
         EvEnd,
     };
 
@@ -87,12 +90,29 @@ public:
         const TString SecretPath;
     };
 
+    // Retry of the token request of a delegation secret after a retryable failure of the token service.
+    struct TEvResolveSecretTokenRetry :
+        public NActors::TEventLocal<TEvResolveSecretTokenRetry, EvResolveSecretTokenRetry>
+    {
+        TEvResolveSecretTokenRetry(ui64 initialRequestId, NIamDelegation::TTokenKey key)
+            : InitialRequestId(initialRequestId)
+            , Key(std::move(key))
+        {
+        }
+
+        const ui64 InitialRequestId = 0;
+        const NIamDelegation::TTokenKey Key;
+    };
+
 private:
     struct TVersionedSecret {
         ui64 SecretVersion = 0;
         ui64 PathId = 0;
         TString Name;
         TString Value;
+        // A secret of type IAM_DELEGATION stores no value: its value is the current IAM token of the delegated
+        // service account, obtained from the node-local token service for every read.
+        std::optional<NIamDelegation::TTokenKey> DelegationKey;
     };
 
     struct TResponseContext {
@@ -100,6 +120,12 @@ private:
         THashMultiMap<TString, TIncomingOrderId> Secrets;
         NThreading::TPromise<NKqp::TEvDescribeSecretsResponse::TDescription> Result;
         size_t FilledSecretsCnt = 0;
+        // values collected so far; delegation secrets are filled when their tokens arrive
+        std::vector<TString> Values;
+        std::vector<bool> ReReadOnUse; // the delegation secrets among them
+        std::vector<TInstant> UsableUntil; // of the delegation tokens; TInstant::Max() for the other values
+        // token key (TTokenKey::ToString()) -> positions in Values waiting for that token
+        THashMap<TString, std::vector<TIncomingOrderId>> PendingTokens;
     };
 
     struct TRequestContext {
@@ -108,6 +134,8 @@ private:
         TRetryPolicy::IRetryState::TPtr SchemeCacheRetryState;
         // SchemeShard does not support batch requests, so there's a separate retry state for each secret
         THashMap<TString, TRetryPolicy::IRetryState::TPtr> SchemeShardRetryStates;
+        // The token service answers one key at a time, so there's a separate retry state for each token key
+        THashMap<TString, TRetryPolicy::IRetryState::TPtr> TokenRetryStates;
 
         TRequestContext(THolder<TEvResolveSecret> request)
             : Request(std::move(request))
@@ -120,20 +148,26 @@ private:
         hFunc(TEvResolveSecret, HandleIncomingRequest);
         hFunc(TEvResolveSecretSchemeCacheRetry, HandleIncomingSchemeCacheRetryRequest);
         hFunc(TEvResolveSecretSchemeShardRetry, HandleIncomingSchemeShardRetryRequest);
+        hFunc(TEvResolveSecretTokenRetry, HandleIncomingTokenRetryRequest);
         hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, HandleSchemeCacheResponse);
         hFunc(NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult, HandleSchemeShardResponse);
         hFunc(TSchemeBoardEvents::TEvNotifyDelete, HandleNotifyDelete);
         hFunc(TSchemeBoardEvents::TEvNotifyUpdate, HandleNotifyUpdate);
+        hFunc(NIamDelegation::TEvIamDelegation::TEvGetTokenResult, HandleTokenResult);
+        hFunc(NActors::TEvents::TEvUndelivered, HandleUndelivered);
         cFunc(NActors::TEvents::TEvPoison::EventType, PassAway);
     )
 
     void HandleIncomingRequest(TEvResolveSecret::TPtr& ev);
     void HandleIncomingSchemeCacheRetryRequest(TEvResolveSecretSchemeCacheRetry::TPtr& ev);
     void HandleIncomingSchemeShardRetryRequest(TEvResolveSecretSchemeShardRetry::TPtr& ev);
+    void HandleIncomingTokenRetryRequest(TEvResolveSecretTokenRetry::TPtr& ev);
     void HandleSchemeCacheResponse(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev);
     void HandleSchemeShardResponse(NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr& ev);
     void HandleNotifyDelete(TSchemeBoardEvents::TEvNotifyDelete::TPtr& ev);
     void HandleNotifyUpdate(TSchemeBoardEvents::TEvNotifyUpdate::TPtr& ev);
+    void HandleTokenResult(NIamDelegation::TEvIamDelegation::TEvGetTokenResult::TPtr& ev);
+    void HandleUndelivered(NActors::TEvents::TEvUndelivered::TPtr& ev);
 
     void FillResponse(const ui64& requestId, const NKqp::TEvDescribeSecretsResponse::TDescription& response);
     void SaveIncomingRequestInfo(const TEvResolveSecret& ev);
@@ -143,9 +177,12 @@ private:
     bool LocalCacheHasActualObject(const TVersionedSecret& secret, const ui64& cacheSecretPathId);
     bool HandleSchemeCacheErrorsIfAny(const ui64& requestId, NSchemeCache::TSchemeCacheNavigate& result);
     bool HandleSchemeShardErrorsIfAny(const ui64& requestId, const NKikimrScheme::TEvDescribeSchemeResult& record);
-    void FillResponseIfFinished(const ui64& requestId, const TResponseContext& responseCtx);
+    void FillResponseIfFinished(const ui64& requestId, TResponseContext& responseCtx);
+    TString SecretPathByOrder(const TResponseContext& responseCtx, TResponseContext::TIncomingOrderId orderId) const;
     bool ScheduleSchemeCacheRetry(const ui64& requestId, const TString& unresolvedSecretPath);
     bool ScheduleSchemeShardRetry(const ui64& requestId, const TString& secretPath);
+    bool ScheduleTokenRetry(const ui64& requestId, const NIamDelegation::TTokenKey& key);
+    void SendTokenRequest(const ui64& requestId, const NIamDelegation::TTokenKey& key);
 
 public:
     TDescribeSchemaSecretsService() = default;

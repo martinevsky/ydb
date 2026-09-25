@@ -4,13 +4,19 @@ SIZE(MEDIUM)
 
 SRCS(
     kqp_executer_ut.cpp
+    kqp_iam_delegation_secret_orchestrator_ut.cpp
     kqp_tasks_graph_ut.cpp
     max_tasks_graph_ut.cpp
 )
 
 PEERDIR(
     ydb/core/kqp/common
+    ydb/core/security/iam_delegation
+    ydb/core/tx/tx_proxy
+    ydb/library/aclib
     ydb/core/kqp/ut/common
+    ydb/library/testlib/service_mocks
+    ydb/services/scheme_secret/ut/common
     yql/essentials/sql/pg_dummy
 )
 

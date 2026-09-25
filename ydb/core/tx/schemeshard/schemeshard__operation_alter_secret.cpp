@@ -170,6 +170,39 @@ public:
             return result;
         }
 
+        const auto storedType = secretInfo->Description.GetType();
+        if (alterSecretProto.HasType() && alterSecretProto.GetType() != storedType) {
+            result->SetError(NKikimrScheme::StatusInvalidParameter, TStringBuilder()
+                << "Cannot change secret type from " << NKikimrSchemeOp::ESecretType_Name(storedType)
+                << " to " << NKikimrSchemeOp::ESecretType_Name(alterSecretProto.GetType()));
+            return result;
+        }
+        switch (storedType) {
+            case NKikimrSchemeOp::SECRET_TYPE_VALUE:
+                if (alterSecretProto.HasIamDelegation()) {
+                    result->SetError(NKikimrScheme::StatusInvalidParameter,
+                        "IamDelegation is allowed only for secrets of type IAM_DELEGATION");
+                    return result;
+                }
+                break;
+            case NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION:
+                if (!AppData()->FeatureFlags.GetEnableIamDelegationSecrets()) {
+                    result->SetError(NKikimrScheme::StatusPreconditionFailed,
+                        "IAM delegation secrets are disabled. Please contact your system administrator to enable it");
+                    return result;
+                }
+                if (alterSecretProto.HasValue()) {
+                    result->SetError(NKikimrScheme::StatusInvalidParameter,
+                        "Value is not allowed for secrets of type IAM_DELEGATION");
+                    return result;
+                }
+                if (const auto error = ValidateIamDelegation(alterSecretProto.GetIamDelegation())) {
+                    result->SetError(NKikimrScheme::StatusInvalidParameter, *error);
+                    return result;
+                }
+                break;
+        }
+
         context.MemChanges.GrabPath(context.SS, secretPath.Base()->PathId);
         context.MemChanges.GrabSecret(context.SS, secretPath.Base()->PathId);
         context.MemChanges.GrabNewTxState(context.SS, OperationId);
@@ -197,7 +230,16 @@ public:
         }
 
         auto alterData = secretInfo->CreateNextVersion();
-        alterData->Description.SetValue(alterSecretProto.GetValue());
+        alterData->Description.SetType(storedType);
+        switch (storedType) {
+            case NKikimrSchemeOp::SECRET_TYPE_VALUE:
+                alterData->Description.SetValue(alterSecretProto.GetValue());
+                break;
+            case NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION:
+                // The orchestrator always sends the complete new delegation spec.
+                alterData->Description.MutableIamDelegation()->CopyFrom(alterSecretProto.GetIamDelegation());
+                break;
+        }
         alterData->Description.SetVersion(secretInfo->AlterVersion);
 
         Y_ABORT_UNLESS(!context.SS->FindTx(OperationId));

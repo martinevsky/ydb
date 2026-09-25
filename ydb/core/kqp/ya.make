@@ -65,6 +65,7 @@ RECURSE(
     finalize_script_service
     gateway
     host
+    iam_delegation
     node_service
     opt
     provider

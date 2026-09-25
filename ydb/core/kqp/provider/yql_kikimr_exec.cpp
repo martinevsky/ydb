@@ -441,6 +441,17 @@ namespace {
         return alterSequenceSettings;
     }
 
+    void FillSecretTypeSettings(TSecretSettings& settings, const TString& type, const TString& serviceAccountId, const TString& cloudId) {
+        if (type == "IAM_DELEGATION") {
+            settings.Type = NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION;
+        } else {
+            YQL_ENSURE(type.empty() || type == "VALUE", "Unknown secret type: " << type);
+            settings.Type = NKikimrSchemeOp::SECRET_TYPE_VALUE;
+        }
+        settings.ServiceAccountId = serviceAccountId;
+        settings.CloudId = cloudId;
+    }
+
     TSecretSettings ParseSecretSettings(TKiCreateSecret createSecret) {
         TSecretSettings settings;
         settings.Name = TString(createSecret.Secret());
@@ -455,6 +466,7 @@ namespace {
         }
         settings.ReplaceIfExists = (TString(createSecret.ReplaceIfExists()) == "1");
         settings.ExistingOk = (TString(createSecret.ExistingOk()) == "1");
+        FillSecretTypeSettings(settings, TString(createSecret.Type()), TString(createSecret.ServiceAccountId()), TString(createSecret.CloudId()));
         return settings;
     }
 
@@ -468,6 +480,7 @@ namespace {
             settings.ValueParamName = std::move(paramName);
         }
         settings.MissingOk = (TString(alterSecret.MissingOk()) == "1");
+        FillSecretTypeSettings(settings, TString(alterSecret.Type()), TString(alterSecret.ServiceAccountId()), TString(alterSecret.CloudId()));
         return settings;
     }
 

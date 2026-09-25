@@ -11,6 +11,7 @@ PEERDIR(
     ydb/services/scheme_secret
     ydb/services/scheme_secret/ut/common
     ydb/core/kqp/ut/common
+    yql/essentials/providers/common/structured_token
     yql/essentials/sql/pg_dummy
 )
 

@@ -1,10 +1,20 @@
 #include <ydb/core/kqp/common/events/script_executions.h>
+#include <ydb/services/scheme_secret/secret_credentials.h>
 #include <ydb/services/scheme_secret/service.h>
 
+#include <yql/essentials/providers/common/structured_token/yql_structured_token.h>
+#include <yql/essentials/providers/common/structured_token/yql_token_builder.h>
+
 #include <ydb/services/scheme_secret/ut/common/helpers.h>
+#include <ydb/core/base/counters.h>
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
 
+#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <ydb/library/actors/core/hfunc.h>
+
 #include <library/cpp/testing/unittest/registar.h>
+
+#include <thread>
 
 namespace NKikimr::NSecret {
 
@@ -49,6 +59,154 @@ Y_UNIT_TEST_SUITE(DescribeSchemaSecretsService) {
             auto promise = ResolveSecret("/Root/secret-name", kikimr);
             AssertSecretValue(newSecretValue, promise);
         }
+    }
+
+    Y_UNIT_TEST(GetIamDelegationValue) {
+        TKikimrRunner kikimr;
+        auto& runtime = *kikimr.GetTestServer().GetRuntime();
+        auto& featureFlags = runtime.GetAppData(0).FeatureFlags;
+        featureFlags.SetEnableSchemaSecrets(true);
+        featureFlags.SetEnableIamDelegationSecrets(true);
+        RegisterFakeIamDelegatedTokenService(runtime, {{"aje-1", "b1g-1"}});
+
+        CreateIamDelegationSecretDirect(runtime, "/Root/sa-secret", "aje-1", "b1g-1", "referrer-1");
+
+        // the value of a delegation secret is the current token of the delegated service account,
+        // obtained from the token service for every read; readers see a plain value
+        for (int i = 0; i < 3; ++i) {
+            AssertSecretValue("delegated-token-b1g-1/aje-1", ResolveSecret("/Root/sa-secret", kikimr));
+        }
+
+        // mixed with value secrets, in the order of the request
+        auto db = kikimr.GetTableClient();
+        auto session = db.CreateSession().GetValueSync().GetSession();
+        CreateSchemaSecret("/Root/plain-secret", "plain-value", session);
+        AssertSecretValues({"plain-value", "delegated-token-b1g-1/aje-1", "plain-value", "delegated-token-b1g-1/aje-1"},
+            ResolveSecrets({"/Root/plain-secret", "/Root/sa-secret", "/Root/plain-secret", "/Root/sa-secret"}, kikimr));
+    }
+
+    Y_UNIT_TEST(GetIamDelegationUpdatedValue) {
+        TKikimrRunner kikimr;
+        auto& runtime = *kikimr.GetTestServer().GetRuntime();
+        auto& featureFlags = runtime.GetAppData(0).FeatureFlags;
+        featureFlags.SetEnableSchemaSecrets(true);
+        featureFlags.SetEnableIamDelegationSecrets(true);
+        RegisterFakeIamDelegatedTokenService(runtime, {{"aje-1", "b1g-1"}, {"aje-2", "b1g-1"}, {"aje-3", "b1g-1"}, {"aje-4", "b1g-1"}});
+
+        CreateIamDelegationSecretDirect(runtime, "/Root/sa-secret", "aje-1", "b1g-1", "referrer-1");
+        AssertSecretValue("delegated-token-b1g-1/aje-1", ResolveSecret("/Root/sa-secret", kikimr));
+
+        // after ALTER a read returns a token of the new service account
+        for (int i = 0; i < 3; ++i) {
+            const TString serviceAccountId = TStringBuilder() << "aje-" << (i + 2);
+            AlterIamDelegationSecretDirect(runtime, "/Root/sa-secret", serviceAccountId, "b1g-1", TStringBuilder() << "referrer-" << (i + 2));
+            AssertSecretValue(TStringBuilder() << "delegated-token-b1g-1/" << serviceAccountId, ResolveSecret("/Root/sa-secret", kikimr));
+        }
+    }
+
+    Y_UNIT_TEST(GetIamDelegationValueTokenRefused) {
+        TKikimrRunner kikimr;
+        auto& runtime = *kikimr.GetTestServer().GetRuntime();
+        auto& featureFlags = runtime.GetAppData(0).FeatureFlags;
+        featureFlags.SetEnableSchemaSecrets(true);
+        featureFlags.SetEnableIamDelegationSecrets(true);
+        RegisterFakeIamDelegatedTokenService(runtime, {});
+
+        // the token service cannot obtain a token: the read fails with its error and the secret path
+        CreateIamDelegationSecretDirect(runtime, "/Root/sa-secret", "aje-1", "b1g-1", "referrer-1");
+        AssertErrorContains(ResolveSecret("/Root/sa-secret", kikimr), "Cannot obtain the IAM token of secret `/Root/sa-secret`", Ydb::StatusIds::UNAUTHORIZED);
+        AssertErrorContains(ResolveSecret("/Root/sa-secret", kikimr), "No delegation for service account aje-1", Ydb::StatusIds::UNAUTHORIZED);
+    }
+
+    // A retryable failure of the token service (IAM unreachable past the token service's own retries) is retried
+    // by the secret service with the reader's retry policy, so a reader that does not retry itself is not stopped
+    // by an outage
+    Y_UNIT_TEST(GetIamDelegationValueRetriedWhileUnavailable) {
+        TKikimrRunner kikimr;
+        auto& runtime = *kikimr.GetTestServer().GetRuntime();
+        auto& featureFlags = runtime.GetAppData(0).FeatureFlags;
+        featureFlags.SetEnableSchemaSecrets(true);
+        featureFlags.SetEnableIamDelegationSecrets(true);
+        auto tokens = RegisterFakeIamDelegatedTokenService(runtime, {{"aje-1", "b1g-1"}});
+        CreateIamDelegationSecretDirect(runtime, "/Root/sa-secret", "aje-1", "b1g-1", "referrer-1");
+
+        // bounded by the number of retries only, never by elapsed time
+        const auto quickPolicy = IRetryPolicy<>::GetExponentialBackoffPolicy(
+            [](){ return ERetryErrorClass::ShortRetry; },
+            /* minDelay */ TDuration::MilliSeconds(10),
+            /* minLongRetryDelay */ TDuration::MilliSeconds(10),
+            /* maxDelay */ TDuration::MilliSeconds(50),
+            /* maxRetries */ 5,
+            /* maxTime */ TDuration::Max());
+
+        // three UNAVAILABLE answers, then a token: the read succeeds after four requests
+        tokens->UnavailableAnswers = 3;
+        AssertSecretValue("delegated-token-b1g-1/aje-1", ResolveSecret("/Root/sa-secret", kikimr, nullptr, {.RetryPolicy = quickPolicy}));
+        UNIT_ASSERT_VALUES_EQUAL(tokens->Calls.load(), 4u);
+
+        // the policy is exhausted: the last failure is returned
+        tokens->Calls = 0;
+        tokens->UnavailableAnswers = 100;
+        AssertErrorContains(ResolveSecret("/Root/sa-secret", kikimr, nullptr, {.RetryPolicy = quickPolicy}),
+            "Cannot obtain the IAM token of secret `/Root/sa-secret`", Ydb::StatusIds::UNAVAILABLE);
+        UNIT_ASSERT_VALUES_EQUAL(tokens->Calls.load(), 6u); // the first request plus maxRetries
+
+        // without a policy a short default applies (MakeShortRetryPolicy: 10 retries within 10 s): one outage,
+        // retried after 100 ms, is survived
+        tokens->Calls = 0;
+        tokens->UnavailableAnswers = 1;
+        AssertSecretValue("delegated-token-b1g-1/aje-1", ResolveSecret("/Root/sa-secret", kikimr));
+        UNIT_ASSERT_VALUES_EQUAL(tokens->Calls.load(), 2u);
+    }
+
+    // A refused token (the delegation is gone) is final: no retries even with a policy
+    Y_UNIT_TEST(GetIamDelegationValueRefusedIsNotRetried) {
+        TKikimrRunner kikimr;
+        auto& runtime = *kikimr.GetTestServer().GetRuntime();
+        auto& featureFlags = runtime.GetAppData(0).FeatureFlags;
+        featureFlags.SetEnableSchemaSecrets(true);
+        featureFlags.SetEnableIamDelegationSecrets(true);
+        auto tokens = RegisterFakeIamDelegatedTokenService(runtime, {});
+        CreateIamDelegationSecretDirect(runtime, "/Root/sa-secret", "aje-1", "b1g-1", "referrer-1");
+
+        AssertErrorContains(ResolveSecret("/Root/sa-secret", kikimr, nullptr, {.RetryPolicy = MakeLongRetryPolicy()}),
+            "No delegation for service account aje-1", Ydb::StatusIds::UNAUTHORIZED);
+        UNIT_ASSERT_VALUES_EQUAL(tokens->Calls.load(), 1u);
+    }
+
+    // Many readers of one delegation secret during a one-shot outage of the token service: every read is retried
+    // and succeeds; the token service is asked once per read plus the retry of the one that hit the outage
+    Y_UNIT_TEST(GetIamDelegationValueConcurrentReadersDuringOutage) {
+        TKikimrRunner kikimr;
+        auto& runtime = *kikimr.GetTestServer().GetRuntime();
+        auto& featureFlags = runtime.GetAppData(0).FeatureFlags;
+        featureFlags.SetEnableSchemaSecrets(true);
+        featureFlags.SetEnableIamDelegationSecrets(true);
+        auto tokens = RegisterFakeIamDelegatedTokenService(runtime, {{"aje-1", "b1g-1"}});
+        CreateIamDelegationSecretDirect(runtime, "/Root/sa-secret", "aje-1", "b1g-1", "referrer-1");
+
+        tokens->UnavailableAnswers = 1;
+        constexpr ui32 readers = 8;
+        TVector<TDescriptionPromise> promises;
+        for (ui32 i = 0; i < readers; ++i) {
+            promises.push_back(ResolveSecret("/Root/sa-secret", kikimr));
+        }
+        for (auto& promise : promises) {
+            AssertSecretValue("delegated-token-b1g-1/aje-1", promise);
+        }
+        UNIT_ASSERT_VALUES_EQUAL(tokens->Calls.load(), readers + 1);
+    }
+
+    Y_UNIT_TEST(GetIamDelegationValueWithoutTokenService) {
+        TKikimrRunner kikimr;
+        auto& runtime = *kikimr.GetTestServer().GetRuntime();
+        auto& featureFlags = runtime.GetAppData(0).FeatureFlags;
+        featureFlags.SetEnableSchemaSecrets(true);
+        featureFlags.SetEnableIamDelegationSecrets(true);
+
+        // no token service on the node (the feature was never enabled there): a clear error, no hang
+        CreateIamDelegationSecretDirect(runtime, "/Root/sa-secret", "aje-1", "b1g-1", "referrer-1");
+        AssertErrorContains(ResolveSecret("/Root/sa-secret", kikimr), "IAM delegation secrets are not enabled on this node", Ydb::StatusIds::UNAVAILABLE);
     }
 
     Y_UNIT_TEST(GetUnexistingValue) {
@@ -565,6 +723,264 @@ Y_UNIT_TEST_SUITE(DescribeSchemaSecretsService) {
             Ydb::StatusIds::UNAVAILABLE);
     }
 
+}
+
+Y_UNIT_TEST_SUITE(RefreshingSecretCredentials) {
+    // Hang guard: polls the provider until it hands out `expected` (the test makes that inevitable) and returns the last value.
+    std::string WaitForValue(const NYdb::TCredentialsProviderPtr& provider, const std::string& expected, TDuration timeout = TDuration::Seconds(120)) {
+        const TInstant deadline = TInstant::Now() + timeout;
+        std::string value = provider->GetAuthInfo();
+        while (value != expected && TInstant::Now() < deadline) {
+            Sleep(TDuration::MilliSeconds(100));
+            value = provider->GetAuthInfo();
+        }
+        return value;
+    }
+
+    // Hang guard: polls until the condition holds (the test makes it inevitable).
+    template <class TCondition>
+    void WaitUntil(TCondition condition, TStringBuf what, TDuration timeout = TDuration::Seconds(120)) {
+        const TInstant deadline = TInstant::Now() + timeout;
+        while (!condition()) {
+            UNIT_ASSERT_C(TInstant::Now() < deadline, "timed out waiting for " << what);
+            Sleep(TDuration::MilliSeconds(50));
+        }
+    }
+
+    Y_UNIT_TEST(KeepTokenSecretReference) {
+        const TString json = NYql::TStructuredTokenBuilder().SetTokenAuthWithSecret("/Root/token-secret", "").ToJson();
+        const TString resolved = NYql::CreateStructuredTokenParser(json).ToBuilder().ReplaceReferences({{"/Root/token-secret", "the-token"}}).ToJson();
+
+        // a schema secret: the reference and the database are kept next to the token
+        const auto kept = NYql::ParseStructuredToken(KeepTokenSecretReference(resolved, "/Root/token-secret", "/Root"));
+        UNIT_ASSERT_VALUES_EQUAL(kept.GetField("token"), "the-token");
+        UNIT_ASSERT_VALUES_EQUAL(kept.GetField(TString(SecretReferenceField)), "/Root/token-secret");
+        UNIT_ASSERT_VALUES_EQUAL(kept.GetField(TString(SecretDatabaseField)), "/Root");
+        UNIT_ASSERT(!kept.HasField("token_ref"));
+
+        // a secret of the old metadata provider is not re-read: nothing is added
+        UNIT_ASSERT_VALUES_EQUAL(KeepTokenSecretReference(resolved, "old-secret-name", "/Root"), resolved);
+    }
+
+    Y_UNIT_TEST(FactoryFallsBackOutsideActors) {
+        // outside an actor (no actor system at hand) the wrapped factory is used as before
+        class TCountingFactory : public NYql::IStructuredTokenCredentialsFactory {
+        public:
+            std::shared_ptr<NYdb::ICredentialsProviderFactory> Create(const TString& json, bool) override {
+                ++Calls;
+                return NYdb::CreateOAuthCredentialsProviderFactory(NYql::ParseStructuredToken(json).GetField("token"));
+            }
+            ui32 Calls = 0;
+        };
+        auto inner = std::make_shared<TCountingFactory>();
+        auto factory = CreateRefreshingSecretCredentialsFactoryOverFactory(inner);
+        const TString json = KeepTokenSecretReference(NYql::TStructuredTokenBuilder().SetIAMToken("the-token").ToJson(), "/Root/token-secret", "/Root");
+        UNIT_ASSERT_VALUES_EQUAL(factory->Create(json, false)->CreateProvider()->GetAuthInfo(), "the-token");
+        UNIT_ASSERT_VALUES_EQUAL(inner->Calls, 1u);
+    }
+
+    Y_UNIT_TEST(ValueSecretIsReReadOnUse) {
+        TKikimrRunner kikimr;
+        auto& runtime = *kikimr.GetTestServer().GetRuntime();
+        runtime.GetAppData(0).FeatureFlags.SetEnableSchemaSecrets(true);
+        auto db = kikimr.GetTableClient();
+        auto session = db.CreateSession().GetValueSync().GetSession();
+        CreateSchemaSecret("/Root/token-secret", "token-1", session);
+        const auto makeProvider = [&](const TString& initial, EBearerPrefix bearer) {
+            return CreateRefreshingSecretCredentialsProviderFactory(runtime.GetActorSystem(0), "/Root/token-secret", "/Root", initial, bearer)->CreateProvider();
+        };
+
+        // the provider starts with the value resolved by the executer, so the first use costs no wait
+        auto provider = makeProvider("token-1", EBearerPrefix::None);
+        UNIT_ASSERT_VALUES_EQUAL(provider->GetAuthInfo(), "token-1");
+
+        // the secret is altered: the next uses take the new value
+        AlterSchemaSecret("/Root/token-secret", "token-2", session);
+        UNIT_ASSERT_VALUES_EQUAL(WaitForValue(provider, "token-2"), "token-2");
+
+        // reads happen only when the token is asked for, and only one of them is in flight at a time: 100 uses
+        // start at most 100 reads (observed through the ReReads sensor of the node)
+        const auto sensor = [&runtime](const char* name) {
+            return GetServiceCounters(runtime.GetAppData(0).Counters, "schema_secrets")
+                ->GetSubgroup("component", "refreshing_credentials")->GetCounter(name, true)->Val();
+        };
+        const auto reReads = [&sensor]() { return sensor("ReReads"); };
+        const i64 before = reReads();
+        for (ui32 i = 0; i < 100; ++i) {
+            UNIT_ASSERT_VALUES_EQUAL(provider->GetAuthInfo(), "token-2");
+        }
+        UNIT_ASSERT_C(reReads() - before <= 100, reReads() - before);
+
+        // with the bearer prefix for HTTP clients
+        auto bearer = makeProvider("token-2", EBearerPrefix::Add);
+        UNIT_ASSERT_VALUES_EQUAL(bearer->GetAuthInfo(), "Bearer token-2");
+        AlterSchemaSecret("/Root/token-secret", "token-3", session);
+        UNIT_ASSERT_VALUES_EQUAL(WaitForValue(bearer, "Bearer token-3"), "Bearer token-3");
+
+        // the secret is dropped: reads fail and the task keeps the value it has. At most one read is in flight,
+        // so once a re-read has failed no successful one can be pending any more: from then on the count of
+        // successful re-reads is frozen while the errors grow with the uses.
+        UNIT_ASSERT_VALUES_EQUAL(WaitForValue(provider, "token-3"), "token-3");
+        DropSchemaSecret("/Root/token-secret", session);
+        const i64 errorsBefore = sensor("ReReadErrors");
+        WaitUntil([&]() {
+            UNIT_ASSERT_VALUES_EQUAL(provider->GetAuthInfo(), "token-3");
+            return sensor("ReReadErrors") > errorsBefore;
+        }, "the first failed re-read");
+        const i64 refreshes = reReads();
+        const i64 errors = sensor("ReReadErrors");
+        WaitUntil([&]() {
+            UNIT_ASSERT_VALUES_EQUAL(provider->GetAuthInfo(), "token-3");
+            return sensor("ReReadErrors") > errors;
+        }, "another failed re-read");
+        UNIT_ASSERT_VALUES_EQUAL(provider->GetAuthInfo(), "token-3");
+        UNIT_ASSERT_VALUES_EQUAL(reReads(), refreshes);
+    }
+
+    // A failed re-read keeps the value and is counted
+    Y_UNIT_TEST(ReReadErrorIsCounted) {
+        TKikimrRunner kikimr;
+        auto& runtime = *kikimr.GetTestServer().GetRuntime();
+        runtime.GetAppData(0).FeatureFlags.SetEnableSchemaSecrets(true);
+        const auto sensor = [&runtime](const char* name) {
+            return GetServiceCounters(runtime.GetAppData(0).Counters, "schema_secrets")
+                ->GetSubgroup("component", "refreshing_credentials")->GetCounter(name, true)->Val();
+        };
+
+        // the secret behind the provider does not exist (dropped after the execution started)
+        auto provider = CreateRefreshingSecretCredentialsProviderFactory(runtime.GetActorSystem(0), "/Root/missing-secret", "/Root", "token-1", EBearerPrefix::None)->CreateProvider();
+        UNIT_ASSERT_VALUES_EQUAL(sensor("ProvidersCreated"), 1);
+        const i64 errorsBefore = sensor("ReReadErrors");
+        UNIT_ASSERT_VALUES_EQUAL(provider->GetAuthInfo(), "token-1"); // starts the one re-read, which fails
+        WaitUntil([&]() { return sensor("ReReadErrors") > errorsBefore; }, "the failed re-read");
+        UNIT_ASSERT_VALUES_EQUAL(sensor("ReReadErrors"), errorsBefore + 1);
+        UNIT_ASSERT_VALUES_EQUAL(sensor("ReReads"), 0);
+        UNIT_ASSERT_VALUES_EQUAL(provider->GetAuthInfo(), "token-1");
+    }
+
+    // Stand-in for the describe-secret service of the node: counts the requests and holds every reply until the
+    // test releases them (with a TEvWakeup), answering `Value` then.
+    struct TFakeDescribeSecrets : TThrRefBase {
+        std::atomic<ui32> Requests = 0;
+        TString Value;
+    };
+
+    class TFakeDescribeSecretsService : public NActors::TActorBootstrapped<TFakeDescribeSecretsService> {
+    public:
+        explicit TFakeDescribeSecretsService(TIntrusivePtr<TFakeDescribeSecrets> state)
+            : State(std::move(state))
+        {}
+
+        void Bootstrap() {
+            Become(&TThis::StateWork);
+        }
+
+        STRICT_STFUNC(StateWork,
+            hFunc(TDescribeSchemaSecretsService::TEvResolveSecret, Handle);
+            cFunc(NActors::TEvents::TEvWakeup::EventType, Reply);
+            cFunc(NActors::TEvents::TEvPoison::EventType, PassAway);
+        )
+
+    private:
+        void Handle(TDescribeSchemaSecretsService::TEvResolveSecret::TPtr& ev) {
+            Held.push_back(ev->Get()->Promise);
+            ++State->Requests;
+        }
+
+        void Reply() {
+            auto held = std::move(Held);
+            Held.clear();
+            for (auto& promise : held) {
+                promise.SetValue(NKqp::TEvDescribeSecretsResponse::TDescription(std::vector<TString>{State->Value}));
+            }
+        }
+
+        const TIntrusivePtr<TFakeDescribeSecrets> State;
+        TVector<TDescriptionPromise> Held;
+    };
+
+    // GetAuthInfo hands out the value of the last read and never waits for the secret service: while the service
+    // holds its reply, thousands of concurrent calls return the current value (a blocking implementation would
+    // hang here), and only one re-read is in flight; the held reply, once released, is the next value.
+    Y_UNIT_TEST(GetAuthInfoNeverWaitsForTheSecretService) {
+        TKikimrRunner kikimr;
+        auto& runtime = *kikimr.GetTestServer().GetRuntime();
+        runtime.GetAppData(0).FeatureFlags.SetEnableSchemaSecrets(true);
+        auto* actorSystem = runtime.GetActorSystem(0);
+        const auto sensor = [&runtime](const char* name) {
+            return GetServiceCounters(runtime.GetAppData(0).Counters, "schema_secrets")
+                ->GetSubgroup("component", "refreshing_credentials")->GetCounter(name, true)->Val();
+        };
+        auto state = MakeIntrusive<TFakeDescribeSecrets>();
+        state->Value = "token-2";
+        const TActorId fake = runtime.Register(new TFakeDescribeSecretsService(state));
+        runtime.RegisterService(MakeDescribeSchemaSecretServiceId(runtime.GetNodeId(0)), fake);
+
+        auto provider = CreateRefreshingSecretCredentialsProviderFactory(actorSystem, "/Root/token-secret", "/Root", "token-1", EBearerPrefix::None)->CreateProvider();
+
+        // 8 threads x 1000 calls while the service holds the (single) re-read
+        const auto hammer = [&provider](const std::string& expected) {
+            constexpr ui32 threads = 8;
+            constexpr ui32 callsPerThread = 1000;
+            std::atomic<ui32> unexpected = 0;
+            TVector<std::thread> workers;
+            for (ui32 t = 0; t < threads; ++t) {
+                workers.emplace_back([&provider, &expected, &unexpected]() {
+                    for (ui32 i = 0; i < callsPerThread; ++i) {
+                        if (provider->GetAuthInfo() != expected) {
+                            ++unexpected;
+                        }
+                    }
+                });
+            }
+            for (auto& worker : workers) {
+                worker.join();
+            }
+            UNIT_ASSERT_VALUES_EQUAL(unexpected.load(), 0u);
+        };
+        hammer("token-1");
+        WaitUntil([&]() { return state->Requests.load() >= 1; }, "the re-read to reach the fake service");
+        UNIT_ASSERT_VALUES_EQUAL(state->Requests.load(), 1u); // one re-read in flight, the other uses did not start another
+        UNIT_ASSERT_VALUES_EQUAL(sensor("ReReads"), 0);
+        UNIT_ASSERT_VALUES_EQUAL(sensor("ReReadErrors"), 0);
+        UNIT_ASSERT_VALUES_EQUAL(provider->GetAuthInfo(), "token-1");
+
+        // the held answer is released: the next uses take the new value. The use that first sees it also
+        // starts the next re-read (held again), so exactly two requests have reached the service.
+        runtime.Send(new IEventHandle(fake, runtime.AllocateEdgeActor(), new NActors::TEvents::TEvWakeup()));
+        UNIT_ASSERT_VALUES_EQUAL(WaitForValue(provider, "token-2"), "token-2");
+        UNIT_ASSERT_VALUES_EQUAL(sensor("ReReads"), 1);
+        UNIT_ASSERT_VALUES_EQUAL(sensor("ReReadErrors"), 0);
+        WaitUntil([&]() { return state->Requests.load() >= 2; }, "the next re-read to reach the fake service");
+        UNIT_ASSERT_VALUES_EQUAL(state->Requests.load(), 2u);
+
+        // the service holds again: the calls still return the last value at once and start no further re-read
+        state->Value = "token-3";
+        hammer("token-2");
+        UNIT_ASSERT_VALUES_EQUAL(state->Requests.load(), 2u);
+        UNIT_ASSERT_VALUES_EQUAL(sensor("ReReads"), 1);
+        runtime.Send(new IEventHandle(fake, runtime.AllocateEdgeActor(), new NActors::TEvents::TEvWakeup()));
+        UNIT_ASSERT_VALUES_EQUAL(WaitForValue(provider, "token-3"), "token-3");
+        UNIT_ASSERT_VALUES_EQUAL(sensor("ReReads"), 2);
+        UNIT_ASSERT_VALUES_EQUAL(sensor("ReReadErrors"), 0);
+    }
+
+    Y_UNIT_TEST(DelegationSecretIsReReadOnUse) {
+        TKikimrRunner kikimr;
+        auto& runtime = *kikimr.GetTestServer().GetRuntime();
+        auto& featureFlags = runtime.GetAppData(0).FeatureFlags;
+        featureFlags.SetEnableSchemaSecrets(true);
+        featureFlags.SetEnableIamDelegationSecrets(true);
+        RegisterFakeIamDelegatedTokenService(runtime, {{"aje-1", "b1g-1"}, {"aje-2", "b1g-1"}});
+        CreateIamDelegationSecretDirect(runtime, "/Root/sa-secret", "aje-1", "b1g-1", "referrer-1");
+
+        // the task got the token of aje-1 when the execution started; the secret is altered while it runs
+        // and the next uses take a token of the new service account
+        auto provider = CreateRefreshingSecretCredentialsProviderFactory(runtime.GetActorSystem(0), "/Root/sa-secret", "/Root", "delegated-token-b1g-1/aje-1", EBearerPrefix::None)->CreateProvider();
+        UNIT_ASSERT_VALUES_EQUAL(provider->GetAuthInfo(), "delegated-token-b1g-1/aje-1");
+        AlterIamDelegationSecretDirect(runtime, "/Root/sa-secret", "aje-2", "b1g-1", "referrer-2");
+        UNIT_ASSERT_VALUES_EQUAL(WaitForValue(provider, "delegated-token-b1g-1/aje-2"), "delegated-token-b1g-1/aje-2");
+    }
 }
 
 } // NKikimr::NSecret

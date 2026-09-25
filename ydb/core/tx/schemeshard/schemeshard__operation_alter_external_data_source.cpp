@@ -123,9 +123,11 @@ class TAlterExternalDataSource : public TSubOperation {
     static bool IsDescriptionValid(
         const THolder<TProposeResponse>& result,
         const NKikimrSchemeOp::TExternalDataSourceDescription& desc,
-        const NExternalSource::IExternalSourceFactory::TPtr& factory) {
+        TSchemeShard* ss) {
         TString errorMessage;
-        if (!NExternalDataSource::Validate(desc, factory, errorMessage)) {
+        if (!NExternalDataSource::Validate(desc, ss->ExternalSourceFactory, errorMessage)
+            || !NExternalDataSource::ValidateSecretsUsage(desc.GetAuth(), ss, errorMessage))
+        {
             result->SetError(NKikimrScheme::StatusSchemeError, errorMessage);
             return false;
         }
@@ -178,7 +180,7 @@ public:
 
         RETURN_RESULT_UNLESS(IsDestinationPathValid(result, dstPath));
         RETURN_RESULT_UNLESS(IsApplyIfChecksPassed(result, context));
-        RETURN_RESULT_UNLESS(IsDescriptionValid(result, externalDataSourceDescription, context.SS->ExternalSourceFactory));
+        RETURN_RESULT_UNLESS(IsDescriptionValid(result, externalDataSourceDescription, context.SS));
 
         const auto oldExternalDataSourceInfo = context.SS->ExternalDataSources.Value(dstPath->PathId, nullptr);
         Y_ABORT_UNLESS(oldExternalDataSourceInfo);

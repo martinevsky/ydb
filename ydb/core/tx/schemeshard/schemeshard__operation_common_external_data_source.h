@@ -46,6 +46,11 @@ bool Validate(const NKikimrSchemeOp::TExternalDataSourceDescription& desc,
               const NExternalSource::IExternalSourceFactory::TPtr& factory,
               TString& errStr);
 
+// A secret of type IAM_DELEGATION is read as an IAM token of the delegated service account, so it may only
+// stand where a token is expected (AUTH_METHOD = "TOKEN"), never as a service account key signature, a
+// password or an AWS key. Secrets that do not exist (yet) are not checked here: they fail when they are read.
+bool ValidateSecretsUsage(const NKikimrSchemeOp::TAuth& auth, TSchemeShard* ss, TString& errStr);
+
 TExternalDataSourceInfo::TPtr CreateExternalDataSource(
     const NKikimrSchemeOp::TExternalDataSourceDescription& desc, ui64 alterVersion);
 

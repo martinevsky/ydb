@@ -1876,6 +1876,9 @@ public:
                         .ValueParamName(settings.ValueParamName.IsValid() ? settings.ValueParamName.Cast() : emptyAtom)
                         .ReplaceIfExists(mode == "create_or_replace" ? trueAtom : falseAtom)
                         .ExistingOk(mode == "create_if_not_exists" ? trueAtom : falseAtom)
+                        .Type(settings.Type.IsValid() ? settings.Type.Cast() : emptyAtom)
+                        .ServiceAccountId(settings.ServiceAccountId.IsValid() ? settings.ServiceAccountId.Cast() : emptyAtom)
+                        .CloudId(settings.CloudId.IsValid() ? settings.CloudId.Cast() : emptyAtom)
                         .Done()
                         .Ptr();
                 } else if (mode == "alter" || mode == "alter_if_exists") {
@@ -1889,6 +1892,9 @@ public:
                         .Value(settings.Value.IsValid() ? settings.Value.Cast() : emptyAtom)
                         .ValueParamName(settings.ValueParamName.IsValid() ? settings.ValueParamName.Cast() : emptyAtom)
                         .MissingOk(mode == "alter_if_exists" ? trueAtom : falseAtom)
+                        .Type(settings.Type.IsValid() ? settings.Type.Cast() : emptyAtom)
+                        .ServiceAccountId(settings.ServiceAccountId.IsValid() ? settings.ServiceAccountId.Cast() : emptyAtom)
+                        .CloudId(settings.CloudId.IsValid() ? settings.CloudId.Cast() : emptyAtom)
                         .Done()
                         .Ptr();
                 } else if (mode == "drop" || mode == "drop_if_exists") {
@@ -2014,6 +2020,9 @@ TWriteSecretSettings ParseSecretSettings(NNodes::TExprList node, TExprContext& c
     TMaybeNode<TCoAtom> value;
     TMaybeNode<TCoAtom> valueParamName;
     TMaybeNode<TCoAtom> inheritPermissions;
+    TMaybeNode<TCoAtom> type;
+    TMaybeNode<TCoAtom> serviceAccountId;
+    TMaybeNode<TCoAtom> cloudId;
 
     for (auto child : node) {
         if (auto maybeTuple = child.Maybe<TCoNameValueTuple>()) {
@@ -2044,13 +2053,60 @@ TWriteSecretSettings ParseSecretSettings(NNodes::TExprList node, TExprContext& c
             } else if (name == "inherit_permissions") {
                 YQL_ENSURE(tuple.Value().Maybe<TCoAtom>());
                 inheritPermissions = tuple.Value().Cast<TCoAtom>();
+            } else if (name == "type") {
+                YQL_ENSURE(tuple.Value().Maybe<TCoAtom>());
+                type = tuple.Value().Cast<TCoAtom>();
+            } else if (name == "service_account_id") {
+                YQL_ENSURE(tuple.Value().Maybe<TCoAtom>());
+                serviceAccountId = tuple.Value().Cast<TCoAtom>();
+            } else if (name == "resource") {
+                YQL_ENSURE(tuple.Value().Maybe<TCoAtom>());
+                cloudId = tuple.Value().Cast<TCoAtom>();
             }
         }
     }
 
     YQL_ENSURE(mode);
     auto modeStr = mode.Cast().Value();
-    if (modeStr == "create" || modeStr == "create_if_not_exists" || modeStr == "create_or_replace" || modeStr == "alter" || modeStr == "alter_if_exists") {
+    const bool isCreate = modeStr == "create" || modeStr == "create_if_not_exists" || modeStr == "create_or_replace";
+    const bool isAlter = modeStr == "alter" || modeStr == "alter_if_exists";
+    TString typeStr = type ? to_upper(TString(type.Cast().Value())) : TString();
+    if (type && typeStr != "VALUE" && typeStr != "IAM_DELEGATION") {
+        ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_BAD_REQUEST,
+            TStringBuilder() << "Unknown secret type: " << typeStr << ". Expected VALUE or IAM_DELEGATION"));
+        return TWriteSecretSettings::CreateWithError();
+    }
+    const bool hasDelegationParams = serviceAccountId || cloudId;
+    const bool isDelegation = typeStr == "IAM_DELEGATION"
+        || (typeStr.empty() && isAlter && hasDelegationParams && !value && !valueParamName);
+    if (type) {
+        // the gateway receives the normalized type name
+        type = Build<TCoAtom>(ctx, node.Pos()).Value(typeStr).Done();
+    }
+    if (isDelegation) {
+        // the type is always passed explicitly to the gateway
+        type = Build<TCoAtom>(ctx, node.Pos()).Value("IAM_DELEGATION").Done();
+        if (value || valueParamName) {
+            ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_BAD_REQUEST,
+                "Secret value is not allowed for secrets of type IAM_DELEGATION"));
+            return TWriteSecretSettings::CreateWithError();
+        }
+        if (isCreate && !serviceAccountId) {
+            ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_BAD_REQUEST,
+                "SERVICE_ACCOUNT_ID is required for secrets of type IAM_DELEGATION"));
+            return TWriteSecretSettings::CreateWithError();
+        }
+        if (isAlter && !hasDelegationParams) {
+            ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_BAD_REQUEST,
+                "SERVICE_ACCOUNT_ID or RESOURCE is required to alter a secret of type IAM_DELEGATION"));
+            return TWriteSecretSettings::CreateWithError();
+        }
+    } else if (isCreate || isAlter) {
+        if (hasDelegationParams) {
+            ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_BAD_REQUEST,
+                "SERVICE_ACCOUNT_ID and RESOURCE are allowed only for secrets of type IAM_DELEGATION"));
+            return TWriteSecretSettings::CreateWithError();
+        }
         if (!value && !valueParamName) {
             ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_BAD_REQUEST,
                 "Secret value is required: provide a literal or a single string parameter"));
@@ -2063,7 +2119,8 @@ TWriteSecretSettings ParseSecretSettings(NNodes::TExprList node, TExprContext& c
         }
     }
 
-    return TWriteSecretSettings(std::move(mode), std::move(value), std::move(valueParamName), std::move(inheritPermissions));
+    return TWriteSecretSettings(std::move(mode), std::move(value), std::move(valueParamName), std::move(inheritPermissions),
+        std::move(type), std::move(serviceAccountId), std::move(cloudId));
 }
 
 IGraphTransformer::TStatus TKiSinkVisitorTransformer::DoTransform(TExprNode::TPtr input, TExprNode::TPtr& output,

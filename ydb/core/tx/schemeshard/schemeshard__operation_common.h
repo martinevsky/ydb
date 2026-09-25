@@ -329,6 +329,9 @@ void AbortRelatedOperations(TOperationId operationId, const THashSet<TTxId>& rel
 // Creates an ACL that interrupts inheritance from the parent, keeping only the DescribeSchema grant.
 TString InterruptInheritanceExceptDescribe(const TString& initialAcl);
 
+// Validates the parameters of an IAM delegation secret; returns an error message on failure.
+std::optional<TString> ValidateIamDelegation(const NKikimrSchemeOp::TIamDelegation& delegation);
+
 } // namespace NKikimr::NSchemeShard
 
 namespace NKikimr::NSchemeShard::NTableIndexVersion {

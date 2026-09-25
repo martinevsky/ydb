@@ -10,6 +10,8 @@ PEERDIR(
     ydb/public/api/client/yc_private/accessservice
     ydb/public/api/client/yc_private/servicecontrol
     ydb/public/api/client/yc_private/operation
+    ydb/public/api/client/yc_private/resourcemanager
+    contrib/libs/googleapis-common-protos
 )
 
 END()

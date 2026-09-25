@@ -13,4 +13,5 @@ RECURSE(
     kv
     streaming
     result_set_format
+    secrets
 )

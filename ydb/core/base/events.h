@@ -205,6 +205,7 @@ struct TKikimrEvents : TEvents {
         ES_FLOW_CONTROL_MANAGER = 4282,
         ES_SERVICE_CONTROL_SERVICE = 4283,
         ES_OPERATION_SERVICE = 4284,
+        ES_IAM_DELEGATION = 4286,
     };
 };
 

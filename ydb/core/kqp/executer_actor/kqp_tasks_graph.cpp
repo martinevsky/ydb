@@ -24,6 +24,7 @@
 #include <ydb/core/scheme/scheme_types_proto.h>
 
 #include <yql/essentials/core/yql_expr_optimize.h>
+#include <ydb/services/scheme_secret/secret_credentials.h>
 #include <yql/essentials/providers/common/structured_token/yql_token_builder.h>
 #include <ydb/library/yql/providers/pq/common/yql_names.h>
 #include <ydb/services/udf_store/wasm/query_compartment_scope.h>
@@ -3812,7 +3813,14 @@ TString TKqpTasksGraph::ReplaceStructuredTokenReferences(const TString& token) c
     const auto parser = NYql::CreateStructuredTokenParser(token);
     auto builder = parser.ToBuilder();
     if (!parser.HasTransientToken()) {
+        // the reference of a secret whose value changes over time (an IAM delegation) stays next to the
+        // resolved token: the task re-reads the secret while it runs, so that the token never goes stale in
+        // a long execution. Value secrets are resolved once, as before.
+        const TString tokenReference = NYql::ParseStructuredToken(token).GetFieldOrDefault("token_ref", "");
         builder.ReplaceReferences(GetMeta().SecureParams);
+        if (tokenReference && GetMeta().ReReadSecrets.contains(tokenReference)) {
+            return NSecret::KeepTokenSecretReference(builder.ToJson(), tokenReference, GetMeta().Database);
+        }
     } else if (UserToken && UserToken->GetSerializedToken()) {
         builder.SetTransientTokenAuth(UserToken->GetSerializedToken());
     }

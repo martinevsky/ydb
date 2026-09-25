@@ -230,6 +230,7 @@ struct TGraphMeta {
     TMaybe<ui64> MaxBatchSize;
     bool UnknownAffectedShardCount = false; // used by Data executer
     std::map<TString, TString> SecureParams;
+    std::set<TString> ReReadSecrets; // secrets of SecureParams whose value changes over time: tasks re-read them
     bool AllowOlapDataQuery = true; // used by Data executer - always true for Scan executer
     bool StreamResult = false;
     Ydb::Table::QueryStatsCollection::Mode StatsMode = Ydb::Table::QueryStatsCollection::STATS_COLLECTION_NONE;

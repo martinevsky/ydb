@@ -2,6 +2,7 @@
 #include <ydb/services/scheme_secret/resolver.h>
 
 #include <ydb/core/base/appdata.h>
+#include <ydb/core/security/iam_delegation/services.h>
 
 #include <ydb/core/tx/scheme_board/subscriber.h>
 #include <ydb/services/metadata/secret/fetcher.h>
@@ -165,6 +166,20 @@ bool IsRetryableSchemeShardStatus(NKikimrScheme::EStatus status) {
     return status == NKikimrScheme::EStatus::StatusNotAvailable;
 }
 
+// A token service failure worth retrying: IAM or the token service itself was unreachable or overloaded.
+// A refused token (the delegation was revoked) or a missing one is final.
+bool IsRetryableTokenStatus(Ydb::StatusIds::StatusCode status) {
+    switch (status) {
+        case Ydb::StatusIds::UNAVAILABLE:
+        case Ydb::StatusIds::TIMEOUT:
+        case Ydb::StatusIds::OVERLOADED:
+        case Ydb::StatusIds::INTERNAL_ERROR:
+            return true;
+        default:
+            return false;
+    }
+}
+
 Ydb::StatusIds::StatusCode MapSchemeShardStatus(NKikimrScheme::EStatus status) {
     switch (status) {
         case NKikimrScheme::EStatus::StatusNotAvailable:
@@ -264,6 +279,26 @@ void TDescribeSchemaSecretsService::HandleIncomingSchemeShardRetryRequest(TEvRes
     SendSchemeShardRequest(*it->second.Request.Get(), ev->Get()->InitialRequestId, ev->Get()->SecretPath);
 }
 
+void TDescribeSchemaSecretsService::HandleIncomingTokenRetryRequest(TEvResolveSecretTokenRetry::TPtr& ev) {
+    const auto requestId = ev->Get()->InitialRequestId;
+    const auto& key = ev->Get()->Key;
+    YDB_LOG_NOTICE("HandleIncomingRequest",
+        {"event", "TEvResolveSecretTokenRetry"},
+        {"requestId", requestId},
+        {"key", key.ToString()}
+    );
+
+    const auto respIt = ResolveInFlight.find(requestId);
+    if (respIt == ResolveInFlight.end() || !respIt->second.PendingTokens.contains(key.ToString())) {
+        YDB_LOG_NOTICE("Retry handling was skipped due to previous errors",
+            {"event", "TEvResolveSecretTokenRetry"},
+            {"requestId", requestId}
+        );
+        return;
+    }
+    SendTokenRequest(requestId, key);
+}
+
 void TDescribeSchemaSecretsService::HandleSchemeCacheResponse(
     TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev
 ) {
@@ -347,13 +382,19 @@ void TDescribeSchemaSecretsService::HandleSchemeShardResponse(
         SchemeBoardSubscribers[secretName] = Register(CreateSchemeBoardSubscriber(SelfId(), secretName));
     }
 
-    const auto& secretValue = rec.GetPathDescription().GetSecretDescription().GetValue();
-    const auto& secretVersion = rec.GetPathDescription().GetSecretDescription().GetVersion();
+    const auto& secretDescription = rec.GetPathDescription().GetSecretDescription();
+    const auto& secretVersion = secretDescription.GetVersion();
+    std::optional<NIamDelegation::TTokenKey> delegationKey;
+    if (secretDescription.GetType() == NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION) {
+        const auto& delegation = secretDescription.GetIamDelegation();
+        delegationKey = NIamDelegation::TTokenKey{.ServiceAccountId = delegation.GetServiceAccountId(), .CloudId = delegation.GetCloudId()};
+    }
     VersionedSecrets[secretName] = TVersionedSecret{
         .SecretVersion = secretVersion,
         .PathId = rec.GetPathId(),
         .Name = secretName,
-        .Value = secretValue,
+        .Value = secretDescription.GetValue(),
+        .DelegationKey = std::move(delegationKey),
     };
 
     ++respIt->second.FilledSecretsCnt;
@@ -620,6 +661,35 @@ bool TDescribeSchemaSecretsService::ScheduleSchemeShardRetry(const ui64& request
     return false;
 }
 
+bool TDescribeSchemaSecretsService::ScheduleTokenRetry(const ui64& requestId, const NIamDelegation::TTokenKey& key) {
+    const auto requestIt = RequestsInFlight.find(requestId);
+    Y_ENSURE(requestIt != RequestsInFlight.end(), "Unregistered requestId: " << ToString(requestId));
+
+    // a reader that says nothing about its patience still gets a short one, as with the scheme cache
+    static const auto defaultTokenRetryPolicy = MakeShortRetryPolicy();
+    const auto& retryPolicy = requestIt->second.Request->Settings.RetryPolicy
+        ? requestIt->second.Request->Settings.RetryPolicy
+        : defaultTokenRetryPolicy;
+
+    auto& retryState = requestIt->second.TokenRetryStates[key.ToString()];
+    if (!retryState) {
+        retryState = retryPolicy->CreateRetryState();
+    }
+
+    if (const auto delay = retryState->GetNextRetryDelay()) {
+        YDB_LOG_NOTICE("The IAM token of a delegation secret is unavailable. Request will be retried",
+            {"event", "TEvGetTokenResult"},
+            {"requestId", requestId},
+            {"key", key.ToString()},
+            {"retryDelay", *delay}
+        );
+        this->Schedule(*delay, new TEvResolveSecretTokenRetry(requestId, key));
+        return true;
+    }
+
+    return false;
+}
+
 IRetryPolicy<>::TPtr MakeShortRetryPolicy() {
     return IRetryPolicy<>::GetExponentialBackoffPolicy(
         [](){ return ERetryErrorClass::ShortRetry; },
@@ -642,13 +712,16 @@ IRetryPolicy<>::TPtr MakeLongRetryPolicy() {
     );
 }
 
-void TDescribeSchemaSecretsService::FillResponseIfFinished(const ui64& requestId, const TResponseContext& responseCtx) {
+void TDescribeSchemaSecretsService::FillResponseIfFinished(const ui64& requestId, TResponseContext& responseCtx) {
     if (responseCtx.FilledSecretsCnt != responseCtx.Secrets.size()) {
         return;
     }
 
     std::vector<TString> secretValues;
     secretValues.resize(responseCtx.Secrets.size());
+    std::vector<bool> reReadOnUse(responseCtx.Secrets.size(), false);
+    THashMap<TString, NIamDelegation::TTokenKey> tokenKeys; // TTokenKey::ToString() -> key
+    responseCtx.PendingTokens.clear();
     for (const auto& secret : responseCtx.Secrets) {
         const auto& secretPath = secret.first;
         auto it = VersionedSecrets.find(secret.first);
@@ -668,9 +741,119 @@ void TDescribeSchemaSecretsService::FillResponseIfFinished(const ui64& requestId
         }
 
         Y_ENSURE(secret.second < secretValues.size());
-        secretValues[secret.second] = it->second.Value;
+        if (it->second.DelegationKey) {
+            const TString key = it->second.DelegationKey->ToString();
+            tokenKeys.emplace(key, *it->second.DelegationKey);
+            responseCtx.PendingTokens[key].push_back(secret.second);
+            reReadOnUse[secret.second] = true;
+        } else {
+            secretValues[secret.second] = it->second.Value;
+        }
     }
-    FillResponse(requestId, NKqp::TEvDescribeSecretsResponse::TDescription(secretValues));
+    if (tokenKeys.empty()) {
+        FillResponse(requestId, NKqp::TEvDescribeSecretsResponse::TDescription(std::move(secretValues)));
+        return;
+    }
+
+    // the value of a delegation secret is the current token of its service account: ask the token service
+    // (one request per distinct key); the response is filled when every token has arrived
+    responseCtx.Values = std::move(secretValues);
+    responseCtx.UsableUntil.assign(responseCtx.Values.size(), TInstant::Max());
+    responseCtx.ReReadOnUse = std::move(reReadOnUse);
+    for (const auto& [_, key] : tokenKeys) {
+        SendTokenRequest(requestId, key);
+    }
+}
+
+void TDescribeSchemaSecretsService::SendTokenRequest(const ui64& requestId, const NIamDelegation::TTokenKey& key) {
+    YDB_LOG_DEBUG("Requesting the IAM token of a delegation secret",
+        {"requestId", requestId},
+        {"key", key.ToString()}
+    );
+    Send(NIamDelegation::MakeIamDelegatedTokenServiceId(), new NIamDelegation::TEvIamDelegation::TEvGetToken(key),
+        IEventHandle::FlagTrackDelivery, requestId);
+}
+
+TString TDescribeSchemaSecretsService::SecretPathByOrder(const TResponseContext& responseCtx, TResponseContext::TIncomingOrderId orderId) const {
+    for (const auto& [path, order] : responseCtx.Secrets) {
+        if (order == orderId) {
+            return path;
+        }
+    }
+    return {};
+}
+
+void TDescribeSchemaSecretsService::HandleTokenResult(NIamDelegation::TEvIamDelegation::TEvGetTokenResult::TPtr& ev) {
+    const auto requestId = ev->Cookie;
+    const auto* result = ev->Get();
+    YDB_LOG_DEBUG("HandleTokenResult",
+        {"event", "TEvGetTokenResult"},
+        {"requestId", requestId},
+        {"key", result->Key.ToString()},
+        {"status", Ydb::StatusIds::StatusCode_Name(result->Status)}
+    );
+
+    auto respIt = ResolveInFlight.find(requestId);
+    if (respIt == ResolveInFlight.end()) {
+        return; // the request was already answered with an error
+    }
+    auto& ctx = respIt->second;
+    const auto pendingIt = ctx.PendingTokens.find(result->Key.ToString());
+    if (pendingIt == ctx.PendingTokens.end()) {
+        return; // a stale reply (the request was re-resolved in the meantime)
+    }
+
+    if (!result->IsSuccess()) {
+        // the token service has already retried on its own; a retryable failure past that is retried here with
+        // the reader's policy, so that a reader which does not retry (a replication) survives a longer IAM outage
+        if (IsRetryableTokenStatus(result->Status) && ScheduleTokenRetry(requestId, result->Key)) {
+            return;
+        }
+        const TString secretPath = pendingIt->second.empty() ? TString() : SecretPathByOrder(ctx, pendingIt->second.front());
+        YDB_LOG_NOTICE("Cannot obtain the IAM token of a delegation secret",
+            {"requestId", requestId},
+            {"secret", secretPath},
+            {"status", Ydb::StatusIds::StatusCode_Name(result->Status)},
+            {"issues", result->Issues.ToOneLineString()}
+        );
+        NYql::TIssue issue(TStringBuilder() << "Cannot obtain the IAM token of secret `" << secretPath << "`");
+        for (const auto& subIssue : result->Issues) {
+            issue.AddSubIssue(MakeIntrusive<NYql::TIssue>(subIssue));
+        }
+        FillResponse(requestId, NKqp::TEvDescribeSecretsResponse::TDescription(result->Status, { issue }));
+        return;
+    }
+
+    for (const auto orderId : pendingIt->second) {
+        Y_ENSURE(orderId < ctx.Values.size());
+        ctx.Values[orderId] = result->Token;
+        ctx.UsableUntil[orderId] = result->UsableUntil;
+    }
+    ctx.PendingTokens.erase(pendingIt);
+    if (ctx.PendingTokens.empty()) {
+        FillResponse(requestId, NKqp::TEvDescribeSecretsResponse::TDescription(std::move(ctx.Values), std::move(ctx.ReReadOnUse), std::move(ctx.UsableUntil)));
+    }
+}
+
+void TDescribeSchemaSecretsService::HandleUndelivered(NActors::TEvents::TEvUndelivered::TPtr& ev) {
+    const auto requestId = ev->Cookie;
+    if (ev->Get()->SourceType != NIamDelegation::TEvIamDelegation::TEvGetToken::EventType) {
+        return;
+    }
+    auto respIt = ResolveInFlight.find(requestId);
+    if (respIt == ResolveInFlight.end() || respIt->second.PendingTokens.empty()) {
+        return;
+    }
+    const auto& pending = *respIt->second.PendingTokens.begin();
+    const TString secretPath = pending.second.empty() ? TString() : SecretPathByOrder(respIt->second, pending.second.front());
+    YDB_LOG_NOTICE("The IAM delegated token service is not running on this node",
+        {"requestId", requestId},
+        {"secret", secretPath}
+    );
+    FillResponse(requestId, NKqp::TEvDescribeSecretsResponse::TDescription(
+        Ydb::StatusIds::UNAVAILABLE,
+        { NYql::TIssue(TStringBuilder() << "Cannot obtain the IAM token of secret `" << secretPath
+            << "`: IAM delegation secrets are not enabled on this node") }));
 }
 
 void TDescribeSchemaSecretsService::HandleNotifyUpdate(TSchemeBoardEvents::TEvNotifyUpdate::TPtr& ev) {
