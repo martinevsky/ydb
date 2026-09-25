@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import json as jsonlib
 import os
 import requests
 from retry import retry_call
@@ -15,7 +16,10 @@ def get_api_url():
 
 
 def _do_request_inner(method, url, json):
-    resp = requests.request(method=method, url=url, timeout=timeout, json=json)
+    # Serialized here rather than by requests, which rejects NaN values that tests seed.
+    data = None if json is None else jsonlib.dumps(json)
+    resp = requests.request(method=method, url=url, timeout=timeout, data=data,
+                            headers={"Content-Type": "application/json"} if data is not None else None)
     resp.raise_for_status()
     return resp
 
@@ -110,6 +114,10 @@ def fail_read(method, count=1, **fault):
     mode ("malformed" for HTTP, "mismatch" for gRPC).
     """
     _do_request("POST", "{}/fail/read".format(get_api_url()), dict(fault, method=method, count=count))
+
+
+def clear_read_faults():
+    _do_request("POST", "{}/fail/read".format(get_api_url()), {"clear": True})
 
 
 def get_read_requests():

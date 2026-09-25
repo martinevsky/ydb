@@ -60,7 +60,7 @@ class TestDataPaging(SolomonReadingTestBase):
         assert success, error
 
     @link_test_case("#23191")
-    def test_listing_paging_monitoring(self):
+    def test_data_paging_monitoring(self):
         data_source_query = f"""
             CREATE EXTERNAL DATA SOURCE local_monitoring WITH (
                 SOURCE_TYPE     = "Monium.Metrics",

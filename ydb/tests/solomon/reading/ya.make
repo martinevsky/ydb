@@ -4,13 +4,20 @@ ENV(YDB_DRIVER_BINARY="ydb/apps/ydbd/ydbd")
 FORK_TEST_FILES()
 
 TEST_SRCS(
+    auth_tls.py
     backpressure_test.py
     base.py
     basic_reading.py
     data_paging.py
+    data_semantics.py
+    get_api.py
     listing_batching.py
     listing_paging.py
+    monium.py
+    points_count.py
     settings_validation.py
+    settings_validation_edge_cases.py
+    transport_errors.py
 )
 
 SIZE(MEDIUM)

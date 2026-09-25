@@ -42,7 +42,7 @@ class TestListingPaging(SolomonReadingTestBase):
             rows.extend(result.rows)
 
         if (len(rows) != self.listing_paging_metrics_size + 1):
-            return False, "Result size differs from expected: have {}, should be {}".format(len(rows), self.listing_paging_metrics_size)
+            return False, "Result size differs from expected: have {}, should be {}".format(len(rows), self.listing_paging_metrics_size + 1)
 
         return True, None
 

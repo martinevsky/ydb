@@ -252,6 +252,9 @@ class Shard(object):
         for ts, _ in matching_metrics[0].data:
             if not isinstance(ts, str) and from_ms <= ts <= to_ms:
                 count += 1
+        if count == 0:
+            # What the real api answers for a metric without points in the range.
+            return (None, "Not able to apply function count on vector with size 0")
         return (count, None)
 
     def as_text(self):

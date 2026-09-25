@@ -147,10 +147,12 @@ class SolomonEmulator(object):
         return params
 
     @staticmethod
-    def _shard_selectors(params):
+    def _shard_selectors(params, request):
         selectors, success = _parse_selectors(params.get("selectors", ""))
         if not success:
             return (None, web.HTTPBadRequest(text="Invalid selectors"))
+        # Monium does not repeat the project in selectors: it is in the path already.
+        selectors.setdefault("project", request.match_info["project"])
         if "project" not in selectors or "cluster" not in selectors or "service" not in selectors:
             return (None, web.HTTPBadRequest(text="project, cluster and service labels must be specified"))
         return (selectors, None)
@@ -213,7 +215,7 @@ class SolomonEmulator(object):
             return response
 
         params = await self._read_http_params(request)
-        selectors, error = self._shard_selectors(params)
+        selectors, error = self._shard_selectors(params, request)
         if error is not None:
             return error
 
@@ -230,7 +232,7 @@ class SolomonEmulator(object):
             return response
 
         params = await self._read_http_params(request)
-        selectors, error = self._shard_selectors(params)
+        selectors, error = self._shard_selectors(params, request)
         if error is not None:
             return error
 
@@ -247,7 +249,7 @@ class SolomonEmulator(object):
             return response
 
         params = await self._read_http_params(request)
-        selectors, error = self._shard_selectors(params)
+        selectors, error = self._shard_selectors(params, request)
         if error is not None:
             return error
 
@@ -271,6 +273,7 @@ class SolomonEmulator(object):
         selectors, success = _parse_selectors(params.get("program", ""))
         if not success or not params.get("program", "").startswith("count("):
             return _json_error(400, "Only count(<selectors>) programs are supported")
+        selectors.setdefault("project", request.match_info["project"])
         if "project" not in selectors or "cluster" not in selectors or "service" not in selectors:
             return _json_error(400, "project, cluster and service labels must be specified")
 
@@ -319,9 +322,13 @@ class SolomonEmulator(object):
         A fault may delay the call (delay_ms) and then fail it: with an HTTP status
         (status, message), with a gRPC status code name (grpc_code, message), or with a
         broken payload (mode: "malformed" for HTTP, "mismatch" for gRPC). A fault with
-        only a delay lets the call proceed normally afterwards.
+        only a delay lets the call proceed normally afterwards. {"clear": true} drops
+        every queued fault.
         """
         fault = await request.json()
+        if fault.get("clear"):
+            self.read_faults.clear()
+            return web.Response(status=200)
         method = fault.pop("method")
         if method not in READ_METHODS:
             return web.HTTPBadRequest(text=f"Unknown read method {method}, expected one of {READ_METHODS}")
