@@ -679,7 +679,7 @@ public:
 
             case NKqpProto::TKqpSchemeOperation::kCreateSecret: {
                 auto modifyScheme = schemeOp.GetCreateSecret();
-                if (modifyScheme.GetCreateSecret().GetType() == NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION) {
+                if (modifyScheme.GetCreateSecret().HasIamDelegation()) {
                     ev->Record.MutableTransaction()->MutableModifyScheme()->CopyFrom(modifyScheme);
                     return StartIamDelegationSecretOrchestrator(std::move(ev), &CreateIamDelegationSecretCreator);
                 }
@@ -700,7 +700,7 @@ public:
 
             case NKqpProto::TKqpSchemeOperation::kAlterSecret: {
                 auto modifyScheme = schemeOp.GetAlterSecret();
-                if (modifyScheme.GetAlterSecret().GetType() == NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION) {
+                if (modifyScheme.GetAlterSecret().HasIamDelegation()) {
                     ev->Record.MutableTransaction()->MutableModifyScheme()->CopyFrom(modifyScheme);
                     return StartIamDelegationSecretOrchestrator(std::move(ev), &CreateIamDelegationSecretAlterer);
                 }
@@ -785,7 +785,7 @@ public:
         Become(&TKqpSchemeExecuter::ExecuteState);
     }
 
-    // CREATE/ALTER of secrets of type IAM_DELEGATION: the delegation is set up in IAM between the schemeshard
+    // CREATE/ALTER of IAM delegation secrets: the delegation is set up in IAM between the schemeshard
     // operations by a dedicated actor which completes the same way as the scheme request handler. Both
     // statements require the feature flag; DROP needs no orchestration (the schemeshard revokes).
     void StartIamDelegationSecretOrchestrator(THolder<TEvTxUserProxy::TEvProposeTransaction> ev, IActor* (*createOrchestrator)(TIamDelegationSecretOperation)) {

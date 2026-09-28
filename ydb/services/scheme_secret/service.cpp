@@ -385,7 +385,7 @@ void TDescribeSchemaSecretsService::HandleSchemeShardResponse(
     const auto& secretDescription = rec.GetPathDescription().GetSecretDescription();
     const auto& secretVersion = secretDescription.GetVersion();
     std::optional<NIamDelegation::TTokenKey> delegationKey;
-    if (secretDescription.GetType() == NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION) {
+    if (secretDescription.HasIamDelegation()) {
         const auto& delegation = secretDescription.GetIamDelegation();
         delegationKey = NIamDelegation::TTokenKey{.ServiceAccountId = delegation.GetServiceAccountId(), .CloudId = delegation.GetCloudId()};
     }

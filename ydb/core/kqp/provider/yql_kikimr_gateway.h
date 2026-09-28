@@ -1464,9 +1464,14 @@ struct TSecretSettings {
     TString Value;
     TString ValueParamName; // when set, the value is taken from parameter at execution
     std::optional<bool> InheritPermissions; // Not set means the option is not specified explicitly
-    NKikimrSchemeOp::ESecretType Type = NKikimrSchemeOp::SECRET_TYPE_VALUE;
-    TString ServiceAccountId; // IAM_DELEGATION: delegated service account
-    TString CloudId; // IAM_DELEGATION: cloud id; empty on CREATE means "cloud of the current database"
+    // Where the value of the secret comes from (SOURCE of the statement): stored with the secret, or an IAM delegation
+    enum class ESource {
+        Value,
+        IamDelegation,
+    };
+    ESource Source = ESource::Value;
+    TString ServiceAccountId; // IamDelegation: delegated service account
+    TString CloudId; // IamDelegation: cloud id; empty on CREATE means "cloud of the current database"
     bool ReplaceIfExists = false; // CREATE OR REPLACE
     bool ExistingOk = false; // CREATE IF NOT EXISTS
     bool MissingOk = false; // ALTER/DROP IF EXISTS

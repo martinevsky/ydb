@@ -285,7 +285,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
         TString firstReferrer;
         {
             const auto secret = DescribeSecret("/Root/sa_secret");
-            UNIT_ASSERT_EQUAL(secret.GetType(), NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
+            UNIT_ASSERT(secret.HasIamDelegation());
             UNIT_ASSERT(!secret.HasValue());
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "delegated-sa1");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetCloudId(), CLOUD_ID);
@@ -312,10 +312,10 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
         // the type cannot be changed
         ExecAsCloudUser(R"(
             ALTER SECRET `sa_secret` WITH (VALUE = "plain");
-        )", EStatus::BAD_REQUEST, "Cannot change secret type");
+        )", EStatus::BAD_REQUEST, "Cannot change the source of a secret");
         ExecAsCloudUser(R"(
             CREATE OR REPLACE SECRET `sa_secret` WITH (VALUE = "plain");
-        )", EStatus::BAD_REQUEST, "Cannot change secret type");
+        )", EStatus::BAD_REQUEST, "Cannot change the source of a secret");
 
         // ALTER: a new delegation is set up (fresh referrer) and the old one is revoked
         ExecAsCloudUser(R"(
@@ -359,7 +359,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
 
         // plain secrets are not affected
         ExecAsCloudUser(R"(CREATE SECRET `plain_secret` WITH (VALUE = "plain");)");
-        UNIT_ASSERT_EQUAL(DescribeSecret("/Root/plain_secret").GetType(), NKikimrSchemeOp::SECRET_TYPE_VALUE);
+        UNIT_ASSERT(!DescribeSecret("/Root/plain_secret").HasIamDelegation());
         ExecAsCloudUser(R"(ALTER SECRET `plain_secret` WITH (VALUE = "plain2");)");
         ExecAsCloudUser("DROP SECRET `plain_secret`;");
         UNIT_ASSERT(!SecretExists("/Root/plain_secret"));
@@ -500,7 +500,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
                 SERVICE_ACCOUNT_SECRET_PATH = "eds_sa_secret"
             );)",
             "pq_source"_a = pqSource, "location"_a = location, "database"_a = databasePath),
-            "has type IAM_DELEGATION");
+            "is an IAM delegation secret");
 
         ExecAsCloudUser(fmt::format(R"(
             CREATE EXTERNAL DATA SOURCE `{pq_source}` WITH (
@@ -657,8 +657,8 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
         // a plain secret cannot be replaced with a delegation secret
         ExecAsCloudUser(R"(CREATE SECRET `plain_cor` WITH (VALUE = "plain");)");
         ExecAsCloudUser(CreateDelegationSecretQuery("plain_cor", "delegated-cor3", "CREATE OR REPLACE SECRET"),
-            EStatus::BAD_REQUEST, "Cannot replace secret /Root/plain_cor of type VALUE with a secret of type IAM_DELEGATION");
-        UNIT_ASSERT_EQUAL(DescribeSecret("/Root/plain_cor").GetType(), NKikimrSchemeOp::SECRET_TYPE_VALUE);
+            EStatus::BAD_REQUEST, "Cannot change the source of secret /Root/plain_cor");
+        UNIT_ASSERT(!DescribeSecret("/Root/plain_cor").HasIamDelegation());
         AssertTokenStatus("delegated-cor3", Ydb::StatusIds::UNAUTHORIZED);
 
         ExecAsCloudUser("DROP SECRET `cor_secret`;");
@@ -825,7 +825,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
                     SERVICE_ACCOUNT_SECRET_PATH = "{secret}"
                 );)", "secret"_a = secret);
         };
-        ExecAsCloudUserExpectFailure(s3Query("typed_secret"), "has type IAM_DELEGATION");
+        ExecAsCloudUserExpectFailure(s3Query("typed_secret"), "is an IAM delegation secret");
 
         // a VALUE secret is a plain value wherever it is used, whatever it contains: the declared type of
         // the secret decides, never its content

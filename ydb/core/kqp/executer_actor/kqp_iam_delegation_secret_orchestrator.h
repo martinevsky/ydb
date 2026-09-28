@@ -38,12 +38,12 @@ struct TIamDelegationSecretOperation {
 // revocations, ydb/core/tx/schemeshard/schemeshard_iam_delegation.h). So the schema operation, which also
 // checks the user's rights, always precedes the IAM call.
 
-// CREATE SECRET of type IAM_DELEGATION: creates the secret naming a fresh delegation, then sets the delegation
+// CREATE SECRET of an IAM delegation secret: creates the secret naming a fresh delegation, then sets the delegation
 // up on behalf of the user; when IAM refuses, the secret is dropped again. CREATE OR REPLACE over an existing
 // delegation secret behaves like ALTER.
 NActors::IActor* CreateIamDelegationSecretCreator(TIamDelegationSecretOperation op);
 
-// ALTER SECRET of type IAM_DELEGATION: stages the new delegation in the secret, sets it up, then promotes it
+// ALTER SECRET of an IAM delegation secret: stages the new delegation in the secret, sets it up, then promotes it
 // (the old one is revoked by the schemeshard) or, when IAM refuses, cancels it.
 NActors::IActor* CreateIamDelegationSecretAlterer(TIamDelegationSecretOperation op);
 

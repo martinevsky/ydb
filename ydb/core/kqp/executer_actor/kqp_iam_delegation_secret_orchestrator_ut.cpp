@@ -122,8 +122,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
             scheme.SetFailedOnAlreadyExists(true);
             auto& op = *scheme.MutableCreateSecret();
             op.SetName(name);
-            op.SetType(NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
-            op.MutableIamDelegation()->SetServiceAccountId(serviceAccountId);
+                op.MutableIamDelegation()->SetServiceAccountId(serviceAccountId);
             if (cloudId) {
                 op.MutableIamDelegation()->SetCloudId(cloudId);
             }
@@ -375,7 +374,6 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
         scheme.SetFailedOnAlreadyExists(true);
         auto& op = *scheme.MutableCreateSecret();
         op.SetName("sa-secret");
-        op.SetType(NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
         op.MutableIamDelegation()->SetServiceAccountId("aje-sa");
         op.MutableIamDelegation()->SetCloudId("b1g-cloud");
 
@@ -459,7 +457,6 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
         scheme.SetFailedOnAlreadyExists(false);
         auto& op = *scheme.MutableCreateSecret();
         op.SetName(name);
-        op.SetType(NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
         op.MutableIamDelegation()->SetServiceAccountId("aje-sa");
         op.MutableIamDelegation()->SetCloudId("b1g-cloud");
         return {
@@ -542,7 +539,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
         UNIT_ASSERT_VALUES_EQUAL(setups, 0u);
         UNIT_ASSERT_VALUES_EQUAL(drops, 0u);
         UNIT_ASSERT(t.Exists("/Root/race-secret"));
-        UNIT_ASSERT_EQUAL(t.Describe("/Root/race-secret").GetType(), NKikimrSchemeOp::SECRET_TYPE_VALUE);
+        UNIT_ASSERT(!t.Describe("/Root/race-secret").HasIamDelegation()); // still the other statement's stored-value secret
     }
 }
 

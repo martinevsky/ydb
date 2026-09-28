@@ -148,7 +148,6 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTestReboots) {
             TestCreateSecret(runtime, ++t.TxId, "/MyRoot/dir",
                 R"(
                     Name: "sa-secret"
-                    Type: SECRET_TYPE_IAM_DELEGATION
                     IamDelegation {
                         ServiceAccountId: "aje-sa-1"
                         CloudId: "b1g-cloud-1"
@@ -163,7 +162,7 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTestReboots) {
                 const auto describeResult = DescribePath(runtime, "/MyRoot/dir/sa-secret");
                 TestDescribeResult(describeResult, {NLs::Finished, NLs::IsSecret});
                 const auto& secret = describeResult.GetPathDescription().GetSecretDescription();
-                UNIT_ASSERT_EQUAL(secret.GetType(), NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
+                UNIT_ASSERT(secret.HasIamDelegation());
                 UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa-1");
                 UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), "referrer-1");
             }
@@ -184,7 +183,6 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTestReboots) {
                 TestCreateSecret(runtime, ++t.TxId, "/MyRoot/dir",
                     R"(
                         Name: "sa-secret"
-                        Type: SECRET_TYPE_IAM_DELEGATION
                         IamDelegation {
                             ServiceAccountId: "aje-sa-1"
                             CloudId: "b1g-cloud-1"
@@ -199,7 +197,6 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTestReboots) {
             TestAlterSecret(runtime, ++t.TxId, "/MyRoot/dir",
                 R"(
                     Name: "sa-secret"
-                    Type: SECRET_TYPE_IAM_DELEGATION
                     IamDelegation {
                         ServiceAccountId: "aje-sa-2"
                         CloudId: "b1g-cloud-1"
@@ -222,7 +219,6 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTestReboots) {
             TestAlterSecret(runtime, ++t.TxId, "/MyRoot/dir",
                 R"(
                     Name: "sa-secret"
-                    Type: SECRET_TYPE_IAM_DELEGATION
                     IamDelegation {
                         ReferrerId: "referrer-2"
                     }
@@ -239,7 +235,7 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTestReboots) {
                 UNIT_ASSERT_VALUES_EQUAL(secret.GetName(), "sa-secret");
                 UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 2u);
                 UNIT_ASSERT(secret.GetValue().empty()); // no value even when explicitly requested
-                UNIT_ASSERT_EQUAL(secret.GetType(), NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
+                UNIT_ASSERT(secret.HasIamDelegation());
                 UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa-2");
                 UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetCloudId(), "b1g-cloud-1");
                 UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), "referrer-2");
@@ -263,7 +259,6 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTestReboots) {
                 TestCreateSecret(runtime, ++t.TxId, "/MyRoot/dir",
                     R"(
                         Name: "sa-secret"
-                        Type: SECRET_TYPE_IAM_DELEGATION
                         IamDelegation {
                             ServiceAccountId: "aje-sa-1"
                             CloudId: "b1g-cloud-1"

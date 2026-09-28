@@ -110,7 +110,7 @@ private:
         ui64 PathId = 0;
         TString Name;
         TString Value;
-        // A secret of type IAM_DELEGATION stores no value: its value is the current IAM token of the delegated
+        // An IAM delegation secret stores no value: its value is the current IAM token of the delegated
         // service account, obtained from the node-local token service for every read.
         std::optional<NIamDelegation::TTokenKey> DelegationKey;
     };

@@ -69,7 +69,7 @@ struct TExistingSecret {
     NKikimrSchemeOp::TSecretDescription Description;
 
     bool IsDelegation() const {
-        return Exists && IsSecret && Description.GetType() == NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION;
+        return Exists && IsSecret && Description.HasIamDelegation();
     }
 };
 
@@ -221,7 +221,6 @@ protected:
         auto request = MakeRequest(NKikimrSchemeOp::ESchemeOpAlterSecret);
         auto& alter = *request->Record.MutableTransaction()->MutableModifyScheme()->MutableAlterSecret();
         alter.SetName(name);
-        alter.SetType(NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
         FillProto(spec, *alter.MutableIamDelegation());
         alter.SetIamDelegationAlter(action);
         return request;
@@ -475,7 +474,7 @@ public:
 
     async<TGenericResult> Run() {
         auto& op = *ModifyScheme().MutableCreateSecret();
-        AFL_ENSURE(op.GetType() == NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION)("type", static_cast<int>(op.GetType()));
+        AFL_ENSURE(op.HasIamDelegation())("name", op.GetName());
         const TString name = op.GetName();
         const TString path = SecretPath(name);
 
@@ -484,7 +483,7 @@ public:
             if (ModifyScheme().GetReplaceIfExists() && existing.IsSecret) {
                 if (!existing.IsDelegation()) {
                     throw TOrchestrationError(Ydb::StatusIds::BAD_REQUEST)
-                        << "Cannot replace secret " << path << " of type VALUE with a secret of type IAM_DELEGATION";
+                        << "Cannot change the source of secret " << path << ": it stores a value, the statement makes an IAM delegation secret";
                 }
                 co_return co_await Replace(path, ToSpec(existing.Description.GetIamDelegation()), op);
             }

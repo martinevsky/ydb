@@ -3612,11 +3612,10 @@ public:
         }
     }
 
-    // Fills Type and the user-provided part of IamDelegation (ServiceAccountId, CloudId).
-    // ReferrerId is filled by the delegation orchestrator at execution.
+    // Fills the user-provided part of IamDelegation (ServiceAccountId, CloudId) of an IAM delegation secret; its
+    // presence makes the request one about such a secret. ReferrerId is filled by the delegation orchestrator at execution.
     static void FillSecretTypeSchemaOperation(const NYql::TSecretSettings& settings, NKikimrSchemeOp::TSecretSchemaOp& op) {
-        op.SetType(settings.Type);
-        if (settings.Type == NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION) {
+        if (settings.Source == NYql::TSecretSettings::ESource::IamDelegation) {
             auto& delegation = *op.MutableIamDelegation();
             if (settings.ServiceAccountId) {
                 delegation.SetServiceAccountId(settings.ServiceAccountId);
@@ -3642,7 +3641,7 @@ public:
                     std::make_exception_ptr(yexception() << "Secrets are disabled. Please contact your system administrator to enable it")
                 );
             }
-            if (settings.Type == NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION) {
+            if (settings.Source == NYql::TSecretSettings::ESource::IamDelegation) {
                 if (!SessionCtx_->Config().FeatureFlags.GetEnableIamDelegationSecrets()) {
                     return MakeErrorFuture<IKikimrGateway::TGenericResult>(
                         std::make_exception_ptr(yexception() << "IAM delegation secrets are disabled. Please contact your system administrator to enable it")
@@ -3651,7 +3650,7 @@ public:
                 if (!SessionCtx_->Query().PrepareOnly) {
                     // the delegation is orchestrated by the scheme executer of the query service
                     return MakeErrorFuture<IKikimrGateway::TGenericResult>(
-                        std::make_exception_ptr(yexception() << "Secrets of type IAM_DELEGATION are supported only in the query service")
+                        std::make_exception_ptr(yexception() << "IAM delegation secrets are supported only in the query service")
                     );
                 }
             }
@@ -3759,7 +3758,7 @@ public:
 
         void FillSchemaOperation(const NYql::TSecretSettings& settings, TSecretSchemaOp& op) const override {
             FillSecretTypeSchemaOperation(settings, op);
-            if (settings.Type == NKikimrSchemeOp::SECRET_TYPE_VALUE) {
+            if (settings.Source == NYql::TSecretSettings::ESource::Value) {
                 if (!settings.ValueParamName.empty()) {
                     op.SetValueParamName(settings.ValueParamName);
                 } else {
@@ -3799,7 +3798,7 @@ public:
 
         void FillSchemaOperation(const NYql::TSecretSettings& settings, TSecretSchemaOp& op) const override {
             FillSecretTypeSchemaOperation(settings, op);
-            if (settings.Type == NKikimrSchemeOp::SECRET_TYPE_VALUE) {
+            if (settings.Source == NYql::TSecretSettings::ESource::Value) {
                 if (!settings.ValueParamName.empty()) {
                     op.SetValueParamName(settings.ValueParamName);
                 } else {

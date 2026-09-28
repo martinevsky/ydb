@@ -465,7 +465,7 @@ struct TEvDescribeSecretsResponse : public TEventLocal<TEvDescribeSecretsRespons
             , Issues(std::move(issues))
         {}
 
-        // reReadOnUse[i] marks a secret whose value changes over time (a secret of type IAM_DELEGATION): a task
+        // reReadOnUse[i] marks a secret whose value changes over time (an IAM delegation secret): a task
         // that uses it keeps its reference and re-reads it while it runs. usableUntil[i] is the moment after which
         // such a value must not be handed out any more. Empty means none.
         explicit TDescription(std::vector<TString> secretValues, std::vector<bool> reReadOnUse = {}, std::vector<TInstant> usableUntil = {})

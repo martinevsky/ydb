@@ -171,23 +171,17 @@ public:
             return result;
         }
 
-        const auto storedType = secretInfo->Description.GetType();
-        if (alterSecretProto.HasType() && alterSecretProto.GetType() != storedType) {
-            result->SetError(NKikimrScheme::StatusInvalidParameter, TStringBuilder()
-                << "Cannot change secret type from " << NKikimrSchemeOp::ESecretType_Name(storedType)
-                << " to " << NKikimrSchemeOp::ESecretType_Name(alterSecretProto.GetType()));
-            return result;
-        }
+        // the source of a secret never changes: a stored value stays a stored value, a delegation stays a delegation
         const auto delegationAlter = alterSecretProto.GetIamDelegationAlter();
-        switch (storedType) {
-            case NKikimrSchemeOp::SECRET_TYPE_VALUE:
-                if (alterSecretProto.HasIamDelegation() || delegationAlter != NKikimrSchemeOp::IAM_DELEGATION_ALTER_NONE) {
-                    result->SetError(NKikimrScheme::StatusInvalidParameter,
-                        "IamDelegation is allowed only for secrets of type IAM_DELEGATION");
-                    return result;
-                }
-                break;
-            case NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION: {
+        const bool storedDelegation = secretInfo->Description.HasIamDelegation();
+        if (!storedDelegation) {
+            if (alterSecretProto.HasIamDelegation() || delegationAlter != NKikimrSchemeOp::IAM_DELEGATION_ALTER_NONE) {
+                result->SetError(NKikimrScheme::StatusInvalidParameter,
+                    "Cannot change the source of a secret: IamDelegation is allowed only for IAM delegation secrets");
+                return result;
+            }
+        } else {
+            {
                 if (!AppData()->FeatureFlags.GetEnableIamDelegationSecrets()) {
                     result->SetError(NKikimrScheme::StatusPreconditionFailed,
                         "IAM delegation secrets are disabled. Please contact your system administrator to enable it");
@@ -195,7 +189,7 @@ public:
                 }
                 if (alterSecretProto.HasValue()) {
                     result->SetError(NKikimrScheme::StatusInvalidParameter,
-                        "Value is not allowed for secrets of type IAM_DELEGATION");
+                        "Cannot change the source of a secret: Value is not allowed for IAM delegation secrets");
                     return result;
                 }
                 const auto& current = secretInfo->Description;
@@ -240,7 +234,6 @@ public:
                         }
                         break;
                 }
-                break;
             }
         }
 
@@ -271,12 +264,9 @@ public:
         }
 
         auto alterData = secretInfo->CreateNextVersion();
-        alterData->Description.SetType(storedType);
-        switch (storedType) {
-            case NKikimrSchemeOp::SECRET_TYPE_VALUE:
-                alterData->Description.SetValue(alterSecretProto.GetValue());
-                break;
-            case NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION:
+        if (!storedDelegation) {
+            alterData->Description.SetValue(alterSecretProto.GetValue());
+        } else {
                 // CreateNextVersion copied the current and the staged delegation; a delegation the new version
                 // stops naming is revoked at the plan step.
                 switch (delegationAlter) {
@@ -296,7 +286,6 @@ public:
                         alterData->Description.ClearPendingIamDelegationStagedAt();
                         break;
                 }
-                break;
         }
         alterData->Description.SetVersion(secretInfo->AlterVersion);
 

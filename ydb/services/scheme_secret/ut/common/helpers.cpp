@@ -34,7 +34,6 @@ namespace NKikimr::NSecret {
             schemeTx.SetOperationType(operationType);
             auto& secret = operationType == NKikimrSchemeOp::ESchemeOpCreateSecret ? *schemeTx.MutableCreateSecret() : *schemeTx.MutableAlterSecret();
             secret.SetName(name);
-            secret.SetType(NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
             auto& delegation = *secret.MutableIamDelegation();
             delegation.SetServiceAccountId(serviceAccountId);
             delegation.SetCloudId(cloudId);

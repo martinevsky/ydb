@@ -733,7 +733,7 @@ Y_UNIT_TEST_SUITE(KikimrIcGateway) {
         { // a delegation secret is a token secret: it cannot stand where a key signature is expected
             const auto result = createSource(TStringBuilder() << R"(AUTH_METHOD="SERVICE_ACCOUNT", SERVICE_ACCOUNT_ID="aje-1", SERVICE_ACCOUNT_SECRET_PATH=")" << secretPath << '"');
             UNIT_ASSERT_C(!result.IsSuccess(), result.GetIssues().ToString());
-            UNIT_ASSERT_STRING_CONTAINS(result.GetIssues().ToOneLineString(), "has type IAM_DELEGATION");
+            UNIT_ASSERT_STRING_CONTAINS(result.GetIssues().ToOneLineString(), "is an IAM delegation secret");
         }
         {
             const auto result = createSource(TStringBuilder() << R"(AUTH_METHOD="TOKEN", TOKEN_SECRET_PATH=")" << secretPath << '"');

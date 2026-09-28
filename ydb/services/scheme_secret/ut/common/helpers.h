@@ -22,7 +22,7 @@ namespace NKikimr::NSecret {
     void AlterSchemaSecret(const TString& secretName, const TString& secretValue, NYdb::NTable::TSession& session);
     void DropSchemaSecret(const TString& secretName, NYdb::NTable::TSession& session);
 
-    // Creates / alters a secret of type IAM_DELEGATION directly through the tx proxy (no IAM delegation is set up)
+    // Creates / alters an IAM delegation secret directly through the tx proxy (no IAM delegation is set up)
     // and waits until the scheme cache serves the new description. FeatureFlags.EnableIamDelegationSecrets must be on.
     void CreateIamDelegationSecretDirect(NActors::TTestActorRuntime& runtime, const TString& path,
         const TString& serviceAccountId, const TString& cloudId, const TString& referrerId);

@@ -15520,7 +15520,7 @@ END DO)",
         UNIT_ASSERT_VALUES_EQUAL(calls[0].SubjectId, "bob");
         {
             const auto secret = t.Describe("/Root/sa-secret");
-            UNIT_ASSERT_EQUAL(secret.GetType(), NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
+            UNIT_ASSERT(secret.HasIamDelegation());
             UNIT_ASSERT(!secret.HasValue());
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetServiceAccountId(), "aje-sa");
             UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetCloudId(), "b1g-cloud");
@@ -15821,7 +15821,7 @@ END DO)",
 
         // outside the query service (the non-prepared path of the table service and of YQL scripts) a delegation
         // secret can be neither created nor altered: nobody would set the delegation up
-        const TString expectedError = "Secrets of type IAM_DELEGATION are supported only in the query service";
+        const TString expectedError = "IAM delegation secrets are supported only in the query service";
         auto tableClient = t.Kikimr.GetTableClient(NYdb::NTable::TClientSettings().AuthToken(t.CloudUser));
         auto session = tableClient.CreateSession().GetValueSync().GetSession();
         for (const TString& query : {

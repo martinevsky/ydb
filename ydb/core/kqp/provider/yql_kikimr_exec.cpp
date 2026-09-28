@@ -446,10 +446,10 @@ namespace {
 
     void FillSecretTypeSettings(TSecretSettings& settings, const TString& type, const TString& serviceAccountId, const TString& cloudId) {
         if (type == "IAM_DELEGATION") {
-            settings.Type = NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION;
+            settings.Source = TSecretSettings::ESource::IamDelegation;
         } else {
-            YQL_ENSURE(type.empty(), "Unknown secret type: " << type);
-            settings.Type = NKikimrSchemeOp::SECRET_TYPE_VALUE;
+            YQL_ENSURE(type.empty(), "Unknown secret source: " << type);
+            settings.Source = TSecretSettings::ESource::Value;
         }
         settings.ServiceAccountId = serviceAccountId;
         settings.CloudId = cloudId;

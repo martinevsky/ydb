@@ -118,10 +118,10 @@ bool CheckSecretIsNotDelegation(const TString& secretName, TStringBuf usage, TSc
         return true;
     }
     const auto it = ss->Secrets.find(path.Base()->PathId);
-    if (it == ss->Secrets.end() || !it->second || it->second->Description.GetType() != NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION) {
+    if (it == ss->Secrets.end() || !it->second || !it->second->Description.HasIamDelegation()) {
         return true;
     }
-    errStr = TStringBuilder() << "Secret " << secretName << " has type IAM_DELEGATION: its value is an IAM token of the delegated"
+    errStr = TStringBuilder() << "Secret " << secretName << " is an IAM delegation secret: its value is an IAM token of the delegated"
         << " service account and cannot be used as " << usage << ", reference it with AUTH_METHOD = \"TOKEN\"";
     return false;
 }
