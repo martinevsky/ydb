@@ -18,11 +18,7 @@ from ydb.tests.tools.fq_runner.kikimr_utils import YQV1_VERSION_NAME
 FQ_MAX_IN_FLIGHT = 7
 KQP_MAX_IN_FLIGHT = 3
 IGNORED_CONFIG_WARNING = "HTTP gateway is already created, the new configuration is ignored"
-
-
-def skip_known_bug(bug_id):
-    if os.getenv("YDB_TRANSPORT_RUN_KNOWN_BUGS") != "1":
-        pytest.skip("known bug {}".format(bug_id))
+RUN_KNOWN_BUGS = os.getenv("YDB_TRANSPORT_RUN_KNOWN_BUGS") == "1"
 
 
 class HttpGatewayConfigExtension(ExtensionPoint):
@@ -65,18 +61,20 @@ def node_logs(kikimr):
 
 class TestHttpGatewayConfig:
     # Pin of today's behaviour: one gateway per process. Its gauges live in the counters of the component
-    # that made it ("yq" for FQ, "utils" for KQP); the other group has none. Written, not run (ydbd).
+    # that made it ("yq" for FQ, "utils" for KQP); the other group has none.
     def test_single_gateway_per_node(self, kikimr_http_gateway):
         fq_values = max_in_flight_values(kikimr_http_gateway, "yq")
         kqp_values = max_in_flight_values(kikimr_http_gateway, "utils")
-        assert len(fq_values) + len(kqp_values) <= 1, "fq: {}, kqp: {}".format(fq_values, kqp_values)
+        assert fq_values or kqp_values, \
+            "no subcomponent=http_gateway MaxInFlight gauge in the 'yq' or 'utils' counters: fix the probe"
+        assert len(fq_values) + len(kqp_values) == 1, "fq: {}, kqp: {}".format(fq_values, kqp_values)
         for value in fq_values + kqp_values:
             assert value in (FQ_MAX_IN_FLIGHT, KQP_MAX_IN_FLIGHT), "MaxInFlight {}".format(value)
 
     # DG-T-CFG-7 (F-A-2): the ignored config is reported (the WARN of T-CFG-4) and both components'
     # http_gateway sensors are populated with the effective configuration.
+    @pytest.mark.skipif(not RUN_KNOWN_BUGS, reason="known bug DG-T-CFG-7")
     def test_ignored_config_is_reported(self, kikimr_http_gateway):
-        skip_known_bug("DG-T-CFG-7")
         assert IGNORED_CONFIG_WARNING in node_logs(kikimr_http_gateway)
         fq_values = max_in_flight_values(kikimr_http_gateway, "yq")
         kqp_values = max_in_flight_values(kikimr_http_gateway, "utils")
