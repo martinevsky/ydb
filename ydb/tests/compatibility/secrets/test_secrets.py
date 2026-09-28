@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # Schema secrets across YDB versions: value secrets survive a version change in both directions; a delegation
-# secret (TYPE = "IAM_DELEGATION", a feature of the current version only) is created on the current version,
+# secret (SOURCE = "IAM_DELEGATION", a feature of the current version only) is created on the current version,
 # survives a downgrade to the stable version as a record that the stable binary describes but cannot mint from,
 # and serves a token again after the upgrade back.
 import logging
@@ -213,7 +213,7 @@ class TestDelegationSecretsRestartToAnotherVersion(SecretsTestBase):
 
         # the delegation is set up on behalf of the cloud user, the token is minted through it
         self.query(f"GRANT ALL ON `/Root` TO `{CLOUD_USER_SID}`;")
-        self.query(f'CREATE SECRET `/Root/sa_secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "{DELEGATED_SA}", RESOURCE = "{CLOUD_ID}");',
+        self.query(f'CREATE SECRET `/Root/sa_secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "{DELEGATED_SA}", RESOURCE = "{CLOUD_ID}");',
                    token=CLOUD_USER_TOKEN)
         assert self.path_exists("/Root/sa_secret")
         self.create_topic("delegated_topic")

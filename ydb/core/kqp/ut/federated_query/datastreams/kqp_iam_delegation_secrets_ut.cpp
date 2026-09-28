@@ -102,7 +102,7 @@ public:
     }
 
     TString CreateDelegationSecretQuery(const TString& name, const TString& serviceAccountId, const TString& prefix = "CREATE SECRET") {
-        return fmt::format(R"({prefix} `{name}` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "{sa}", RESOURCE = "{cloud}");)",
+        return fmt::format(R"({prefix} `{name}` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "{sa}", RESOURCE = "{cloud}");)",
             "prefix"_a = prefix, "name"_a = name, "sa"_a = serviceAccountId, "cloud"_a = CLOUD_ID);
     }
 
@@ -254,19 +254,19 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
 
         // only Yandex Cloud subjects may set up delegations: the builtin user is rejected before any IAM call
         ExecQuery(R"(
-            CREATE SECRET `sa_secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-sa1", RESOURCE = "iamdelegationcloud");
+            CREATE SECRET `sa_secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-sa1", RESOURCE = "iamdelegationcloud");
         )", EStatus::BAD_REQUEST, "is not a cloud subject");
         UNIT_ASSERT(!SecretExists("/Root/sa_secret"));
 
         // the service account cannot be looked up and the database has no cloud_id attribute: CLOUD_ID is required
         ExecAsCloudUser(R"(
-            CREATE SECRET `sa_secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-nofolder");
+            CREATE SECRET `sa_secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-nofolder");
         )", EStatus::BAD_REQUEST, "has no cloud_id attribute");
         UNIT_ASSERT(!SecretExists("/Root/sa_secret"));
 
         // the delegation is rejected by IAM: no secret is created
         ExecAsCloudUser(fmt::format(R"(
-            CREATE SECRET `sa_secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-bad", RESOURCE = "{cloud}");
+            CREATE SECRET `sa_secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-bad", RESOURCE = "{cloud}");
         )", "cloud"_a = CLOUD_ID), EStatus::UNAUTHORIZED, "SetupDelegation for service account delegated-bad failed");
         UNIT_ASSERT(!SecretExists("/Root/sa_secret"));
 
@@ -279,7 +279,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
 
         // successful CREATE: SetupDelegation on behalf of the cloud user, then the schemeshard operation
         ExecAsCloudUser(fmt::format(R"(
-            CREATE SECRET `sa_secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-sa1", RESOURCE = "{cloud}");
+            CREATE SECRET `sa_secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-sa1", RESOURCE = "{cloud}");
         )", "cloud"_a = CLOUD_ID));
 
         TString firstReferrer;
@@ -305,7 +305,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
 
         // IF NOT EXISTS over an existing secret: nothing happens
         ExecAsCloudUser(fmt::format(R"(
-            CREATE SECRET IF NOT EXISTS `sa_secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-sa9", RESOURCE = "{cloud}");
+            CREATE SECRET IF NOT EXISTS `sa_secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-sa9", RESOURCE = "{cloud}");
         )", "cloud"_a = CLOUD_ID));
         UNIT_ASSERT_VALUES_EQUAL(DescribeSecret("/Root/sa_secret").GetIamDelegation().GetServiceAccountId(), "delegated-sa1");
 
@@ -372,7 +372,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
         // refuses the lookup with any other token), so the delegation lands in that cloud
         {
             const auto result = ExecAsCloudUserWithResult(R"(
-                CREATE SECRET `sa_secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-sa1");
+                CREATE SECRET `sa_secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-sa1");
             )");
             UNIT_ASSERT_C(result.GetIssues().Empty(), result.GetIssues().ToString());
         }
@@ -392,12 +392,12 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
 
         // the lookup fails and the database has no cloud_id attribute: the error names both reasons
         ExecAsCloudUser(R"(
-            CREATE SECRET `nofolder_secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-nofolder");
+            CREATE SECRET `nofolder_secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-nofolder");
         )", EStatus::BAD_REQUEST, "database /Root has no cloud_id attribute and the cloud of service account delegated-nofolder is unknown: GetServiceAccount failed");
         UNIT_ASSERT(!SecretExists("/Root/nofolder_secret"));
 
         ExecAsCloudUser(R"(
-            CREATE SECRET `nocloud_secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-nocloud");
+            CREATE SECRET `nocloud_secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-nocloud");
         )", EStatus::BAD_REQUEST, "did not resolve folder folder-of-delegated-nocloud");
         UNIT_ASSERT(!SecretExists("/Root/nocloud_secret"));
     }
@@ -429,7 +429,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
         // the service account cannot be looked up: the cloud of the database is used, with a warning
         {
             const auto result = client.ExecuteQuery(R"(
-                CREATE SECRET `db_sa_secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-nofolder-db");
+                CREATE SECRET `db_sa_secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-nofolder-db");
             )", TTxControl::NoTx()).ExtractValueSync();
             UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
             UNIT_ASSERT_STRING_CONTAINS(result.GetIssues().ToString(), "RESOURCE iamdelegationcloud was taken from the database, the cloud of service account delegated-nofolder-db is unknown: GetServiceAccount failed");
@@ -447,7 +447,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
         // the service account can be looked up: its cloud wins over the cloud of the database
         {
             const auto result = client.ExecuteQuery(R"(
-                CREATE SECRET `db_sa_secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-dbsa");
+                CREATE SECRET `db_sa_secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-dbsa");
             )", TTxControl::NoTx()).ExtractValueSync();
             UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
             UNIT_ASSERT_C(result.GetIssues().Empty(), result.GetIssues().ToString());
@@ -485,7 +485,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecrets) {
         });
 
         ExecAsCloudUser(fmt::format(R"(
-            CREATE SECRET `eds_sa_secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-eds", RESOURCE = "{cloud}");
+            CREATE SECRET `eds_sa_secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "delegated-eds", RESOURCE = "{cloud}");
         )", "cloud"_a = CLOUD_ID));
 
         // the value of a delegation secret is an IAM token: the data source references it exactly like

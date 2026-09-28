@@ -27,7 +27,8 @@ struct TIamDelegationSecretOperation {
     // Timeouts of the statement. The scheme executer keeps the defaults; unit tests shorten them.
     struct TTimeouts {
         TDuration Navigate = TDuration::Seconds(30);    // one scheme lookup
-        TDuration Delegation = TDuration::Minutes(5);   // one delegation call (with its retries and the polling of the operation) or one cloud lookup
+        TDuration Delegation = TDuration::Minutes(5);   // one delegation call (with its retries and the polling of the operation)
+        TDuration CloudLookup = TDuration::Minutes(5);  // the lookup of the cloud of the service account
     };
     TTimeouts Timeouts;
 };

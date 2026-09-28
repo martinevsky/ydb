@@ -59,16 +59,34 @@ public:
         State->Value = initialToken;
     }
 
+    // The synchronous use runs on the caller's thread, an actor thread for the S3 and Monium actors: it never
+    // waits for a read. A value past its usable moment is handed out once more (the read in flight replaces it);
+    // only a use with no value at all falls back to waiting.
     std::string GetAuthInfo() const override {
-        return GetAuthInfoAsync().GetValueSync();
+        return GetAuthInfo(EStaleValue::Serve).GetValueSync();
     }
+
+    NThreading::TFuture<std::string> GetAuthInfoAsync() const override {
+        return GetAuthInfo(EStaleValue::Wait);
+    }
+
+    bool IsValid() const override {
+        return true;
+    }
+
+private:
+    // What a use gets when the value is past its usable moment.
+    enum class EStaleValue {
+        Wait,  // the result of the read in flight
+        Serve, // the stale value, once more
+    };
 
     // Returns the value of the last read and starts the next one, so that the value handed out is never older
     // than one read of the node's secret cache. Only one read is in flight at a time, so a busy task does not
     // multiply reads; a failed read keeps the current value and is retried on the next use. A value past its
-    // usable moment is never handed out: the use waits for the read in flight and gets its result, a fresh
-    // value or the error the read ended with.
-    NThreading::TFuture<std::string> GetAuthInfoAsync() const override {
+    // usable moment is not handed out to a use that can wait: it waits for the read in flight and gets its
+    // result, a fresh value or the error the read ended with.
+    NThreading::TFuture<std::string> GetAuthInfo(EStaleValue stale) const {
         bool refresh = false;
         std::optional<NThreading::TFuture<std::string>> wait;
         std::string value;
@@ -77,7 +95,7 @@ public:
                 State->Refreshing = true;
                 refresh = true;
             }
-            if (!State->Value.empty() && TInstant::Now() < State->UsableUntil) {
+            if (!State->Value.empty() && (stale == EStaleValue::Serve || TInstant::Now() < State->UsableUntil)) {
                 value = State->Value;
             } else {
                 if (!State->Waiting) {
@@ -95,11 +113,6 @@ public:
         return NThreading::MakeFuture(std::move(value));
     }
 
-    bool IsValid() const override {
-        return true;
-    }
-
-private:
     // Called from any thread (SDK sessions ask for tokens on their own threads): the secret service is
     // reached through the actor system only. No user token: the rights were checked when the execution started.
     void StartRefresh() const {

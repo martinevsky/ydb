@@ -448,7 +448,7 @@ namespace {
         if (type == "IAM_DELEGATION") {
             settings.Type = NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION;
         } else {
-            YQL_ENSURE(type.empty() || type == "VALUE", "Unknown secret type: " << type);
+            YQL_ENSURE(type.empty(), "Unknown secret type: " << type);
             settings.Type = NKikimrSchemeOp::SECRET_TYPE_VALUE;
         }
         settings.ServiceAccountId = serviceAccountId;

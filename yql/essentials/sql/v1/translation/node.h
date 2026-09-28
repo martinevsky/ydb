@@ -1497,8 +1497,8 @@ public:
 
     TMaybe<TDeferredAtom> InheritPermissions;
 
-    // TYPE="VALUE" (default) or TYPE="IAM_DELEGATION"; parameters of IAM delegation secrets:
-    TMaybe<TDeferredAtom> Type;
+    // SOURCE="IAM_DELEGATION" makes an external secret (no SOURCE: the value is stored); parameters of IAM delegation secrets:
+    TMaybe<TDeferredAtom> Source;
     TMaybe<TDeferredAtom> ServiceAccountId;
     TMaybe<TDeferredAtom> CloudId;
 

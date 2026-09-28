@@ -2649,6 +2649,9 @@ message TSecretDescription {
     // know it, readers never use it. Whatever delegation stops being named by the secret is revoked by the
     // schemeshard (its outbox of revocations), so a staged replacement never leaks.
     optional TIamDelegation PendingIamDelegation = 6;
+    // When PendingIamDelegation was staged (microseconds since the epoch): another replacement may be staged
+    // over it only once its setup can no longer be in flight (the ALTER that staged it has failed or died).
+    optional uint64 PendingIamDelegationStagedAt = 7;
 }
 
 // What ALTER SECRET does with the delegation of an IAM_DELEGATION secret. The delegation is set up in IAM

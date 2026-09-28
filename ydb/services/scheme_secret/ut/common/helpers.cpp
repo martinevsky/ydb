@@ -174,6 +174,7 @@ namespace NKikimr::NSecret {
                     Calls->Calls.push_back(std::move(call));
                     hold = Calls->HoldSetups;
                     status = Calls->SetupStatus;
+                    Calls->Changed.BroadCast();
                 }
                 Answer({.Sender = ev->Sender, .Cookie = ev->Cookie, .Revoke = false, .Status = status}, hold);
             }
@@ -186,6 +187,7 @@ namespace NKikimr::NSecret {
                     Calls->Calls.push_back(std::move(call));
                     hold = Calls->HoldRevokes;
                     status = Calls->RevokeStatus;
+                    Calls->Changed.BroadCast();
                 }
                 Answer({.Sender = ev->Sender, .Cookie = ev->Cookie, .Revoke = true, .Status = status}, hold);
             }
@@ -238,13 +240,14 @@ namespace NKikimr::NSecret {
 
     void TFakeDelegationCalls::WaitCalls(const TString& method, ui32 count, TDuration timeout) {
         const TInstant deadline = TInstant::Now() + timeout;
-        for (;;) {
-            const ui32 calls = method == "Setup" ? SetupCalls() : RevokeCalls();
-            if (calls >= count) {
-                return;
+        with_lock (Mutex) {
+            for (;;) {
+                const ui32 calls = CountIf(Calls, [&](const TCall& c) { return c.Method == method; });
+                if (calls >= count) {
+                    return;
+                }
+                UNIT_ASSERT_C(Changed.WaitD(Mutex, deadline), "only " << calls << " " << method << " calls were received in " << timeout);
             }
-            UNIT_ASSERT_C(TInstant::Now() < deadline, "only " << calls << " " << method << " calls were received in " << timeout);
-            Sleep(TDuration::MilliSeconds(20));
         }
     }
 

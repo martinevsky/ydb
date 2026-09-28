@@ -1,7 +1,28 @@
+#include <ydb/core/security/iam_delegation/events.h>
+#include <ydb/core/security/iam_delegation/services.h>
 #include <ydb/core/tx/schemeshard/ut_helpers/helpers.h>
 
 namespace {
     using namespace NSchemeShardUT_Private;
+    using NIamDelegation::TEvIamDelegation;
+
+    // The IAM delegation service of the node, stood in for by an edge actor that receives the revoke requests
+    // of the schemeshard's revokers.
+    TActorId RegisterFakeIamDelegationService(TTestActorRuntime& runtime) {
+        const TActorId edge = runtime.AllocateEdgeActor();
+        runtime.RegisterService(NIamDelegation::MakeIamDelegationServiceId(), edge);
+        return edge;
+    }
+
+    // A revocation still in the outbox is resumed by the schemeshard after a restart: whatever reboot happened
+    // during the operation, a fresh schemeshard asks to revoke the delegation.
+    void ExpectRevokeAfterRestart(TTestActorRuntime& runtime, const TActorId& iam, const TString& referrerId) {
+        const TActorId sender = runtime.AllocateEdgeActor();
+        RebootTablet(runtime, TTestTxConfig::SchemeShard, sender);
+        const auto revoke = runtime.GrabEdgeEvent<TEvIamDelegation::TEvRevokeDelegation>(iam);
+        UNIT_ASSERT(revoke);
+        UNIT_ASSERT_VALUES_EQUAL(revoke->Get()->Spec.ReferrerId, referrerId);
+    }
 
     void ExpectEqualSecretDescription(
         const NKikimrScheme::TEvDescribeSchemeResult& describeResult,
@@ -152,9 +173,11 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTestReboots) {
     Y_UNIT_TEST(AlterIamDelegationSecret) {
         TTestWithReboots t;
         t.Run([&](TTestActorRuntime& runtime, bool& activeZone) {
+            TActorId iam;
             {
                 TInactiveZone inactive(activeZone);
                 runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+                iam = RegisterFakeIamDelegationService(runtime);
                 TestMkDir(runtime, ++t.TxId, "/MyRoot", "dir");
                 t.TestEnv->TestWaitNotification(runtime, t.TxId);
 
@@ -221,6 +244,8 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTestReboots) {
                 UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetCloudId(), "b1g-cloud-1");
                 UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetReferrerId(), "referrer-2");
                 UNIT_ASSERT(!secret.HasPendingIamDelegation());
+                // the promotion put the previous delegation into the outbox
+                ExpectRevokeAfterRestart(runtime, iam, "referrer-1");
             }
         });
     }
@@ -228,9 +253,11 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTestReboots) {
     Y_UNIT_TEST(DropIamDelegationSecret) {
         TTestWithReboots t;
         t.Run([&](TTestActorRuntime& runtime, bool& activeZone) {
+            TActorId iam;
             {
                 TInactiveZone inactive(activeZone);
                 runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+                iam = RegisterFakeIamDelegationService(runtime);
                 TestMkDir(runtime, ++t.TxId, "/MyRoot", "dir");
                 t.TestEnv->TestWaitNotification(runtime, t.TxId);
                 TestCreateSecret(runtime, ++t.TxId, "/MyRoot/dir",
@@ -254,6 +281,7 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTestReboots) {
             {
                 TInactiveZone inactive(activeZone);
                 TestLs(runtime, "/MyRoot/dir/sa-secret", false, NLs::PathNotExist);
+                ExpectRevokeAfterRestart(runtime, iam, "referrer-1");
             }
         });
     }

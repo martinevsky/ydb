@@ -4368,7 +4368,7 @@ private:
                 options = L(options, Q(Y(BuildQuotedAtom(Pos_, name), value->Build())));
             }
         };
-        addStringOption("type", Params_.Type);
+        addStringOption("source", Params_.Source);
         addStringOption("service_account_id", Params_.ServiceAccountId);
         addStringOption("resource", Params_.CloudId);
         return options;

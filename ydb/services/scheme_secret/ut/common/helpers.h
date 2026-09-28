@@ -63,6 +63,7 @@ namespace NKikimr::NSecret {
         };
 
         TMutex Mutex;
+        TCondVar Changed; // signalled under Mutex whenever a call is recorded
         TVector<TCall> Calls;
         Ydb::StatusIds::StatusCode SetupStatus = Ydb::StatusIds::SUCCESS;
         Ydb::StatusIds::StatusCode RevokeStatus = Ydb::StatusIds::SUCCESS;

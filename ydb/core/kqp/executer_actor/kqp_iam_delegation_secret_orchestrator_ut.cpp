@@ -1,4 +1,5 @@
 #include <ydb/core/kqp/executer_actor/kqp_iam_delegation_secret_orchestrator.h>
+#include <ydb/core/kqp/gateway/actors/scheme.h>
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
 #include <ydb/core/protos/schemeshard/operations.pb.h>
 #include <ydb/core/security/iam_delegation/events.h>
@@ -84,14 +85,19 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
             return TKikimrSettings(appConfig).SetWithSampleTables(false).SetFeatureFlags(featureFlags);
         }
 
-        // registerFake: replace the IAM delegation service of the node with the recording fake (needs a served
-        // query first, so it is not possible in the single-threaded mode of the runtime)
-        explicit TOrchestratorRunner(const TKikimrSettings& settings = MakeSettings(MakeAppConfig()), bool registerFake = true)
+        // Whether the IAM delegation service of the node is replaced with the recording fake (needs a served
+        // query first, so it is not possible in the single-threaded mode of the runtime).
+        enum class EFakeDelegationService {
+            Register,
+            Keep,
+        };
+
+        explicit TOrchestratorRunner(const TKikimrSettings& settings = MakeSettings(MakeAppConfig()), EFakeDelegationService fake = EFakeDelegationService::Register)
             : Kikimr(settings)
             , Runtime(*Kikimr.GetTestServer().GetRuntime())
         {
             Runtime.SetLogPriority(NKikimrServices::IAM_DELEGATION, NLog::PRI_DEBUG);
-            if (!registerFake) {
+            if (fake == EFakeDelegationService::Keep) {
                 return;
             }
             // the KQP proxy registers the real IAM services when it bootstraps, which has happened once it has
@@ -160,7 +166,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
     // of the operation, names the path, sends nothing to the delegation service, and completes its promise. The
     // runtime runs single-threaded so that its observer can drop the navigate and count the IAM events.
     Y_UNIT_TEST(NavigateTimeoutFailsTheStatement) {
-        TOrchestratorRunner t(TOrchestratorRunner::MakeSettings(TOrchestratorRunner::MakeAppConfig()).SetUseRealThreads(false), /* registerFake */ false);
+        TOrchestratorRunner t(TOrchestratorRunner::MakeSettings(TOrchestratorRunner::MakeAppConfig()).SetUseRealThreads(false), TOrchestratorRunner::EFakeDelegationService::Keep);
 
         // the navigate of the secret path is dropped on its way to the scheme cache; every request to the
         // delegation service is counted
@@ -288,7 +294,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
             .OriginalUserToken = "cloud-user-bearer", .UserSID = "bob@" BUILTIN_ACL_DOMAIN});
         const auto run = [&](const TString& database, const TString& name, const TString& serviceAccountId, const TString& cloudId) {
             auto op = t.CreateOperation(database, name, serviceAccountId, cloudId, userToken);
-            op.Timeouts.Delegation = TDuration::Seconds(1); // what makes the timeout of the lookup inevitable
+            op.Timeouts.CloudLookup = TDuration::Seconds(1); // what makes the timeout of the lookup inevitable (the delegation call keeps its own)
             auto promise = op.Promise;
             t.Runtime.Register(CreateIamDelegationSecretCreator(std::move(op)));
             return TOrchestratorRunner::WaitResult(promise);
@@ -427,6 +433,116 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
         for (const char c : TStringBuf(first).Skip(prefix.size())) {
             UNIT_ASSERT_C(IsAsciiHex(c) && !IsAsciiUpper(c), first);
         }
+    }
+
+    // runs a scheme request through the regular handler (no user token: no rights check)
+    NYql::IKikimrGateway::TGenericResult RunScheme(TTestActorRuntime& runtime, std::function<void(NKikimrSchemeOp::TModifyScheme&)> fill) {
+        auto request = MakeHolder<TEvTxUserProxy::TEvProposeTransaction>();
+        request->Record.SetDatabaseName("/Root");
+        fill(*request->Record.MutableTransaction()->MutableModifyScheme());
+        auto promise = NThreading::NewPromise<NYql::IKikimrGateway::TGenericResult>();
+        runtime.Register(new TSchemeOpRequestHandler(request.Release(), promise, true));
+        auto future = promise.GetFuture();
+        runtime.WaitFor("scheme request", [&]() { return future.HasValue(); }, TDuration::Seconds(120)); // hang guard
+        return future.GetValue();
+    }
+
+    // CREATE SECRET ... IF NOT EXISTS of a delegation secret, the way the gateway prepares it (FailOnExist = false)
+    TIamDelegationSecretOperation IfNotExistsOperation(const TString& name, const TIntrusiveConstPtr<NACLib::TUserToken>& userToken) {
+        auto request = MakeHolder<TEvTxUserProxy::TEvProposeTransaction>();
+        request->Record.SetDatabaseName("/Root");
+        request->Record.SetUserToken(userToken->GetSerializedToken());
+        auto& scheme = *request->Record.MutableTransaction()->MutableModifyScheme();
+        scheme.SetWorkingDir("/Root");
+        scheme.SetOperationType(NKikimrSchemeOp::ESchemeOpCreateSecret);
+        scheme.SetFailOnExist(false);
+        scheme.SetFailedOnAlreadyExists(false);
+        auto& op = *scheme.MutableCreateSecret();
+        op.SetName(name);
+        op.SetType(NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
+        op.MutableIamDelegation()->SetServiceAccountId("aje-sa");
+        op.MutableIamDelegation()->SetCloudId("b1g-cloud");
+        return {
+            .Request = std::move(request),
+            .Database = "/Root",
+            .UserToken = userToken,
+            .Promise = NThreading::NewPromise<NYql::IKikimrGateway::TGenericResult>(),
+            .FailedOnAlreadyExists = false,
+            .SuccessOnNotExist = false,
+        };
+    }
+
+    // CREATE SECRET ... IF NOT EXISTS racing another CREATE of the same name: the navigate of the orchestrator
+    // (forged here to answer "absent", which is what it answers when the other CREATE lands between the navigate
+    // and the propose) is followed by the statement's own propose, which must not accept the existing secret as
+    // this statement's: no delegation is set up for a secret that does not name it, the other statement's secret
+    // is not dropped, and the statement succeeds as IF NOT EXISTS says.
+    Y_UNIT_TEST(IfNotExistsRaceSetsNothingUp) {
+        TOrchestratorRunner t(TOrchestratorRunner::MakeSettings(TOrchestratorRunner::MakeAppConfig()).SetUseRealThreads(false), TOrchestratorRunner::EFakeDelegationService::Keep);
+        auto& runtime = t.Runtime;
+        {
+            // the user needs the rights to create in /Root; a scheme request grants them (no query service in this mode)
+            const auto result = RunScheme(runtime, [](auto& scheme) {
+                scheme.SetWorkingDir("/");
+                scheme.SetOperationType(NKikimrSchemeOp::ESchemeOpModifyACL);
+                NACLib::TDiffACL diff;
+                diff.AddAccess(NACLib::EAccessType::Allow, NACLib::GenericFull, "bob@" BUILTIN_ACL_DOMAIN);
+                scheme.MutableModifyACL()->SetName("Root");
+                scheme.MutableModifyACL()->SetDiffACL(diff.SerializeAsString());
+            });
+            UNIT_ASSERT_C(result.Success(), result.Issues().ToString());
+        }
+        {
+            // the secret of the other statement (a VALUE secret, created without any IAM involvement)
+            const auto result = RunScheme(runtime, [](auto& scheme) {
+                scheme.SetWorkingDir("/Root");
+                scheme.SetOperationType(NKikimrSchemeOp::ESchemeOpCreateSecret);
+                scheme.MutableCreateSecret()->SetName("race-secret");
+                scheme.MutableCreateSecret()->SetValue("the other statement's value");
+            });
+            UNIT_ASSERT_C(result.Success(), result.Issues().ToString());
+        }
+        UNIT_ASSERT(t.Exists("/Root/race-secret"));
+
+        const TVector<TString> secretPath = SplitPath("/Root/race-secret");
+        TActorId orchestrator;
+        ui32 forged = 0;
+        ui32 setups = 0;
+        ui32 drops = 0;
+        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+            if (ev->GetTypeRewrite() == TEvTxProxySchemeCache::EvNavigateKeySetResult && orchestrator && ev->Recipient == orchestrator && !forged) {
+                auto* request = ev->Get<TEvTxProxySchemeCache::TEvNavigateKeySetResult>()->Request.Get();
+                if (request->ResultSet.size() == 1 && request->ResultSet.front().Path == secretPath) {
+                    request->ResultSet.front().Status = NSchemeCache::TSchemeCacheNavigate::EStatus::PathErrorUnknown;
+                    request->ResultSet.front().SecretInfo.Reset();
+                    ++forged;
+                }
+            }
+            if (ev->GetTypeRewrite() == NIamDelegation::TEvIamDelegation::EvSetupDelegation) {
+                ++setups;
+            }
+            if (ev->GetTypeRewrite() == TEvTxUserProxy::EvProposeTransaction
+                && ev->Get<TEvTxUserProxy::TEvProposeTransaction>()->Record.GetTransaction().GetModifyScheme().GetOperationType() == NKikimrSchemeOp::ESchemeOpDropSecret)
+            {
+                ++drops;
+            }
+            return TTestActorRuntimeBase::EEventAction::PROCESS;
+        });
+
+        auto userToken = MakeIntrusiveConst<NACLib::TUserToken>("bob@" BUILTIN_ACL_DOMAIN, TVector<NACLib::TSID>{});
+        auto op = IfNotExistsOperation("race-secret", userToken);
+        auto future = op.Promise.GetFuture();
+        orchestrator = runtime.Register(CreateIamDelegationSecretCreator(std::move(op)));
+        runtime.WaitFor("the promise of the orchestrator", [&]() { return future.HasValue(); }, TDuration::Seconds(120)); // hang guard
+        const auto& result = future.GetValue();
+        runtime.SetObserverFunc(TTestActorRuntime::DefaultObserverFunc);
+
+        UNIT_ASSERT_VALUES_EQUAL(forged, 1u);
+        UNIT_ASSERT_C(result.Success(), result.Issues().ToString());
+        UNIT_ASSERT_VALUES_EQUAL(setups, 0u);
+        UNIT_ASSERT_VALUES_EQUAL(drops, 0u);
+        UNIT_ASSERT(t.Exists("/Root/race-secret"));
+        UNIT_ASSERT_EQUAL(t.Describe("/Root/race-secret").GetType(), NKikimrSchemeOp::SECRET_TYPE_VALUE);
     }
 }
 

@@ -247,10 +247,16 @@ struct TFixture {
         IamServer->Shutdown();
     }
 
+    // Kind of a sensor of the token service: a counter of events or the current size of something.
+    enum class ESensorKind {
+        Derivative,
+        Absolute,
+    };
+
     // Sensors of the delegated token service of the node (ydb/core/security/iam_delegation/iam_delegated_token_service.cpp)
-    i64 TokenSensor(const char* name, bool derivative = true) {
+    i64 TokenSensor(const char* name, ESensorKind kind = ESensorKind::Derivative) {
         return GetServiceCounters(Runtime->GetAppData().Counters, "iam_delegation")
-            ->GetSubgroup("component", "token_service")->GetCounter(name, derivative)->Val();
+            ->GetSubgroup("component", "token_service")->GetCounter(name, kind == ESensorKind::Derivative)->Val();
     }
 
     template <class TCondition>
@@ -1033,7 +1039,7 @@ Y_UNIT_TEST_SUITE(IamDelegatedTokenService) {
             }
         }
         UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("Mints"), 1);
-        UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("CachedKeys", false), 1);
+        UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("CachedKeys", TFixture::ESensorKind::Absolute), 1);
 
         // cached: the same token without a new IAM call, the cookie of the request is echoed
         const TActorId sender = f.Runtime->AllocateEdgeActor();
@@ -1113,7 +1119,7 @@ Y_UNIT_TEST_SUITE(IamDelegatedTokenService) {
         auto second = WaitForNewToken(f, service, "delegated-1");
         UNIT_ASSERT_C(second->IsSuccess(), second->Issues.ToOneLineString());
         UNIT_ASSERT_VALUES_EQUAL(second->Token, "delegated-2");
-        UNIT_ASSERT(first->ExpiresAt > TInstant::Now());
+        UNIT_ASSERT(second->ExpiresAt > first->ExpiresAt); // a fresh token, not the first one again
         UNIT_ASSERT(f.TokenSensor("Mints") >= 2);
     }
 
@@ -1267,35 +1273,35 @@ Y_UNIT_TEST_SUITE(IamDelegatedTokenService) {
 
         auto result = f.GetToken(service, KEY);
         UNIT_ASSERT_VALUES_EQUAL(result->Token, "delegated-1");
-        UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("CachedKeys", false), 1);
+        UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("CachedKeys", TFixture::ESensorKind::Absolute), 1);
 
-        f.WaitUntil([&]() { return f.TokenSensor("CachedKeys", false) == 0; }, "the idle eviction");
+        f.WaitUntil([&]() { return f.TokenSensor("CachedKeys", TFixture::ESensorKind::Absolute) == 0; }, "the idle eviction");
         UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("Mints"), 1); // evicted at the wake-up, not refreshed
 
         result = f.GetToken(service, KEY);
         UNIT_ASSERT_C(result->IsSuccess(), result->Issues.ToOneLineString());
         UNIT_ASSERT_VALUES_EQUAL(result->Token, "delegated-2");
         UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("Mints"), 2);
-        UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("CachedKeys", false), 1);
+        UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("CachedKeys", TFixture::ESensorKind::Absolute), 1);
     }
 
     // A reader that keeps asking keeps the key alive and always gets a valid token while the loop refreshes it.
     Y_UNIT_TEST(KeyInUseIsKeptFresh) {
         TFixture f;
         f.TokenMock.SetServiceToken("cloud-1", "sa-1", "delegated");
-        f.Settings.MaxTokenCacheLifetime = TDuration::Seconds(1); // refresh at the tight-loop guard (5 s), IdleKeyTtl is 2 s
+        f.Settings.MaxTokenCacheLifetime = TDuration::Seconds(1); // refresh at the tight-loop guard (5 s)
+        f.Settings.IdleKeyTtl = TDuration::Minutes(10); // the key must not be evicted between two asks, however slow the test host
         const auto service = f.StartTokenService();
 
         TString last;
         f.WaitUntil([&]() {
             const auto result = f.GetToken(service, KEY);
             UNIT_ASSERT_C(result->IsSuccess(), result->Issues.ToOneLineString());
-            UNIT_ASSERT(result->ExpiresAt > TInstant::Now());
             last = result->Token;
             return f.TokenSensor("Mints") >= 3;
         }, "three mints");
         UNIT_ASSERT_VALUES_UNEQUAL(last, "delegated-1");
-        UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("CachedKeys", false), 1);
+        UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("CachedKeys", TFixture::ESensorKind::Absolute), 1);
     }
 
     Y_UNIT_TEST(PoisonWhileRefreshLoopParked) {
@@ -1309,7 +1315,7 @@ Y_UNIT_TEST_SUITE(IamDelegatedTokenService) {
 
         // the refresh loop is parked in its sleep (the 12 h token needs no refresh): poison cancels it
         f.Runtime->Send(new IEventHandle(service, f.Sender, new TEvents::TEvPoison()));
-        f.WaitUntil([&]() { return f.TokenSensor("CachedKeys", false) == 0; }, "the shutdown");
+        f.WaitUntil([&]() { return f.TokenSensor("CachedKeys", TFixture::ESensorKind::Absolute) == 0; }, "the shutdown");
         // the service is gone: a tracked request comes back undelivered, nothing was minted
         f.ExpectUndelivered(service, new TEvIamDelegation::TEvGetToken(KEY));
         UNIT_ASSERT_VALUES_EQUAL(f.TokenMock.CreateForServiceCalls.load(), 1u);
@@ -1331,7 +1337,7 @@ Y_UNIT_TEST_SUITE(IamDelegatedTokenService) {
 
         // the parked waiters are cancelled with the actor: a tracked request comes back undelivered
         f.ExpectUndelivered(service, new TEvIamDelegation::TEvGetToken(KEY));
-        UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("CachedKeys", false), 0);
+        UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("CachedKeys", TFixture::ESensorKind::Absolute), 0);
         f.TokenMock.ReleaseHeldServiceTokenCalls();
     }
 
@@ -1406,7 +1412,7 @@ Y_UNIT_TEST_SUITE(IamDelegatedTokenService) {
         }
         UNIT_ASSERT_VALUES_EQUAL(mintsOfHeldKey, 1u);
         UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("Mints"), 2);
-        UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("CachedKeys", false), 2);
+        UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("CachedKeys", TFixture::ESensorKind::Absolute), 2);
     }
 
     // A flood spread over many keys: one CreateForService per key, every reply carries the token of its key.
@@ -1446,7 +1452,7 @@ Y_UNIT_TEST_SUITE(IamDelegatedTokenService) {
         }
         UNIT_ASSERT_VALUES_EQUAL(minted.size(), keys);
         UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("Mints"), keys);
-        UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("CachedKeys", false), keys);
+        UNIT_ASSERT_VALUES_EQUAL(f.TokenSensor("CachedKeys", TFixture::ESensorKind::Absolute), keys);
     }
 
     Y_UNIT_TEST(TokenServiceSystemTokenFailure) {

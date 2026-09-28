@@ -1,5 +1,6 @@
 #include <ydb/core/security/iam_delegation/events.h>
 #include <ydb/core/security/iam_delegation/services.h>
+#include <ydb/core/tx/schemeshard/schemeshard_iam_delegation.h>
 #include <ydb/core/tx/schemeshard/ut_helpers/helpers.h>
 
 #include <util/string/join.h>
@@ -1276,9 +1277,14 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
         }
         AnswerRevoke(runtime, iam, GrabRevoke(runtime, iam, "referrer-1"), Ydb::StatusIds::SUCCESS);
 
-        // staging over a staged delegation replaces it: the earlier one is revoked
+        // a staged delegation may be being set up by the ALTER that staged it: another one cannot be staged over
+        // it until that ALTER can no longer be in flight; then the earlier one is replaced and revoked
         TestAlterSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "aje-sa-3", "b1g-cloud-1", "referrer-3", "IAM_DELEGATION_ALTER_STAGE"));
         env.TestWaitNotification(runtime, txId);
+        TestAlterSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "aje-sa-4", "b1g-cloud-1", "referrer-4", "IAM_DELEGATION_ALTER_STAGE"),
+            {{NKikimrScheme::StatusMultipleModifications, "is being set up for the secret by another ALTER"}});
+        UNIT_ASSERT_VALUES_EQUAL(describe().GetPendingIamDelegation().GetReferrerId(), "referrer-3");
+        env.SimulateSleep(runtime, StagedIamDelegationLease + TDuration::Seconds(1));
         TestAlterSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("sa-secret", "aje-sa-4", "b1g-cloud-1", "referrer-4", "IAM_DELEGATION_ALTER_STAGE"));
         env.TestWaitNotification(runtime, txId);
         AnswerRevoke(runtime, iam, GrabRevoke(runtime, iam, "referrer-3"), Ydb::StatusIds::SUCCESS);
@@ -1571,15 +1577,15 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
         }
     }
 
-    // DROP DATABASE (the force drop of a subdomain) removes a delegation secret like any other path, without
-    // revoking its delegation in IAM: the schemeshard talks to no IAM service, so the delegation named by the
-    // dropped record stays in IAM until IAM support revokes it by its referrer (the RFC accepts this: only
-    // DROP SECRET through the query service revokes). This test pins that the drop is a plain schema operation.
-    Y_UNIT_TEST(ForceDropSubDomainLeavesTheDelegationInIam) {
+    // The force drop of a subdomain removes a delegation secret with the other paths: its delegation goes to the
+    // outbox in the same transaction and is revoked like after DROP SECRET. (A database of its own, an
+    // extsubdomain, is the exception: its schemeshard goes away with it, see schemeshard_iam_delegation.h.)
+    Y_UNIT_TEST(ForceDropSubDomainRevokesTheDelegation) {
         TTestBasicRuntime runtime;
         TTestEnv env(runtime);
         runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
         ui64 txId = 100;
+        const TActorId iam = RegisterFakeIamDelegationService(runtime);
 
         TestCreateSubDomain(runtime, ++txId, "/MyRoot", R"(
             Name: "SubDomain"
@@ -1599,11 +1605,13 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
         env.TestWaitNotification(runtime, txId);
         TestLs(runtime, "/MyRoot/SubDomain/sa-secret", false, NLs::PathExist);
 
-        // the whole subdomain is dropped with the secret inside: accepted at once, nothing waits for IAM
+        // the whole subdomain is dropped with the secret inside: accepted at once, nothing waits for IAM, and
+        // the delegation is revoked afterwards
         TestForceDropSubDomain(runtime, ++txId, "/MyRoot", "SubDomain");
         env.TestWaitNotification(runtime, txId);
         TestLs(runtime, "/MyRoot/SubDomain/sa-secret", false, NLs::PathNotExist);
         TestLs(runtime, "/MyRoot/SubDomain", false, NLs::PathNotExist);
+        AnswerRevoke(runtime, iam, GrabRevoke(runtime, iam, "ydb.delegation.0000000000000000000000000000000d"), Ydb::StatusIds::SUCCESS);
 
         // the secret is gone for good: the same path can be created again with another delegation
         TestCreateSubDomain(runtime, ++txId, "/MyRoot", R"(
@@ -1624,6 +1632,52 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
         env.TestWaitNotification(runtime, txId);
         const auto describe = DescribePath(runtime, "/MyRoot/SubDomain/sa-secret");
         UNIT_ASSERT_VALUES_EQUAL(describe.GetPathDescription().GetSecretDescription().GetIamDelegation().GetServiceAccountId(), "aje-sa-2");
+    }
+
+    // The force drop of a directory removes the delegation secrets inside it: their revocations are written in the
+    // transaction of the drop and survive a restart of the schemeshard until IAM accepts them.
+    Y_UNIT_TEST(ForceDropUnsafeRevokesTheDelegationsOfTheSubtree) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+        const TActorId iam = RegisterFakeIamDelegationService(runtime);
+
+        TestMkDir(runtime, ++txId, "/MyRoot", "dir");
+        env.TestWaitNotification(runtime, txId);
+        TestCreateSecret(runtime, ++txId, "/MyRoot/dir", DelegationSecretScheme("sa-secret", "aje-sa-1", "b1g-cloud-1", "referrer-in-dir"));
+        env.TestWaitNotification(runtime, txId);
+        TestAlterSecret(runtime, ++txId, "/MyRoot/dir", DelegationSecretScheme("sa-secret", "aje-sa-2", "b1g-cloud-1", "referrer-staged", "IAM_DELEGATION_ALTER_STAGE"));
+        env.TestWaitNotification(runtime, txId);
+        TestCreateSecret(runtime, ++txId, "/MyRoot", DelegationSecretScheme("other", "aje-sa-3", "b1g-cloud-1", "referrer-other"));
+        env.TestWaitNotification(runtime, txId);
+
+        const ui64 dirId = DescribePath(runtime, "/MyRoot/dir").GetPathDescription().GetSelf().GetPathId();
+        TestForceDropUnsafe(runtime, ++txId, dirId);
+        env.TestWaitNotification(runtime, txId);
+        TestLs(runtime, "/MyRoot/dir/sa-secret", false, NLs::PathNotExist);
+
+        // both delegations the secret named are revoked; the revokes are not answered before a restart
+        TSet<TString> revoked;
+        for (ui32 i = 0; i < 2; ++i) {
+            revoked.insert(GrabRevoke(runtime, iam)->Get()->Spec.ReferrerId);
+        }
+        UNIT_ASSERT_VALUES_EQUAL(JoinSeq(",", revoked), "referrer-in-dir,referrer-staged");
+        {
+            const TActorId sender = runtime.AllocateEdgeActor();
+            RebootTablet(runtime, TTestTxConfig::SchemeShard, sender);
+        }
+        // the revocations were written with the drop: the restarted schemeshard resumes both, and nothing else
+        revoked.clear();
+        for (ui32 i = 0; i < 2; ++i) {
+            const auto revoke = GrabRevoke(runtime, iam);
+            revoked.insert(revoke->Get()->Spec.ReferrerId);
+            AnswerRevoke(runtime, iam, revoke, Ydb::StatusIds::SUCCESS);
+        }
+        UNIT_ASSERT_VALUES_EQUAL(JoinSeq(",", revoked), "referrer-in-dir,referrer-staged");
+        TestDropSecret(runtime, ++txId, "/MyRoot", "other");
+        env.TestWaitNotification(runtime, txId);
+        AnswerRevoke(runtime, iam, GrabRevoke(runtime, iam, "referrer-other"), Ydb::StatusIds::SUCCESS);
     }
 
     Y_UNIT_TEST(IamDelegationSecretDisabledByFeatureFlag) {

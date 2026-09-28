@@ -30,7 +30,7 @@ namespace {
 // when the service is not running on the node (the feature flag is off or IAM is not configured), or not at
 // all; every outcome but success is retried after a growing delay. Seq tells stale replies and timers from
 // the current ones: every send and every scheduled retry gets a new value.
-class TIamDelegationRevoker: public TActorBootstrapped<TIamDelegationRevoker> {
+class TIamDelegationRevoker: public TActorBootstrapped<TIamDelegationRevoker>, public IActorExceptionHandler {
     static constexpr TDuration RequestTimeout = TDuration::Minutes(3); // the service retries and polls the IAM operation inside
     static constexpr TDuration MinRetryDelay = TDuration::Seconds(10);
     static constexpr TDuration MaxRetryDelay = TDuration::Minutes(5);
@@ -58,6 +58,14 @@ public:
             hFunc(TEvents::TEvWakeup, Handle);
             sFunc(TEvents::TEvPoison, PassAway);
         }
+    }
+
+    using IActorExceptionHandler::OnUnhandledException;
+    bool OnUnhandledException(const std::exception& e) override {
+        // the revocation stays in the outbox: the schemeshard starts another revoker for it after a restart
+        YDB_LOG_ERROR("Unhandled exception in an IAM delegation revoker", {"revocation", Revocation.ToString()}, {"exception", e.what()});
+        PassAway();
+        return true;
     }
 
 private:
@@ -162,7 +170,7 @@ IActor* CreateIamDelegationRevoker(const TActorId& schemeShard, const TIamDelega
 }
 
 void TSchemeShard::PersistIamDelegationRevocation(NIceDb::TNiceDb& db, const TIamDelegationRevocation& revocation) {
-    Y_ABORT_UNLESS(!revocation.ReferrerId.empty());
+    AFL_ENSURE(!revocation.ReferrerId.empty())("tablet_id", TabletID())("secret_local_path_id", revocation.PathId.LocalPathId);
     db.Table<Schema::IamDelegationRevocations>().Key(revocation.ReferrerId).Update(
         NIceDb::TUpdate<Schema::IamDelegationRevocations::ServiceAccountId>(revocation.ServiceAccountId),
         NIceDb::TUpdate<Schema::IamDelegationRevocations::CloudId>(revocation.CloudId),

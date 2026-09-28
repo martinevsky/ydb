@@ -220,6 +220,14 @@ public:
                                 return result;
                             }
                         }
+                        if (current.HasPendingIamDelegation()
+                            && TInstant::MicroSeconds(current.GetPendingIamDelegationStagedAt()) + StagedIamDelegationLease > context.Ctx.Now())
+                        {
+                            result->SetError(NKikimrScheme::StatusMultipleModifications, TStringBuilder()
+                                << "IAM delegation " << current.GetPendingIamDelegation().GetReferrerId()
+                                << " is being set up for the secret by another ALTER; retry once it has completed");
+                            return result;
+                        }
                         break;
                     case NKikimrSchemeOp::IAM_DELEGATION_ALTER_PROMOTE:
                     case NKikimrSchemeOp::IAM_DELEGATION_ALTER_CANCEL:
@@ -276,13 +284,16 @@ public:
                         break;
                     case NKikimrSchemeOp::IAM_DELEGATION_ALTER_STAGE:
                         alterData->Description.MutablePendingIamDelegation()->CopyFrom(alterSecretProto.GetIamDelegation());
+                        alterData->Description.SetPendingIamDelegationStagedAt(context.Ctx.Now().MicroSeconds());
                         break;
                     case NKikimrSchemeOp::IAM_DELEGATION_ALTER_PROMOTE:
                         alterData->Description.MutableIamDelegation()->CopyFrom(secretInfo->Description.GetPendingIamDelegation());
                         alterData->Description.ClearPendingIamDelegation();
+                        alterData->Description.ClearPendingIamDelegationStagedAt();
                         break;
                     case NKikimrSchemeOp::IAM_DELEGATION_ALTER_CANCEL:
                         alterData->Description.ClearPendingIamDelegation();
+                        alterData->Description.ClearPendingIamDelegationStagedAt();
                         break;
                 }
                 break;

@@ -5655,8 +5655,8 @@ bool TSqlTranslation::StoreSecretSettingEntry(const TIdentifier& id, const TRule
         return StoreSecretInheritPermissions(value, key, secretParams);
     } else if (key == "VALUE") {
         return StoreSecretValue(value, key, secretParams);
-    } else if (key == "TYPE") {
-        return StoreSecretStringLiteral(value, key, secretParams.Type);
+    } else if (key == "SOURCE") {
+        return StoreSecretStringLiteral(value, key, secretParams.Source);
     } else if (key == "SERVICE_ACCOUNT_ID") {
         return StoreSecretStringLiteral(value, key, secretParams.ServiceAccountId);
     } else if (key == "RESOURCE") {

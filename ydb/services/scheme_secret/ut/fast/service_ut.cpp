@@ -981,6 +981,35 @@ Y_UNIT_TEST_SUITE(RefreshingSecretCredentials) {
         AlterIamDelegationSecretDirect(runtime, "/Root/sa-secret", "aje-2", "b1g-1", "referrer-2");
         UNIT_ASSERT_VALUES_EQUAL(WaitForValue(provider, "delegated-token-b1g-1/aje-2"), "delegated-token-b1g-1/aje-2");
     }
+
+    // A value past its usable moment: an asynchronous use waits for the re-read in flight and gets its result,
+    // a synchronous use (an actor thread) gets the stale value at once and never waits.
+    Y_UNIT_TEST(StaleValueIsServedToSynchronousUsesOnly) {
+        TKikimrRunner kikimr;
+        auto& runtime = *kikimr.GetTestServer().GetRuntime();
+        const TActorId secretService = runtime.AllocateEdgeActor();
+        runtime.RegisterService(MakeDescribeSchemaSecretServiceId(runtime.GetNodeId(0)), secretService);
+        auto provider = CreateRefreshingSecretCredentialsProviderFactory(runtime.GetActorSystem(0), "/Root/dlg-secret", "/Root", "token-1", EBearerPrefix::None)->CreateProvider();
+
+        // the first use gets the initial value and starts a re-read, which answers with a value already past its usable moment
+        auto first = provider->GetAuthInfoAsync();
+        UNIT_ASSERT(first.HasValue());
+        UNIT_ASSERT_VALUES_EQUAL(first.GetValue(), "token-1");
+        auto reread = runtime.GrabEdgeEvent<TDescribeSchemaSecretsService::TEvResolveSecret>(secretService, TDuration::Seconds(120)); // hang guard
+        UNIT_ASSERT(reread);
+        reread->Get()->Promise.SetValue(NKqp::TEvDescribeSecretsResponse::TDescription({TString("token-2")}, {true}, {TInstant::Now() - TDuration::Seconds(1)}));
+
+        // the synchronous use is served the stale value and does not wait for the re-read it starts
+        UNIT_ASSERT_VALUES_EQUAL(provider->GetAuthInfo(), "token-2");
+        reread = runtime.GrabEdgeEvent<TDescribeSchemaSecretsService::TEvResolveSecret>(secretService, TDuration::Seconds(120));
+        UNIT_ASSERT(reread);
+        // the asynchronous use waits for that re-read
+        auto waiting = provider->GetAuthInfoAsync();
+        UNIT_ASSERT(!waiting.HasValue());
+        reread->Get()->Promise.SetValue(NKqp::TEvDescribeSecretsResponse::TDescription({TString("token-3")}, {true}, {TInstant::Now() + TDuration::Hours(1)}));
+        UNIT_ASSERT(waiting.HasValue());
+        UNIT_ASSERT_VALUES_EQUAL(waiting.GetValue(), "token-3");
+    }
 }
 
 } // NKikimr::NSecret

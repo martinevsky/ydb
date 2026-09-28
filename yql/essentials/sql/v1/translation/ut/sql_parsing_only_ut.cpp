@@ -6107,7 +6107,7 @@ Y_UNIT_TEST(CreateIamDelegationSecret) {
     {
         const auto res = SqlToYql(R"sql(
                 USE plato;
-                CREATE SECRET `sa-secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa", RESOURCE = "b1g-cloud");
+                CREATE SECRET `sa-secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa", RESOURCE = "b1g-cloud");
             )sql");
         UNIT_ASSERT_C(res.IsOk(), Err2Str(res));
 
@@ -6115,7 +6115,7 @@ Y_UNIT_TEST(CreateIamDelegationSecret) {
             if (word == "Write") {
                 UNIT_ASSERT_STRING_CONTAINS(line, "Key '('secret");
                 UNIT_ASSERT_STRING_CONTAINS(line, "'mode 'create");
-                UNIT_ASSERT_STRING_CONTAINS(line, R"('"type" '"IAM_DELEGATION")");
+                UNIT_ASSERT_STRING_CONTAINS(line, R"('"source" '"IAM_DELEGATION")");
                 UNIT_ASSERT_STRING_CONTAINS(line, R"('"service_account_id" '"aje-sa")");
                 UNIT_ASSERT_STRING_CONTAINS(line, R"('"resource" '"b1g-cloud")");
                 UNIT_ASSERT(!line.Contains("value"));
@@ -6126,15 +6126,10 @@ Y_UNIT_TEST(CreateIamDelegationSecret) {
         UNIT_ASSERT_VALUES_EQUAL(1, elementStat["Write"]);
     }
 
-    // RESOURCE is optional, type is case-insensitive
+    // RESOURCE is optional, the source is case-insensitive
     UNIT_ASSERT(SqlToYql(R"sql(
                 USE plato;
-                CREATE SECRET `sa-secret` WITH (TYPE = "iam_delegation", SERVICE_ACCOUNT_ID = "aje-sa");
-            )sql")
-                    .IsOk());
-    UNIT_ASSERT(SqlToYql(R"sql(
-                USE plato;
-                CREATE SECRET `plain` WITH (TYPE = "VALUE", VALUE = "v");
+                CREATE SECRET `sa-secret` WITH (SOURCE = "iam_delegation", SERVICE_ACCOUNT_ID = "aje-sa");
             )sql")
                     .IsOk());
 
@@ -6146,7 +6141,7 @@ Y_UNIT_TEST(CreateIamDelegationSecret) {
                     .IsOk());
     UNIT_ASSERT(SqlToYql(R"sql(
                 USE plato;
-                ALTER SECRET `sa-secret` WITH (TYPE = "IAM_DELEGATION", RESOURCE = "b1g-cloud-2");
+                ALTER SECRET `sa-secret` WITH (SOURCE = "IAM_DELEGATION", RESOURCE = "b1g-cloud-2");
             )sql")
                     .IsOk());
 
@@ -6157,36 +6152,36 @@ Y_UNIT_TEST(CreateIamDelegationSecret) {
     };
     expectError(R"sql(
                 USE plato;
-                CREATE SECRET `sa-secret` WITH (TYPE = "IAM_DELEGATION");
+                CREATE SECRET `sa-secret` WITH (SOURCE = "IAM_DELEGATION");
             )sql", "Parameter SERVICE_ACCOUNT_ID must be set");
     expectError(R"sql(
                 USE plato;
-                CREATE SECRET `sa-secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa", VALUE = "v");
+                CREATE SECRET `sa-secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa", VALUE = "v");
             )sql", "Parameter VALUE is not allowed");
     expectError(R"sql(
                 USE plato;
                 CREATE SECRET `plain` WITH (VALUE = "v", SERVICE_ACCOUNT_ID = "aje-sa");
-            )sql", "allowed only for secrets of type IAM_DELEGATION");
+            )sql", "allowed only for secrets with SOURCE IAM_DELEGATION");
     expectError(R"sql(
                 USE plato;
-                CREATE SECRET `sa-secret` WITH (TYPE = "UNKNOWN", SERVICE_ACCOUNT_ID = "aje-sa");
-            )sql", "Unknown secret TYPE");
+                CREATE SECRET `sa-secret` WITH (SOURCE = "UNKNOWN", SERVICE_ACCOUNT_ID = "aje-sa");
+            )sql", "Unknown secret SOURCE");
     expectError(R"sql(
                 USE plato;
                 DECLARE $sa AS String;
-                CREATE SECRET `sa-secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = $sa);
+                CREATE SECRET `sa-secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = $sa);
             )sql", "String literal was expected");
     expectError(R"sql(
                 USE plato;
-                CREATE SECRET `sa-secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "a", SERVICE_ACCOUNT_ID = "b");
+                CREATE SECRET `sa-secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "a", SERVICE_ACCOUNT_ID = "b");
             )sql", "Duplicate parameter: SERVICE_ACCOUNT_ID");
     expectError(R"sql(
                 USE plato;
-                ALTER SECRET `sa-secret` WITH (TYPE = "IAM_DELEGATION", VALUE = "v");
+                ALTER SECRET `sa-secret` WITH (SOURCE = "IAM_DELEGATION", VALUE = "v");
             )sql", "Parameter VALUE is not allowed");
 }
 
-Y_UNIT_TEST(AlterSecretDelegationParamsWithoutType) {
+Y_UNIT_TEST(AlterSecretDelegationParamsWithoutSource) {
     // the type is inferred from the delegation parameters: no "type" option is emitted
     const auto res = SqlToYql(R"sql(
             USE plato;
@@ -6215,29 +6210,29 @@ Y_UNIT_TEST(AlterSecretMixedDelegationAndValueRejected) {
             ALTER SECRET `sa-secret` WITH (VALUE = "v", SERVICE_ACCOUNT_ID = "aje-sa");
         )sql");
     UNIT_ASSERT(!res.IsOk());
-    UNIT_ASSERT_STRING_CONTAINS(Err2Str(res), "Parameters SERVICE_ACCOUNT_ID and RESOURCE are allowed only for secrets of type IAM_DELEGATION");
+    UNIT_ASSERT_STRING_CONTAINS(Err2Str(res), "Parameters SERVICE_ACCOUNT_ID and RESOURCE are allowed only for secrets with SOURCE IAM_DELEGATION");
 }
 
 Y_UNIT_TEST(AlterDelegationWithoutParamsRejected) {
     const auto res = SqlToYql(R"sql(
             USE plato;
-            ALTER SECRET `sa-secret` WITH (TYPE = "IAM_DELEGATION");
+            ALTER SECRET `sa-secret` WITH (SOURCE = "IAM_DELEGATION");
         )sql");
     UNIT_ASSERT(!res.IsOk());
-    UNIT_ASSERT_STRING_CONTAINS(Err2Str(res), "Parameter SERVICE_ACCOUNT_ID or RESOURCE must be set to alter a secret of type IAM_DELEGATION");
+    UNIT_ASSERT_STRING_CONTAINS(Err2Str(res), "Parameter SERVICE_ACCOUNT_ID or RESOURCE must be set to alter a secret with SOURCE IAM_DELEGATION");
 }
 
 Y_UNIT_TEST(IamDelegationSecretSettingKeysAreCaseInsensitive) {
     // the setting names (RESOURCE is also a type keyword) are accepted in any case
     const auto res = SqlToYql(R"sql(
             USE plato;
-            CREATE SECRET `sa-secret` WITH (type = "IAM_DELEGATION", Service_Account_Id = "aje-sa", resource = "b1g-cloud");
+            CREATE SECRET `sa-secret` WITH (source = "IAM_DELEGATION", Service_Account_Id = "aje-sa", resource = "b1g-cloud");
         )sql");
     UNIT_ASSERT_C(res.IsOk(), Err2Str(res));
 
     TVerifyLineFunc verifyLine = [](const TString& word, const TString& line) {
         if (word == "Write") {
-            UNIT_ASSERT_STRING_CONTAINS(line, R"('"type" '"IAM_DELEGATION")");
+            UNIT_ASSERT_STRING_CONTAINS(line, R"('"source" '"IAM_DELEGATION")");
             UNIT_ASSERT_STRING_CONTAINS(line, R"('"service_account_id" '"aje-sa")");
             UNIT_ASSERT_STRING_CONTAINS(line, R"('"resource" '"b1g-cloud")");
         }
@@ -6246,19 +6241,20 @@ Y_UNIT_TEST(IamDelegationSecretSettingKeysAreCaseInsensitive) {
     VerifyProgram(res, elementStat, verifyLine);
     UNIT_ASSERT_VALUES_EQUAL(1, elementStat["Write"]);
 
-    // RESOURCE without a type on CREATE is a value secret with a delegation parameter: rejected
+    // RESOURCE without a SOURCE on CREATE is a value secret with a delegation parameter: rejected
     const auto bad = SqlToYql(R"sql(
             USE plato;
             CREATE SECRET `sa-secret` WITH (RESOURCE = "b1g-cloud", VALUE = "v");
         )sql");
     UNIT_ASSERT(!bad.IsOk());
-    UNIT_ASSERT_STRING_CONTAINS(Err2Str(bad), "allowed only for secrets of type IAM_DELEGATION");
+    UNIT_ASSERT_STRING_CONTAINS(Err2Str(bad), "allowed only for secrets with SOURCE IAM_DELEGATION");
 }
 
-Y_UNIT_TEST(CreateValueTypeWithoutValueRejected) {
+Y_UNIT_TEST(CreateSecretWithoutSourceRequiresValue) {
+    // no SOURCE: the secret stores a value, which must be given
     const auto res = SqlToYql(R"sql(
             USE plato;
-            CREATE SECRET `plain` WITH (TYPE = "VALUE");
+            CREATE SECRET `plain` WITH (INHERIT_PERMISSIONS = FALSE);
         )sql");
     UNIT_ASSERT(!res.IsOk());
     UNIT_ASSERT_STRING_CONTAINS(Err2Str(res), "Parameter VALUE must be set");

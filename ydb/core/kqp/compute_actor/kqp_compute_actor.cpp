@@ -220,7 +220,7 @@ NYql::NDq::IDqAsyncIoFactory::TPtr CreateKqpAsyncIoFactory(
         NYql::NDq::RegisterDqPqReadActorFactory(*factory, *driver, credentialsFactory, pqGateway, counters->GetKqpCounters()->GetSubgroup("subsystem", "DqSourceTracker"), {}, enableStreamingQueriesCounters);
         NYql::NDq::RegisterDqPqWriteActorFactory(*factory, *driver, credentialsFactory, pqGateway, counters->GetKqpCounters()->GetSubgroup("subsystem", "DqSinkTracker"), enableStreamingQueriesCounters, NKikimr::AppData()->FeatureFlags.GetEnableStreamingQueriesPqSinkDeduplication());
         NYql::NDq::RegisterDqPqInfoAggregationActorFactory(*factory);
-        NYql::NDq::RegisterDqPqControlPlaneActorFactory(*factory, *driver, federatedQuerySetup->CredentialsFactory, pqGateway);
+        NYql::NDq::RegisterDqPqControlPlaneActorFactory(*factory, *driver, credentialsFactory, pqGateway);
     }
 
     return factory;

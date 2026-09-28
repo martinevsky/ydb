@@ -110,7 +110,7 @@ concept CDelegationResultEvent = requires (TEv ev) {
 // Building blocks shared by the two operations. Every method is a nested coroutine and keeps its data in
 // its frame; the actor itself owns only the pending scheme request and the promise.
 template <class TDerived>
-class TDelegationSecretActorBase : public TActorBootstrapped<TDerived> {
+class TDelegationSecretActorBase : public TActorBootstrapped<TDerived>, public IActorExceptionHandler {
 public:
     using TBase = TActorBootstrapped<TDerived>;
     using TThis = TDerived;
@@ -159,6 +159,18 @@ public:
         Y_UNUSED(ev); // PassAway unregisters the actor only when its coroutine tasks have unwound; events arriving meanwhile are dropped
     }
 
+    // An exception outside the coroutine of Run (Bootstrap catches those): the executer still waits for the promise.
+    using IActorExceptionHandler::OnUnhandledException;
+    bool OnUnhandledException(const std::exception& e) override {
+        YDB_LOG_ERROR("Unhandled exception in the IAM delegation secret orchestrator", {"database", Op.Database}, {"exception", e.what()});
+        if (!Op.Promise.HasValue()) {
+            Op.Promise.SetValue(MakeError(Ydb::StatusIds::INTERNAL_ERROR, TStringBuilder() << "IAM delegation secret operation failed: " << e.what()));
+        }
+        this->Become(&TDelegationSecretActorBase::StateDying);
+        this->PassAway();
+        return true;
+    }
+
 protected:
     // The executer waits for the promise: a cancelled operation must complete it rather than leave it hanging.
     // Whatever IAM has accepted by now is named by the secret (as its delegation or a staged one) and is revoked
@@ -173,7 +185,7 @@ protected:
     }
 
     NKikimrSchemeOp::TModifyScheme& ModifyScheme() {
-        Y_ENSURE(Op.Request, "the scheme operation was already executed");
+        AFL_ENSURE(Op.Request)("database", Op.Database)("reason", "the scheme operation was already executed");
         return *Op.Request->Record.MutableTransaction()->MutableModifyScheme();
     }
 
@@ -183,7 +195,7 @@ protected:
 
     // The statement's own scheme request, executed once.
     THolder<TEvTxUserProxy::TEvProposeTransaction> TakeRequest() {
-        Y_ENSURE(Op.Request, "the scheme operation was already executed");
+        AFL_ENSURE(Op.Request)("database", Op.Database)("reason", "the scheme operation was already executed");
         return std::move(Op.Request);
     }
 
@@ -268,7 +280,7 @@ protected:
             throw TOrchestrationError(Ydb::StatusIds::UNAVAILABLE) << "timeout while resolving " << path;
         }
         auto& result = *(*ev)->Get()->Request;
-        Y_ENSURE(result.ResultSet.size() == 1);
+        AFL_ENSURE(result.ResultSet.size() == 1)("path", path)("entries", result.ResultSet.size());
         co_return std::move(result.ResultSet.front());
     }
 
@@ -324,7 +336,7 @@ protected:
             why = "the user has no IAM token to look the service account up with";
         } else {
             try {
-                auto resolved = co_await WithTimeout(Op.Timeouts.Delegation, &ResolveCloud, settings, userToken, serviceAccountId);
+                auto resolved = co_await WithTimeout(Op.Timeouts.CloudLookup, &ResolveCloud, settings, userToken, serviceAccountId);
                 if (resolved) {
                     co_return resolved->CloudId;
                 }
@@ -426,6 +438,12 @@ protected:
         }
 
         const TDelegationResult setup = co_await Setup(newSpec, subjectId);
+        if (!setup.IsSuccess() && setup.IsOutcomeUnknown()) {
+            // IAM may still set the delegation up: it stays staged (named by the secret), so that whatever IAM
+            // did with it is revoked when the secret is altered again or dropped
+            throw TOrchestrationError(setup.Status) << SetupError(newSpec, setup) << "; the outcome is unknown and the delegation "
+                << newSpec.ReferrerId << " stays staged for the secret, which keeps its previous delegation: retry ALTER SECRET later";
+        }
         const auto action = setup.IsSuccess() ? NKikimrSchemeOp::IAM_DELEGATION_ALTER_PROMOTE : NKikimrSchemeOp::IAM_DELEGATION_ALTER_CANCEL;
         TGenericResult result = co_await RunSchemeOp(AlterDelegationRequest(name, newSpec, action));
         if (!setup.IsSuccess()) {
@@ -457,7 +475,7 @@ public:
 
     async<TGenericResult> Run() {
         auto& op = *ModifyScheme().MutableCreateSecret();
-        Y_ENSURE(op.GetType() == NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION);
+        AFL_ENSURE(op.GetType() == NKikimrSchemeOp::SECRET_TYPE_IAM_DELEGATION)("type", static_cast<int>(op.GetType()));
         const TString name = op.GetName();
         const TString path = SecretPath(name);
 
@@ -484,12 +502,31 @@ public:
         const TDelegationSpec spec = NewSpec(op.GetIamDelegation().GetServiceAccountId(), cloudId);
         FillProto(spec, *op.MutableIamDelegation());
 
-        // the secret names the delegation before IAM knows it; the schemeshard checks the user's rights here
-        TGenericResult result = co_await RunStatementSchemeOp();
+        // the secret names the delegation before IAM knows it; the schemeshard checks the user's rights here.
+        // The navigate above said the path is absent: the create must fail if another statement created it
+        // meanwhile (IF NOT EXISTS then means success without a delegation of this statement's), or this
+        // statement would set up a delegation the other one's secret does not name, and drop that secret.
+        const bool ifNotExists = !ModifyScheme().GetFailOnExist() && !ModifyScheme().GetReplaceIfExists();
+        if (ifNotExists) {
+            ModifyScheme().SetFailOnExist(true);
+        }
+        TGenericResult result = co_await RunSchemeOp(TakeRequest(), Op.FailedOnAlreadyExists || ifNotExists, Op.SuccessOnNotExist);
         if (!result.Success()) {
+            if (ifNotExists) {
+                const TExistingSecret now = co_await NavigateSecret(path);
+                if (now.Exists && now.IsSecret) {
+                    co_return MakeSuccess(); // IF NOT EXISTS: another statement created the secret meanwhile
+                }
+            }
             co_return result;
         }
         const TDelegationResult setup = co_await Setup(spec, subjectId);
+        if (!setup.IsSuccess() && setup.IsOutcomeUnknown()) {
+            // IAM may still set the delegation up: the secret keeps naming it, so that whatever IAM did with it
+            // is revoked when the secret is dropped or altered
+            throw TOrchestrationError(setup.Status) << SetupError(spec, setup) << "; the outcome is unknown and secret " << path
+                << " keeps naming the delegation " << spec.ReferrerId << ": ALTER it to retry or DROP it";
+        }
         if (!setup.IsSuccess()) {
             // the secret names a delegation IAM refused: drop it (the revocation the schemeshard makes is a no-op)
             YDB_LOG_WARN("SetupDelegation failed after CREATE SECRET, dropping the secret", {"path", path}, {"spec", spec.ToString()});

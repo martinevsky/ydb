@@ -6710,6 +6710,11 @@ void TSchemeShard::DropNode(TPathElement::TPtr node, TStepId step, TTxId txId, N
         case TPathElement::EPathType::EPathTypeStreamingQuery:
             PersistRemoveStreamingQuery(db, node->PathId);
             break;
+        case TPathElement::EPathType::EPathTypeSecret:
+            // the delegations of an IAM delegation secret go to the outbox of revocations; the operation
+            // sends TEvRunIamDelegationRevocations once the drop is committed
+            PersistSecretRemove(db, node->PathId);
+            break;
         default:
             // not all path types support removal
             break;

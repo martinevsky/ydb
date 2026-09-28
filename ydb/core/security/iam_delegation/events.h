@@ -34,6 +34,20 @@ struct TDelegationResult {
         return Status == Ydb::StatusIds::SUCCESS;
     }
 
+    // Whether IAM may have applied the call although it failed: no answer arrived (a timeout, a transport
+    // failure after the retries) or the call broke down on this side. A refusal by IAM is a known outcome.
+    bool IsOutcomeUnknown() const {
+        switch (Status) {
+            case Ydb::StatusIds::TIMEOUT:
+            case Ydb::StatusIds::UNAVAILABLE:
+            case Ydb::StatusIds::OVERLOADED:
+            case Ydb::StatusIds::INTERNAL_ERROR:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     static TDelegationResult Success() {
         return {};
     }

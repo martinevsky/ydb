@@ -15249,7 +15249,7 @@ END DO)",
 
         { // create: rejected, no path is created
             static const auto query = R"sql(
-                CREATE SECRET `/Root/sa-secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa", RESOURCE = "b1g-cloud");
+                CREATE SECRET `/Root/sa-secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa", RESOURCE = "b1g-cloud");
             )sql";
             const auto result = ExecuteGeneric<UseQueryService>(queryClient, session, query);
             UNIT_ASSERT_C(!result.IsSuccess(), result.GetIssues().ToString());
@@ -15295,7 +15295,7 @@ END DO)",
 
         // the delegation is orchestrated by the query service only
         static const auto query = R"sql(
-            CREATE SECRET `/Root/sa-secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa", RESOURCE = "b1g-cloud");
+            CREATE SECRET `/Root/sa-secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa", RESOURCE = "b1g-cloud");
         )sql";
         const auto result = session.ExecuteSchemeQuery(query).GetValueSync();
         UNIT_ASSERT_C(!result.IsSuccess(), result.GetIssues().ToString());
@@ -15315,7 +15315,7 @@ END DO)",
         auto& runtime = *kikimr.GetTestServer().GetRuntime();
 
         static const auto query = R"sql(
-            CREATE SECRET `/Root/sa-secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa", RESOURCE = "b1g-cloud");
+            CREATE SECRET `/Root/sa-secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa", RESOURCE = "b1g-cloud");
         )sql";
         { // an anonymous request has no user at all
             const auto result = queryClient.ExecuteQuery(query, NYdb::NQuery::TTxControl::NoTx()).ExtractValueSync();
@@ -15399,11 +15399,17 @@ END DO)",
         static constexpr char CloudUser[] = "bob@builtin";
         static constexpr char OtherUser[] = "carol@builtin";
 
-        static NKikimrConfig::TAppConfig MakeAppConfig(bool serviceControlEndpoint = true, const TString& accessServiceDomain = BUILTIN_ACL_DOMAIN) {
+        // whether the IAM control plane (SetupDelegation / RevokeDelegation) is configured on the cluster
+        enum class EServiceControl {
+            Configured,
+            Missing,
+        };
+
+        static NKikimrConfig::TAppConfig MakeAppConfig(EServiceControl serviceControl = EServiceControl::Configured, const TString& accessServiceDomain = BUILTIN_ACL_DOMAIN) {
             NKikimrConfig::TAppConfig appConfig;
             auto& iamConfig = *appConfig.MutableIamConfig();
             iamConfig.SetTokenServiceEndpoint("localhost:1"); // never called: the IAM services are replaced by fakes
-            if (serviceControlEndpoint) {
+            if (serviceControl == EServiceControl::Configured) {
                 iamConfig.SetServiceControlEndpoint("localhost:1");
             }
             iamConfig.SetServiceId("ydb");
@@ -15485,7 +15491,7 @@ END DO)",
         }
 
         static TString CreateQuery(const TString& path, const TString& sa, const TString& cloud, const TString& prefix = "CREATE SECRET") {
-            return TStringBuilder() << prefix << " `" << path << "` WITH (TYPE = \"IAM_DELEGATION\", SERVICE_ACCOUNT_ID = \"" << sa << "\", RESOURCE = \"" << cloud << "\");";
+            return TStringBuilder() << prefix << " `" << path << "` WITH (SOURCE = \"IAM_DELEGATION\", SERVICE_ACCOUNT_ID = \"" << sa << "\", RESOURCE = \"" << cloud << "\");";
         }
 
         // The revocation of a delegation is made by the schemeshard after the statement: the calls of the fake
@@ -15675,6 +15681,37 @@ END DO)",
         }
     }
 
+    // A SetupDelegation whose outcome is unknown (no answer from IAM): IAM may still create the delegation, so
+    // the secret keeps naming it and nothing is dropped or cancelled; the schemeshard revokes it with the secret.
+    Y_UNIT_TEST(IamDelegationUnknownSetupOutcomeKeepsTheDelegationNamed) {
+        TIamDelegationKqp t;
+        t.ExecOk(t.CloudUser, t.CreateQuery("/Root/sa-secret", "aje-sa-1", "b1g-cloud"));
+        const TString referrer1 = t.Describe("/Root/sa-secret").GetIamDelegation().GetReferrerId();
+
+        with_lock (t.Calls->Mutex) {
+            t.Calls->SetupStatus = Ydb::StatusIds::TIMEOUT;
+        }
+        // CREATE: the secret stays, naming the delegation IAM may have set up
+        t.ExecFails(t.CloudUser, t.CreateQuery("/Root/unknown-secret", "aje-unknown", "b1g-cloud"), EStatus::TIMEOUT, "the outcome is unknown and secret /Root/unknown-secret keeps naming the delegation");
+        const auto unknown = t.Describe("/Root/unknown-secret");
+        UNIT_ASSERT_VALUES_EQUAL(unknown.GetIamDelegation().GetServiceAccountId(), "aje-unknown");
+        UNIT_ASSERT(!unknown.HasPendingIamDelegation());
+
+        // ALTER: the replacement stays staged; another ALTER cannot replace it while the first one may still be
+        // setting it up, and DROP revokes both delegations
+        t.ExecFails(t.CloudUser, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-2");)", EStatus::TIMEOUT, "the outcome is unknown and the delegation");
+        const auto staged = t.Describe("/Root/sa-secret");
+        UNIT_ASSERT_VALUES_EQUAL(staged.GetIamDelegation().GetReferrerId(), referrer1);
+        UNIT_ASSERT_VALUES_EQUAL(staged.GetPendingIamDelegation().GetServiceAccountId(), "aje-sa-2");
+        t.ExecFails(t.CloudUser, R"(ALTER SECRET `/Root/sa-secret` WITH (SERVICE_ACCOUNT_ID = "aje-sa-3");)", EStatus::OVERLOADED, "is being set up for the secret by another ALTER");
+        UNIT_ASSERT_VALUES_EQUAL(t.Calls->SetupCalls(), 3u); // the ALTER that could not stage never reached IAM
+
+        t.ExecOk(t.CloudUser, "DROP SECRET `/Root/sa-secret`;");
+        t.Runtime.WaitFor("the revocations of both delegations", [&]() {
+            return t.RevokesOf(referrer1) >= 1 && t.RevokesOf(staged.GetPendingIamDelegation().GetReferrerId()) >= 1;
+        }, TDuration::Seconds(120)); // hang guard
+    }
+
     Y_UNIT_TEST(IamDelegationDropIsRevokedByTheSchemeshard) {
         TIamDelegationKqp t;
         t.ExecOk(t.CloudUser, t.CreateQuery("/Root/sa-secret", "aje-sa", "b1g-cloud"));
@@ -15747,7 +15784,7 @@ END DO)",
 
     Y_UNIT_TEST(IamDelegationAlterRequiresCloudSubject) {
         // the default domain of cloud subjects ("as"): builtin logins are not cloud subjects
-        TIamDelegationKqp t(TIamDelegationKqp::MakeSettings(TIamDelegationKqp::MakeAppConfig(true, "as")));
+        TIamDelegationKqp t(TIamDelegationKqp::MakeSettings(TIamDelegationKqp::MakeAppConfig(TIamDelegationKqp::EServiceControl::Configured, "as")));
         NSecret::CreateIamDelegationSecretDirect(t.Runtime, "/Root/sa-secret", "aje-sa", "b1g-cloud", "ydb.delegation.00000000000000000000000000000001");
 
         // a builtin user may not alter a delegation secret (a delegation is set up on behalf of a cloud
@@ -15873,7 +15910,7 @@ END DO)",
 
         // the cloud is determined before any delegation is set up: with no lookup configured and no cloud_id
         // attribute on the database the statement fails on that, not on the dead IAM service
-        t.ExecFails(t.CloudUser, R"(CREATE SECRET `/Root/nocloud-secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa-3");)",
+        t.ExecFails(t.CloudUser, R"(CREATE SECRET `/Root/nocloud-secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa-3");)",
             EStatus::BAD_REQUEST, "database /Root has no cloud_id attribute and the cloud of service account aje-sa-3 is unknown: IamConfig.ResourceManagerEndpoint is not configured; specify RESOURCE explicitly");
         UNIT_ASSERT(!t.Exists("/Root/nocloud-secret"));
 
@@ -15885,7 +15922,7 @@ END DO)",
         // a cluster with the token service but without the IAM control plane: existing delegation secrets are
         // read (the token service is enough), but no delegation can be set up, so CREATE and ALTER of delegation
         // secrets fail naming the missing setting and the secret stays
-        TIamDelegationKqp t(TIamDelegationKqp::MakeSettings(TIamDelegationKqp::MakeAppConfig(/* serviceControlEndpoint */ false)));
+        TIamDelegationKqp t(TIamDelegationKqp::MakeSettings(TIamDelegationKqp::MakeAppConfig(TIamDelegationKqp::EServiceControl::Missing)));
         NSecret::RegisterFakeIamDelegatedTokenService(t.Runtime, {{"aje-sa", "b1g-cloud"}});
         NSecret::CreateIamDelegationSecretDirect(t.Runtime, "/Root/sa-secret", "aje-sa", "b1g-cloud", "ydb.delegation.00000000000000000000000000000002");
 
@@ -15935,7 +15972,7 @@ END DO)",
             .SetEndpoint(t.Kikimr.GetEndpoint()).SetDatabase(databasePath).SetAuthToken(t.CloudUser));
         NYdb::NQuery::TQueryClient client(driver);
         {
-            const auto result = client.ExecuteQuery(R"(CREATE SECRET `db-secret` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa");)",
+            const auto result = client.ExecuteQuery(R"(CREATE SECRET `db-secret` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa");)",
                 NYdb::NQuery::TTxControl::NoTx()).ExtractValueSync();
             UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
             UNIT_ASSERT_STRING_CONTAINS(result.GetIssues().ToString(),
@@ -15953,48 +15990,13 @@ END DO)",
 
         // an explicit RESOURCE wins over the database, without a warning
         {
-            const auto result = client.ExecuteQuery(R"(CREATE SECRET `db-secret-2` WITH (TYPE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa", RESOURCE = "b1g-other-cloud");)",
+            const auto result = client.ExecuteQuery(R"(CREATE SECRET `db-secret-2` WITH (SOURCE = "IAM_DELEGATION", SERVICE_ACCOUNT_ID = "aje-sa", RESOURCE = "b1g-other-cloud");)",
                 NYdb::NQuery::TTxControl::NoTx()).ExtractValueSync();
             UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
             UNIT_ASSERT_C(result.GetIssues().Empty(), result.GetIssues().ToString());
             UNIT_ASSERT_VALUES_EQUAL(t.Describe(databasePath + "/db-secret-2").GetIamDelegation().GetCloudId(), "b1g-other-cloud");
         }
         driver.Stop(true);
-    }
-
-    Y_UNIT_TEST_TWIN(SecretTypeValueLowercase, UseQueryService) {
-        NKikimrConfig::TFeatureFlags featureFlags;
-        featureFlags.SetEnableSchemaSecrets(true);
-        const auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetFeatureFlags(featureFlags);
-        TKikimrRunner kikimr(settings);
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-        auto queryClient = kikimr.GetQueryClient();
-
-        { // the type is case-insensitive
-            static const auto query = R"sql(
-                CREATE SECRET `/Root/lower-secret` WITH (TYPE = "value", VALUE = "secret-value");
-            )sql";
-            const auto result = ExecuteGeneric<UseQueryService>(queryClient, session, query);
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-        }
-        {
-            static const auto query = R"sql(
-                ALTER SECRET `/Root/lower-secret` WITH (TYPE = "Value", VALUE = "secret-value-2");
-            )sql";
-            const auto result = ExecuteGeneric<UseQueryService>(queryClient, session, query);
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-        }
-        { // an unknown type is rejected
-            static const auto query = R"sql(
-                CREATE SECRET `/Root/unknown-secret` WITH (TYPE = "unknown", VALUE = "secret-value");
-            )sql";
-            const auto result = ExecuteGeneric<UseQueryService>(queryClient, session, query);
-            UNIT_ASSERT_C(!result.IsSuccess(), result.GetIssues().ToString());
-            UNIT_ASSERT_STRING_CONTAINS_C(result.GetIssues().ToString(), "Unknown secret TYPE", result.GetIssues().ToString());
-        }
     }
 
     Y_UNIT_TEST(SetSecretValueWithParamOk) {

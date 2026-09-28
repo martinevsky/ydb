@@ -2060,7 +2060,7 @@ TWriteSecretSettings ParseSecretSettings(NNodes::TExprList node, TExprContext& c
             } else if (name == "inherit_permissions") {
                 YQL_ENSURE(tuple.Value().Maybe<TCoAtom>());
                 inheritPermissions = tuple.Value().Cast<TCoAtom>();
-            } else if (name == "type") {
+            } else if (name == "source") {
                 YQL_ENSURE(tuple.Value().Maybe<TCoAtom>());
                 type = tuple.Value().Cast<TCoAtom>();
             } else if (name == "service_account_id") {
@@ -2077,41 +2077,39 @@ TWriteSecretSettings ParseSecretSettings(NNodes::TExprList node, TExprContext& c
     auto modeStr = mode.Cast().Value();
     const bool isCreate = modeStr == "create" || modeStr == "create_if_not_exists" || modeStr == "create_or_replace";
     const bool isAlter = modeStr == "alter" || modeStr == "alter_if_exists";
-    TString typeStr = type ? to_upper(TString(type.Cast().Value())) : TString();
-    if (type && typeStr != "VALUE" && typeStr != "IAM_DELEGATION") {
+    // SOURCE names where the value of an external secret comes from; the gateway gets it as the type of the secret
+    const TString sourceStr = type ? to_upper(TString(type.Cast().Value())) : TString();
+    if (type && sourceStr != "IAM_DELEGATION") {
         ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_BAD_REQUEST,
-            TStringBuilder() << "Unknown secret type: " << typeStr << ". Expected VALUE or IAM_DELEGATION"));
+            TStringBuilder() << "Unknown secret SOURCE: " << sourceStr << ". Expected IAM_DELEGATION"));
         return TWriteSecretSettings::CreateWithError();
     }
     const bool hasDelegationParams = serviceAccountId || cloudId;
-    const bool isDelegation = typeStr == "IAM_DELEGATION"
-        || (typeStr.empty() && isAlter && hasDelegationParams && !value && !valueParamName);
-    if (type) {
-        // the gateway receives the normalized type name
-        type = Build<TCoAtom>(ctx, node.Pos()).Value(typeStr).Done();
-    }
+    const bool isDelegation = sourceStr == "IAM_DELEGATION"
+        || (sourceStr.empty() && isAlter && hasDelegationParams && !value && !valueParamName);
+    type = {};
     if (isDelegation) {
         // the type is always passed explicitly to the gateway
         type = Build<TCoAtom>(ctx, node.Pos()).Value("IAM_DELEGATION").Done();
         if (value || valueParamName) {
             ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_BAD_REQUEST,
-                "Secret value is not allowed for secrets of type IAM_DELEGATION"));
+                "Secret value is not allowed for secrets with SOURCE IAM_DELEGATION"));
             return TWriteSecretSettings::CreateWithError();
         }
         if (isCreate && !serviceAccountId) {
             ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_BAD_REQUEST,
-                "SERVICE_ACCOUNT_ID is required for secrets of type IAM_DELEGATION"));
+                "SERVICE_ACCOUNT_ID is required for secrets with SOURCE IAM_DELEGATION"));
             return TWriteSecretSettings::CreateWithError();
         }
         if (isAlter && !hasDelegationParams) {
             ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_BAD_REQUEST,
-                "SERVICE_ACCOUNT_ID or RESOURCE is required to alter a secret of type IAM_DELEGATION"));
+                "SERVICE_ACCOUNT_ID or RESOURCE is required to alter a secret with SOURCE IAM_DELEGATION"));
             return TWriteSecretSettings::CreateWithError();
         }
     } else if (isCreate || isAlter) {
         if (hasDelegationParams) {
             ctx.AddError(YqlIssue(ctx.GetPosition(node.Pos()), TIssuesIds::KIKIMR_BAD_REQUEST,
-                "SERVICE_ACCOUNT_ID and RESOURCE are allowed only for secrets of type IAM_DELEGATION"));
+                "SERVICE_ACCOUNT_ID and RESOURCE are allowed only for secrets with SOURCE IAM_DELEGATION"));
             return TWriteSecretSettings::CreateWithError();
         }
         if (!value && !valueParamName) {
