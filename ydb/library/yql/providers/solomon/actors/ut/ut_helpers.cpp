@@ -2,7 +2,6 @@
 
 #include <ydb/library/actors/core/hfunc.h>
 #include <ydb/library/actors/http/http_proxy.h>
-#include <ydb/library/yql/providers/common/token_accessor/grpc/token_accessor_pb.grpc.pb.h>
 #include <ydb/library/yql/providers/common/ut_helpers/transport/wait.h>
 #include <yql/essentials/minikql/mkql_string_util.h>
 #include <yql/essentials/providers/common/structured_token/yql_token_builder.h>
@@ -14,9 +13,7 @@
 
 #include <util/system/guard.h>
 
-#include <grpcpp/server_builder.h>
-
-#include <condition_variable>
+#include <mutex>
 
 
 namespace NYql::NDq {
@@ -275,71 +272,6 @@ size_t TNHttpTlsServer::RequestCount() const {
 TVector<TNHttpServerRequest> TNHttpTlsServer::Requests() const {
     std::lock_guard lock(State->Mutex);
     return State->Requests;
-}
-
-// ---- TGatedTokenAccessor ----
-
-struct TGatedTokenAccessor::TImpl final : public NYql::TokenAccessorService::Service {
-    explicit TImpl(TString token)
-        : Token(std::move(token))
-    {}
-
-    grpc::Status GetToken(grpc::ServerContext*, const NYql::GetTokenRequest*, NYql::GetTokenResponse* response) override {
-        std::unique_lock lock(Mutex);
-        ++Calls;
-        if (!Changed.wait_for(lock, std::chrono::seconds(60), [this] { return Released; })) {
-            return grpc::Status(grpc::StatusCode::UNAVAILABLE, "test gate was not released");
-        }
-        response->set_token(Token);
-        return grpc::Status::OK;
-    }
-
-    const TString Token;
-    std::mutex Mutex;
-    std::condition_variable Changed;
-    bool Released = false;
-    ui32 Calls = 0;
-    int Port = 0;
-    std::unique_ptr<grpc::Server> Server;
-};
-
-TGatedTokenAccessor::TGatedTokenAccessor(TString token)
-    : Impl(std::make_unique<TImpl>(std::move(token)))
-{
-    grpc::ServerBuilder builder;
-    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &Impl->Port);
-    builder.RegisterService(Impl.get());
-    Impl->Server = builder.BuildAndStart();
-    Y_ENSURE(Impl->Server && Impl->Port > 0, "the gated token accessor did not start");
-}
-
-TGatedTokenAccessor::~TGatedTokenAccessor() {
-    Release();
-    Impl->Server->Shutdown();
-}
-
-TString TGatedTokenAccessor::Endpoint() const {
-    return TStringBuilder() << "127.0.0.1:" << Impl->Port;
-}
-
-void TGatedTokenAccessor::Release() {
-    std::lock_guard lock(Impl->Mutex);
-    Impl->Released = true;
-    Impl->Changed.notify_all();
-}
-
-bool TGatedTokenAccessor::Released() const {
-    std::lock_guard lock(Impl->Mutex);
-    return Impl->Released;
-}
-
-ui32 TGatedTokenAccessor::Calls() const {
-    std::lock_guard lock(Impl->Mutex);
-    return Impl->Calls;
-}
-
-void TGatedTokenAccessor::WaitForCall(TDuration guard) const {
-    NYql::NTransportTest::WaitUntil([this] { return Calls() > 0; }, guard, "a GetToken call at the token accessor");
 }
 
 // ---- TCapturedLog ----

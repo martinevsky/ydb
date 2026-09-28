@@ -122,27 +122,6 @@ private:
     ui16 Port_ = 0;
 };
 
-// Minimal gated TokenAccessorService (the full H5 belongs to the token accessor tests): every GetToken
-// call is held until Release(), then answered with `token`. A held call gives up after 60 s, only so that
-// a failing test cannot hang the gRPC server forever.
-class TGatedTokenAccessor {
-public:
-    explicit TGatedTokenAccessor(TString token);
-    ~TGatedTokenAccessor(); // releases the gate, then shuts the server down
-
-    TString Endpoint() const; // "127.0.0.1:<port>"
-    void Release();
-    bool Released() const;
-    ui32 Calls() const;
-    // Returns once a GetToken call has arrived; throws when the guard expires first.
-    void WaitForCall(TDuration guard = TDuration::Seconds(30)) const;
-
-    struct TImpl;
-
-private:
-    std::unique_ptr<TImpl> Impl;
-};
-
 // Actor-runtime log capture: pass CreateCapturingLogBackend(log) to TFakeCASetup. Records also go to stderr.
 class TCapturedLog {
 public:

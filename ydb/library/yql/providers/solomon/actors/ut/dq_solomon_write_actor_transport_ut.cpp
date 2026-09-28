@@ -4,6 +4,7 @@
 
 #include "ut_helpers.h"
 
+#include <ydb/library/yql/providers/common/token_accessor/client/ut_helpers/fake_token_accessor.h>
 #include <ydb/library/yql/providers/common/ut_helpers/transport/known_bug.h>
 #include <ydb/library/yql/providers/common/ut_helpers/transport/loopback_http_server.h>
 #include <ydb/library/yql/providers/common/ut_helpers/transport/test_pki.h>
@@ -168,7 +169,8 @@ Y_UNIT_TEST_SUITE(TDqSolomonWriteActorTransportTest) {
     // must return while the call is still held. After the release the push carries the SA token.
     Y_UNIT_TEST(CreationDoesNotBlockOnTokenAccessor) {
         YDB_SKIP_KNOWN_BUG("F-B-5");
-        TGatedTokenAccessor accessor("SA-TOKEN");
+        TFakeTokenAccessor accessor("SA-TOKEN");
+        accessor.GateReplies();
         TLoopbackHttpServer server;
         server.SetDefault(PushOk());
         // A 1 h request timeout, so the provider's bounded synchronous wait (timeout + 10 s) cannot end first.
@@ -187,9 +189,9 @@ Y_UNIT_TEST_SUITE(TDqSolomonWriteActorTransportTest) {
             accessor.Release();
         };
 
-        accessor.WaitForCall(TDuration::Seconds(30));
+        accessor.WaitForCalls(1, TDuration::Seconds(30));
         const bool returned = created.wait_for(std::chrono::seconds(30)) == std::future_status::ready;
-        UNIT_ASSERT_C(returned && !accessor.Released(),
+        UNIT_ASSERT_C(returned && accessor.HeldNow() == 1,
             "sink creation blocked the actor thread while the token accessor call was held");
         created.get();
 

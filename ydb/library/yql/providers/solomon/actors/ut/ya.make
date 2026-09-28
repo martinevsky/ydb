@@ -20,13 +20,12 @@ SRCS(
 )
 
 PEERDIR(
-    contrib/libs/grpc
     library/cpp/cgiparam
     library/cpp/http/simple
     library/cpp/logger
     library/cpp/retry
     ydb/library/testlib/solomon_helpers
-    ydb/library/yql/providers/common/token_accessor/grpc
+    ydb/library/yql/providers/common/token_accessor/client/ut_helpers
     ydb/library/yql/providers/common/ut_helpers
     ydb/library/yql/providers/common/ut_helpers/transport
     yql/essentials/minikql/computation/llvm16
