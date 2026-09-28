@@ -110,6 +110,10 @@ Y_UNIT_TEST_SUITE(THttpGatewayConfigTest) {
     // T-RTY-6 (F-A-9, P1): THttpGatewayConfig.MaxRetries takes effect. Today the field is never read: the
     // FQ policy keeps retrying a 503 until its 5-minute budget. Seam S13 is not implemented, so the test
     // uses the policy the production call sites use (GetFqHTTPRetryPolicy()).
+    // The fix (S13) is one of: (a) the policy is built from the config (e.g. GetFqHTTPRetryPolicy(config))
+    // -- then pass that policy in the Download call below; (b) MaxRetries is deprecated -- then replace the
+    // oracle with "making the gateway with MaxRetries set logs one WARN" (TLogCapture). As written the test
+    // stays red after either fix until the fixing change updates this setup or oracle.
     Y_UNIT_TEST(MaxRetriesTakesEffect) {
         YDB_SKIP_KNOWN_BUG("F-A-9");
         TLoopbackHttpServer server;
