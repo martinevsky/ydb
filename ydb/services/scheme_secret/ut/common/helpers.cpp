@@ -110,6 +110,8 @@ namespace NKikimr::NSecret {
                         Tokens->Minted.push_back(result->Token);
                     }
                     result->ExpiresAt = TInstant::Now() + TDuration::Hours(1);
+                    // as the real service: usable until the minimum served lifetime (5 min) before the expiry
+                    result->UsableUntil = result->ExpiresAt - TDuration::Minutes(5);
                 } else {
                     result->Status = Ydb::StatusIds::UNAUTHORIZED;
                     result->Issues.AddIssue(TStringBuilder() << "No delegation for service account " << result->Key.ServiceAccountId);
