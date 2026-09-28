@@ -55,6 +55,10 @@ public:
         Y_ABORT_UNLESS(secretInfo->Description.GetVersion() + 1 == alterData->Description.GetVersion());
 
         NIceDb::TNiceDb db(context.GetDB());
+        // a delegation the new version no longer names (the promoted-over or cancelled one) is revoked
+        if (context.SS->PersistIamDelegationRevocations(db, secretPathId, secretInfo->Description, &alterData->Description)) {
+            context.OnComplete.Send(context.SS->SelfId(), new TEvPrivate::TEvRunIamDelegationRevocations());
+        }
         context.SS->Secrets.Set(secretPathId, alterData);
         context.SS->PersistSecretAlterRemove(db, secretPathId);
         context.SS->PersistSecret(db, secretPathId, *alterData);
@@ -167,6 +171,72 @@ public:
             return result;
         }
 
+        // the source of a secret never changes: a stored value stays a stored value, a delegation stays a delegation
+        const auto delegationAlter = alterSecretProto.GetIamDelegationAlter();
+        const bool storedDelegation = secretInfo->Description.HasIamDelegation();
+        if (!storedDelegation) {
+            if (alterSecretProto.HasIamDelegation() || delegationAlter != NKikimrSchemeOp::IAM_DELEGATION_ALTER_NONE) {
+                result->SetError(NKikimrScheme::StatusInvalidParameter,
+                    "Cannot change the source of a secret: IamDelegation is allowed only for IAM delegation secrets");
+                return result;
+            }
+        } else {
+            {
+                if (!AppData()->FeatureFlags.GetEnableIamDelegationSecrets()) {
+                    result->SetError(NKikimrScheme::StatusPreconditionFailed,
+                        "IAM delegation secrets are disabled. Please contact your system administrator to enable it");
+                    return result;
+                }
+                if (alterSecretProto.HasValue()) {
+                    result->SetError(NKikimrScheme::StatusInvalidParameter,
+                        "Cannot change the source of a secret: Value is not allowed for IAM delegation secrets");
+                    return result;
+                }
+                const auto& current = secretInfo->Description;
+                const auto& requested = alterSecretProto.GetIamDelegation();
+                switch (delegationAlter) {
+                    case NKikimrSchemeOp::IAM_DELEGATION_ALTER_NONE:
+                        if (!alterSecretProto.HasIamDelegation() || !SameIamDelegation(requested, current.GetIamDelegation())) {
+                            result->SetError(NKikimrScheme::StatusInvalidParameter,
+                                "IamDelegation must equal the current delegation of the secret unless IamDelegationAlter says what to do with it");
+                            return result;
+                        }
+                        break;
+                    case NKikimrSchemeOp::IAM_DELEGATION_ALTER_STAGE:
+                        if (const auto error = ValidateIamDelegation(requested)) {
+                            result->SetError(NKikimrScheme::StatusInvalidParameter, *error);
+                            return result;
+                        }
+                        for (const auto& named : NamedIamDelegations(current)) {
+                            if (named.GetReferrerId() == requested.GetReferrerId()) {
+                                result->SetError(NKikimrScheme::StatusInvalidParameter, TStringBuilder()
+                                    << "IAM delegation " << requested.GetReferrerId() << " is already named by the secret");
+                                return result;
+                            }
+                        }
+                        if (current.HasPendingIamDelegation()
+                            && TInstant::MicroSeconds(current.GetPendingIamDelegationStagedAt()) + StagedIamDelegationLease > context.Ctx.Now())
+                        {
+                            result->SetError(NKikimrScheme::StatusMultipleModifications, TStringBuilder()
+                                << "IAM delegation " << current.GetPendingIamDelegation().GetReferrerId()
+                                << " is being set up for the secret by another ALTER; retry once it has completed");
+                            return result;
+                        }
+                        break;
+                    case NKikimrSchemeOp::IAM_DELEGATION_ALTER_PROMOTE:
+                    case NKikimrSchemeOp::IAM_DELEGATION_ALTER_CANCEL:
+                        if (!current.HasPendingIamDelegation()
+                            || current.GetPendingIamDelegation().GetReferrerId() != requested.GetReferrerId())
+                        {
+                            result->SetError(NKikimrScheme::StatusPreconditionFailed, TStringBuilder()
+                                << "IAM delegation " << requested.GetReferrerId() << " is not staged for the secret");
+                            return result;
+                        }
+                        break;
+                }
+            }
+        }
+
         context.MemChanges.GrabPath(context.SS, secretPath.Base()->PathId);
         context.MemChanges.GrabSecret(context.SS, secretPath.Base()->PathId);
         context.MemChanges.GrabNewTxState(context.SS, OperationId);
@@ -194,7 +264,29 @@ public:
         }
 
         auto alterData = secretInfo->CreateNextVersion();
-        alterData->Description.SetValue(alterSecretProto.GetValue());
+        if (!storedDelegation) {
+            alterData->Description.SetValue(alterSecretProto.GetValue());
+        } else {
+                // CreateNextVersion copied the current and the staged delegation; a delegation the new version
+                // stops naming is revoked at the plan step.
+                switch (delegationAlter) {
+                    case NKikimrSchemeOp::IAM_DELEGATION_ALTER_NONE:
+                        break;
+                    case NKikimrSchemeOp::IAM_DELEGATION_ALTER_STAGE:
+                        alterData->Description.MutablePendingIamDelegation()->CopyFrom(alterSecretProto.GetIamDelegation());
+                        alterData->Description.SetPendingIamDelegationStagedAt(context.Ctx.Now().MicroSeconds());
+                        break;
+                    case NKikimrSchemeOp::IAM_DELEGATION_ALTER_PROMOTE:
+                        alterData->Description.MutableIamDelegation()->CopyFrom(secretInfo->Description.GetPendingIamDelegation());
+                        alterData->Description.ClearPendingIamDelegation();
+                        alterData->Description.ClearPendingIamDelegationStagedAt();
+                        break;
+                    case NKikimrSchemeOp::IAM_DELEGATION_ALTER_CANCEL:
+                        alterData->Description.ClearPendingIamDelegation();
+                        alterData->Description.ClearPendingIamDelegationStagedAt();
+                        break;
+                }
+        }
         alterData->Description.SetVersion(secretInfo->AlterVersion);
 
         Y_ABORT_UNLESS(!context.SS->FindTx(OperationId));

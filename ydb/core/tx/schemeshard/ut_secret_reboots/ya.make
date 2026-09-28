@@ -13,6 +13,7 @@ ELSE()
 ENDIF()
 
 PEERDIR(
+    ydb/core/security/iam_delegation
     ydb/core/testlib/default
     ydb/core/tx
     ydb/core/tx/schemeshard/ut_helpers

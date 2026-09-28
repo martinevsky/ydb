@@ -280,6 +280,8 @@ SRCS(
     schemeshard_scheme_builders.h
     schemeshard_export.cpp
     schemeshard_export__cancel.cpp
+    schemeshard_iam_delegation.cpp
+    schemeshard_iam_delegation.h
     schemeshard_export__create.cpp
     schemeshard_export__forget.cpp
     schemeshard_export__get.cpp
@@ -399,6 +401,7 @@ PEERDIR(
     ydb/core/tx/schemeshard/generated
     ydb/core/tx/schemeshard/index
     ydb/core/tx/schemeshard/olap
+    ydb/core/security/iam_delegation
     ydb/core/tx/scheme_board
     ydb/core/tx/tx_allocator_client
     ydb/core/util

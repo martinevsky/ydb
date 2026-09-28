@@ -58,6 +58,8 @@ namespace TEvPrivate {
         EvProgressForcedCompaction,
         EvMoveShardToStoragePool,
         EvPeriodicTableStatsParsed,
+        EvRunIamDelegationRevocations,
+        EvIamDelegationRevoked,
         EvEnd
     };
 
@@ -283,6 +285,19 @@ namespace TEvPrivate {
 
         TEvRunCdcStreamScan(const TPathId& streamPathId)
             : StreamPathId(streamPathId)
+        {}
+    };
+
+    // Starts a revoker for every IAM delegation of the outbox (see schemeshard_iam_delegation.h) that has none.
+    struct TEvRunIamDelegationRevocations: public TEventLocal<TEvRunIamDelegationRevocations, EvRunIamDelegationRevocations> {
+    };
+
+    // Answer of a revoker: IAM has accepted the revocation of the delegation.
+    struct TEvIamDelegationRevoked: public TEventLocal<TEvIamDelegationRevoked, EvIamDelegationRevoked> {
+        const TString ReferrerId;
+
+        explicit TEvIamDelegationRevoked(const TString& referrerId)
+            : ReferrerId(referrerId)
         {}
     };
 

@@ -53,6 +53,7 @@ public:
         NIceDb::TNiceDb db(context.GetDB());
 
         context.SS->DropPaths(paths, step, OperationId.GetTxId(), db, context.Ctx);
+        context.OnComplete.Send(context.SS->SelfId(), new TEvPrivate::TEvRunIamDelegationRevocations()); // the delegation secrets of the subtree
 
         auto parentDir = context.SS->PathsById.at(path->ParentPathId);
         ++parentDir->DirAlterVersion;

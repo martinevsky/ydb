@@ -58,7 +58,8 @@ public:
         DecAliveChildrenDirect(OperationId, parentDir, context); // for correct discard of ChildrenExist prop
 
         context.SS->TabletCounters->Simple()[COUNTER_SECRET_COUNT].Sub(1);
-        context.SS->PersistSecretRemove(db, pathId);
+        context.SS->PersistSecretRemove(db, pathId); // schedules the revocation of the delegations of an IAM_DELEGATION secret
+        context.OnComplete.Send(context.SS->SelfId(), new TEvPrivate::TEvRunIamDelegationRevocations());
 
         ++parentDir->DirAlterVersion;
         context.SS->PersistPathDirAlterVersion(db, parentDir);

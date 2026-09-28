@@ -2624,10 +2624,43 @@ message TIncrementalRestoreLockTargets {
     optional uint64 RestoreOpId = 3;
 }
 
+// Parameters of an IAM delegation, the source of an external secret (SOURCE = "IAM_DELEGATION"): YDB acts on
+// behalf of a Yandex Cloud service account and the value of the secret is its current IAM token.
+// None of these fields is sensitive: they identify the delegated service account and
+// the delegation itself, but do not grant access by themselves.
+message TIamDelegation {
+    optional string ServiceAccountId = 1;   // customer service account YDB impersonates
+    optional string CloudId = 2;            // cloud the delegation is set up in (IAM resource container)
+    optional string ReferrerId = 3;         // unique id of this delegation on the YDB side (IAM referrer)
+}
+
 message TSecretDescription {
     optional string Name = 1;
-    optional string Value = 2 [(Ydb.sensitive) = true]; // original, unencrypted value
+    // Where the value comes from: stored with the secret, or obtained from an external system when the
+    // secret is read. A record with neither is a stored (empty) value.
+    oneof Source {
+        string Value = 2 [(Ydb.sensitive) = true]; // original, unencrypted value
+        TIamDelegation IamDelegation = 5;          // the delegation readers of the secret use
+    }
     optional uint64 Version = 3;
+    reserved 4; // ESecretType Type, before the oneof
+    // A replacement staged by ALTER SECRET and not promoted yet (see EIamDelegationAlter): IAM may or may not
+    // know it, readers never use it. Whatever delegation stops being named by the secret is revoked by the
+    // schemeshard (its outbox of revocations), so a staged replacement never leaks.
+    optional TIamDelegation PendingIamDelegation = 6;
+    // When PendingIamDelegation was staged (microseconds since the epoch): another replacement may be staged
+    // over it only once its setup can no longer be in flight (the ALTER that staged it has failed or died).
+    optional uint64 PendingIamDelegationStagedAt = 7;
+}
+
+// What ALTER SECRET does with the delegation of an IAM delegation secret. The delegation is set up in IAM
+// between STAGE and PROMOTE: the secret always names every delegation IAM may know, before it is set up and
+// until it is revoked.
+enum EIamDelegationAlter {
+    IAM_DELEGATION_ALTER_NONE = 0;     // the delegation is unchanged (IamDelegation must name the current one)
+    IAM_DELEGATION_ALTER_STAGE = 1;    // IamDelegation becomes PendingIamDelegation; a previously staged one is revoked
+    IAM_DELEGATION_ALTER_PROMOTE = 2;  // PendingIamDelegation (its ReferrerId is IamDelegation.ReferrerId) becomes current; the old current one is revoked
+    IAM_DELEGATION_ALTER_CANCEL = 3;   // PendingIamDelegation (its ReferrerId is IamDelegation.ReferrerId) is dropped and revoked
 }
 
 message TSecretSchemaOp {
@@ -2638,6 +2671,13 @@ message TSecretSchemaOp {
     // However, this field is supposed to be resolved at KQP to the actual value and be cleared.
     // Schemeshard always uses secret's value from the Value field and asserts that the ValueParamName field is empty.
     optional string ValueParamName = 4;
+    reserved 5; // ESecretType Type, before the oneof in TSecretDescription
+    // Present for an IAM delegation secret (its source; Value is not allowed then). KQP fills
+    // ServiceAccountId/CloudId from the query, the delegation orchestrator fills the ReferrerId: CREATE names
+    // the delegation before it is set up in IAM.
+    optional TIamDelegation IamDelegation = 6;
+    // For ALTER of an IAM delegation secret.
+    optional EIamDelegationAlter IamDelegationAlter = 7 [default = IAM_DELEGATION_ALTER_NONE];
 }
 
 message TStreamingQueryProperties {

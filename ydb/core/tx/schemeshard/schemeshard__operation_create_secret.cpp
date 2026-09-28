@@ -32,6 +32,27 @@ TString InterruptInheritanceExceptDescribe(const TString& initialAcl) {
     return resultAcl;
 }
 
+// Validates the parameters of an IAM delegation secret coming from KQP.
+// Returns an error message or nothing when the parameters are complete.
+std::optional<TString> ValidateIamDelegation(const NKikimrSchemeOp::TIamDelegation& delegation) {
+    if (delegation.GetServiceAccountId().empty()) {
+        return "IamDelegation.ServiceAccountId must be set for IAM delegation secrets";
+    }
+    if (delegation.GetCloudId().empty()) {
+        return "IamDelegation.CloudId must be set for IAM delegation secrets";
+    }
+    if (delegation.GetReferrerId().empty()) {
+        return "IamDelegation.ReferrerId must be set for IAM delegation secrets";
+    }
+    return std::nullopt;
+}
+
+bool SameIamDelegation(const NKikimrSchemeOp::TIamDelegation& a, const NKikimrSchemeOp::TIamDelegation& b) {
+    return a.GetServiceAccountId() == b.GetServiceAccountId()
+        && a.GetCloudId() == b.GetCloudId()
+        && a.GetReferrerId() == b.GetReferrerId();
+}
+
 } // namespace NKikimr::NSchemeShard
 
 namespace {
@@ -275,7 +296,26 @@ public:
 
         NKikimrSchemeOp::TSecretDescription secretDescription;
         secretDescription.SetName(createSecretProto.GetName());
-        secretDescription.SetValue(createSecretProto.GetValue());
+        // the source of the secret: an IAM delegation when the request names one, a stored value otherwise
+        if (createSecretProto.HasIamDelegation()) {
+            if (!AppData()->FeatureFlags.GetEnableIamDelegationSecrets()) {
+                result->SetError(NKikimrScheme::StatusPreconditionFailed,
+                    "IAM delegation secrets are disabled. Please contact your system administrator to enable it");
+                return result;
+            }
+            if (createSecretProto.HasValue()) {
+                result->SetError(NKikimrScheme::StatusInvalidParameter,
+                    "Value is not allowed for IAM delegation secrets");
+                return result;
+            }
+            if (const auto error = ValidateIamDelegation(createSecretProto.GetIamDelegation())) {
+                result->SetError(NKikimrScheme::StatusInvalidParameter, *error);
+                return result;
+            }
+            secretDescription.MutableIamDelegation()->CopyFrom(createSecretProto.GetIamDelegation());
+        } else {
+            secretDescription.SetValue(createSecretProto.GetValue());
+        }
 
         const auto secretInfo = TSecretInfo::Create(std::move(secretDescription));
         context.SS->Secrets.Set(secretPathId, secretInfo);
@@ -364,6 +404,10 @@ ISubOperation::TPtr CreateNewSecret(TOperationId id, const TTxTransaction& tx, T
             if (createSecretProto.HasInheritPermissions()) {
                 alterSecret->SetInheritPermissions(createSecretProto.GetInheritPermissions());
             }
+            if (createSecretProto.HasIamDelegation()) {
+                alterSecret->MutableIamDelegation()->CopyFrom(createSecretProto.GetIamDelegation());
+            }
+            alterSecret->SetIamDelegationAlter(createSecretProto.GetIamDelegationAlter());
             return CreateAlterSecret(id, alterTx);
         }
     }

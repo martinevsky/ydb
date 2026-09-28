@@ -1242,6 +1242,14 @@ void TPathDescriber::DescribeSecret(const TActorContext&, TPathId pathId, TPathE
         entry->SetValue(secretInfo->Description.GetValue());
     }
     entry->SetVersion(secretInfo->Description.GetVersion());
+    // The delegation parameters are not sensitive and are always described:
+    // consumers need them to obtain tokens and the scheme cache carries them.
+    if (secretInfo->Description.HasIamDelegation()) {
+        entry->MutableIamDelegation()->CopyFrom(secretInfo->Description.GetIamDelegation());
+    }
+    if (secretInfo->Description.HasPendingIamDelegation()) {
+        entry->MutablePendingIamDelegation()->CopyFrom(secretInfo->Description.GetPendingIamDelegation());
+    }
 }
 
 void TPathDescriber::DescribeStreamingQuery(TPathId pathId, TPathElement::TPtr pathEl) {
