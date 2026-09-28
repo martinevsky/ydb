@@ -57,7 +57,7 @@ TLoopbackHttpServer server;                                  // or ({.Tls = pki.
 server.Script("/obj", {TScriptedResponse::WithStatus(503), TScriptedResponse::Ok("abc")}); // per attempt, last repeats
 server.SetDefault(TScriptedResponse::Ok("x"));               // fallback; unscripted = 404
 server.SetHandler([](const TReceivedRequest& r) { ... });    // overrides scripts
-TString url = server.Url("/obj");                            // Url("/obj", "localhost") for TLS name checks
+TString url = server.Url("/obj");                            // http(s)://127.0.0.1:<port>/obj, also for TLS
 ```
 
 Responses (`TScriptedResponse`): `Ok(body)`, `WithStatus(code, body)`, `Redirect(code, location)`,

@@ -104,13 +104,14 @@ THttpGatewayConfig WithCaFile(const TTestPki& pki) {
 }
 
 // A TLS download that must be rejected before any HTTP byte is decrypted by the server.
-// Chain failures abort the handshake (server: HandshakesFailed); a host name mismatch is detected by curl
-// after the handshake completed, so the server sees a finished handshake and then a close.
+// Chain failures abort the handshake (server: HandshakesFailed); a name mismatch (the URL host 127.0.0.1
+// against the leaf's SAN) is detected by curl after the handshake completed, so the server sees a finished
+// handshake and then a close.
 void AssertRejectedBeforeHttp(TGatewayScope& gateway, TLoopbackHttpServer& server, const TString& secret,
     bool expectHandshakeFailure = true)
 {
     TBufferedCall call;
-    const auto outcome = Download(gateway, server.Url("/obj", "localhost"), IHTTPGateway::MakeYcHeaders("r1", secret), 10, call);
+    const auto outcome = Download(gateway, server.Url("/obj"), IHTTPGateway::MakeYcHeaders("r1", secret), 10, call);
     UNIT_ASSERT_VALUES_EQUAL_C(int(outcome.CurlCode), int(CURLE_PEER_FAILED_VERIFICATION), outcome.Issues);
     server.WaitConnectionsDone(1, GUARD); // causal: the server's view of the connection is final
     if (expectHandshakeFailure) {
@@ -159,7 +160,7 @@ Y_UNIT_TEST_SUITE(THttpGatewayTransportTest) {
             return TScriptedResponse::Ok("abc").NoRange();
         });
         TGatewayScope gateway(WithCaFile(pki));
-        const TString url = server.Url("/obj", "localhost");
+        const TString url = server.Url("/obj");
 
         const auto get = Download(gateway, url, IHTTPGateway::MakeYcHeaders("r1"), 3);
         UNIT_ASSERT_VALUES_EQUAL_C(int(get.CurlCode), int(CURLE_OK), get.Issues);
@@ -201,7 +202,7 @@ Y_UNIT_TEST_SUITE(THttpGatewayTransportTest) {
         config.SetVerifyPeer(false);
         TGatewayScope gateway(config);
         for (int i = 0; i < 2; ++i) {
-            const auto outcome = Download(gateway, server.Url("/obj", "localhost"), IHTTPGateway::MakeYcHeaders("r1"), 3);
+            const auto outcome = Download(gateway, server.Url("/obj"), IHTTPGateway::MakeYcHeaders("r1"), 3);
             UNIT_ASSERT_VALUES_EQUAL_C(int(outcome.CurlCode), int(CURLE_OK), outcome.Issues);
             UNIT_ASSERT_VALUES_EQUAL(outcome.HttpCode, 200);
         }

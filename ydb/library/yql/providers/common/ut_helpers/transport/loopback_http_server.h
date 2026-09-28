@@ -131,8 +131,10 @@ public:
 
     ui16 Port() const;
     bool IsTls() const;
-    // "http(s)://<host>:<port><path>". Use host "localhost" for certificate-name checks. The default
-    // host is 127.0.0.1 regardless of BindAddress.
+    // "http(s)://<host>:<port><path>". The default host is 127.0.0.1 regardless of BindAddress. TLS tests
+    // use it too: the TTestPki leaves carry IP:127.0.0.1 in their SAN. Do not use "localhost": the server
+    // listens on IPv4 only and localhost may resolve to ::1 first, where another process on the host can
+    // listen on the same port number.
     TString Url(TStringBuf path = "/obj", TStringBuf host = "127.0.0.1") const;
 
     // Scripting (may be changed while running; affects requests parsed afterwards).

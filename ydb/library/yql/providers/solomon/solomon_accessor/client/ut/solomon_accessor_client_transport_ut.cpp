@@ -690,7 +690,7 @@ TEST(TSolomonAccessorTransportTest, NoSecretInReadIssuesOrLogs) {
     cfg.GrpcRootCertsPem = pki.Ca().CertPem;
 
     auto client = ISolomonAccessorClient::Make(
-        MakeSource(TStringBuilder() << "localhost:" << server.Port(), dataService.Endpoint(), /*useSsl*/ true),
+        MakeSource(TStringBuilder() << "127.0.0.1:" << server.Port(), dataService.Endpoint(), /*useSsl*/ true),
         MakeCredentials(), cfg, gateway.Gateway());
 
     const auto labels = WaitResult(client->GetLabelNames({}, FROM, TO), TDuration::Seconds(10), "GetLabelNames");
@@ -852,7 +852,7 @@ TEST(TSolomonAccessorTransportTest, AuthSchemePerClusterType) {
     for (size_t i = 0; i < cases.size(); ++i) {
         const auto& [clusterType, expected] = cases[i];
         auto client = ISolomonAccessorClient::Make(
-            MakeSource(TStringBuilder() << "localhost:" << server.Port(), dataService.Endpoint(), /*useSsl*/ true, clusterType),
+            MakeSource(TStringBuilder() << "127.0.0.1:" << server.Port(), dataService.Endpoint(), /*useSsl*/ true, clusterType),
             MakeCredentials("T"), cfg, gateway.Gateway());
         const auto labels = WaitResult(client->GetLabelNames({}, FROM, TO), TDuration::Seconds(10), "GetLabelNames");
         EXPECT_EQ(labels.Status, STATUS_OK) << labels.Error;
