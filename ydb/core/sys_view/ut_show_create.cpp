@@ -2989,6 +2989,33 @@ Y_UNIT_TEST(ExternalDataSource) {
     }
 }
 
+Y_UNIT_TEST(ExternalDataSourceWithDashInName) {
+    TTestEnv env(1, 4, {.StoragePools = 3, .ShowCreateTable = true});
+
+    TShowCreateChecker checker(env);
+
+    auto session = NQuery::TQueryClient(env.GetDriver()).GetSession().GetValueSync().GetSession();
+
+    for (const std::string name : {"my-eds-1", "sub-dir/my-eds-2"}) {
+        ExecuteQuery(session, std::format(R"(
+            CREATE EXTERNAL DATA SOURCE `{}` WITH (
+                SOURCE_TYPE = "ObjectStorage",
+                LOCATION = "http://fake.fake/dash",
+                AUTH_METHOD = "NONE"
+            );
+        )", name));
+
+        auto query = checker.ShowCreateExternalDataSource(session, name);
+        UNIT_ASSERT_C(query.find(std::format("CREATE EXTERNAL DATA SOURCE `{}`", name)) != std::string::npos, query);
+        UNIT_ASSERT_C(query.find("LOCATION = 'http://fake.fake/dash'") != std::string::npos, query);
+
+        ExecuteQuery(session, std::format("DROP EXTERNAL DATA SOURCE `{}`;", name));
+        ExecuteQuery(session, query);
+        auto recreated = checker.ShowCreateExternalDataSource(session, name);
+        UNIT_ASSERT_VALUES_EQUAL(recreated, query);
+    }
+}
+
 Y_UNIT_TEST(ExternalTable) {
     TTestEnv env(1, 4, {.StoragePools = 3, .ShowCreateTable = true});
 
