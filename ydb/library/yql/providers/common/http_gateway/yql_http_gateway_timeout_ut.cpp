@@ -114,7 +114,8 @@ Y_UNIT_TEST_SUITE(THttpGatewayTimeoutTest) {
     Y_UNIT_TEST(ConnectionRefused) {
         TGatewayScope gateway;
         TBufferedCall call;
-        const auto outcome = Download(gateway, TStringBuilder() << "http://127.0.0.1:" << ClosedLoopbackPort() << "/x", {}, 0, call);
+        TRefusingPort refusing;
+        const auto outcome = Download(gateway, refusing.Url("/x"), {}, 0, call);
         UNIT_ASSERT_VALUES_EQUAL_C(int(outcome.CurlCode), int(CURLE_COULDNT_CONNECT), outcome.Issues);
         gateway.Inspector().WaitValue("method=GET/curl_code=7/count", 1);
         Finish(gateway);

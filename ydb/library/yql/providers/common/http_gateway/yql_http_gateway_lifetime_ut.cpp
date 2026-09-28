@@ -642,7 +642,8 @@ Y_UNIT_TEST_SUITE(THttpGatewayLifetimeTest) {
         const auto headers = [&]() {
             return IHTTPGateway::MakeYcHeaders("req", secret, {}, "AKID:" + secret, "aws:amz:ru-central1:s3");
         };
-        const TString refused = TStringBuilder() << "http://127.0.0.1:" << ClosedLoopbackPort() << "/obj";
+        TRefusingPort refusingPort;
+        const TString refused = refusingPort.Url("/obj");
 
         TVector<std::pair<TString, TOutcome>> outcomes;
         outcomes.emplace_back("refused GET", Download(gateway, refused, headers()));

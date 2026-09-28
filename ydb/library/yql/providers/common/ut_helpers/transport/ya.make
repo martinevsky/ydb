@@ -6,6 +6,7 @@ LIBRARY()
 SRCS(
     counters_inspector.cpp
     loopback_http_server.cpp
+    refusing_port.cpp
     test_pki.cpp
     wait.cpp
 )

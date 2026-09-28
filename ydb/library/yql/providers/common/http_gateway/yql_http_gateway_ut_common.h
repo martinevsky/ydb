@@ -6,13 +6,13 @@
 #include "yql_http_gateway.h"
 
 #include <ydb/library/yql/providers/common/ut_helpers/transport/counters_inspector.h>
+#include <ydb/library/yql/providers/common/ut_helpers/transport/refusing_port.h>
 #include <ydb/library/yql/providers/common/ut_helpers/transport/wait.h>
 #include <ydb/library/yql/providers/common/ut_helpers/transport/yql/gateway_scope.h>
 
 #include <library/cpp/testing/unittest/registar.h>
 
 #include <util/generic/vector.h>
-#include <util/network/socket.h>
 
 #include <chrono>
 #include <condition_variable>
@@ -170,21 +170,6 @@ inline IHTTPGateway::TCancelHook StartStream(const NTransportTest::TGatewayScope
 {
     return gateway->Download(url, {}, 0, 0, consumer.OnStart(), consumer.OnData(), consumer.OnFinish(), nullptr,
         std::move(context));
-}
-
-// A loopback port with nothing listening: bound to an ephemeral port, then closed. The kernel does not
-// hand the port out again right away, so a connect() gets ECONNREFUSED.
-inline ui16 ClosedLoopbackPort() {
-    TSocketHolder socket(::socket(AF_INET, SOCK_STREAM, 0));
-    Y_ENSURE(!socket.Closed(), "socket() failed");
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = 0;
-    Y_ENSURE(::bind(socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0, "bind() failed");
-    socklen_t length = sizeof(address);
-    Y_ENSURE(::getsockname(socket, reinterpret_cast<sockaddr*>(&address), &length) == 0, "getsockname() failed");
-    return ntohs(address.sin_port);
 }
 
 } // namespace NYql::NHttpGatewayUt

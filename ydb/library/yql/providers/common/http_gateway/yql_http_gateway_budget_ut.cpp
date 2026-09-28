@@ -379,7 +379,8 @@ Y_UNIT_TEST_SUITE(THttpGatewayBudgetTest) {
         UNIT_ASSERT_VALUES_EQUAL(post.Wait().HttpCode, 500);
         gateway->Delete(server.Url(), {}, del.Callback());
         UNIT_ASSERT_VALUES_EQUAL(del.Wait().HttpCode, 204);
-        const auto refused = Download(gateway, TStringBuilder() << "http://127.0.0.1:" << ClosedLoopbackPort() << "/x");
+        TRefusingPort refusing;
+        const auto refused = Download(gateway, refusing.Url("/x"));
         UNIT_ASSERT_VALUES_EQUAL_C(int(refused.CurlCode), int(CURLE_COULDNT_CONNECT), refused.Issues);
 
         const auto& inspector = gateway.Inspector();

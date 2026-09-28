@@ -18,7 +18,7 @@ Rules for every user of this harness:
 
 | PEERDIR | Contents | Depends on |
 |---|---|---|
-| `ydb/library/yql/providers/common/ut_helpers/transport` | known_bug.h, H1, H2, H6, H8, H12, wait.h | util, `library/cpp/monlib/dynamic_counters`, `contrib/libs/openssl` |
+| `ydb/library/yql/providers/common/ut_helpers/transport` | known_bug.h, H1, H2, H6, H8, H12, `TRefusingPort`, wait.h | util, `library/cpp/monlib/dynamic_counters`, `contrib/libs/openssl` |
 | `.../ut_helpers/transport/yql` | H7 `TLogCapture`, H11 `TGatewayScope` | the curl gateway, the YQL logger |
 | `.../ut_helpers/transport/credentials` | H10 `TFakeCredentialsProvider` | YDB C++ SDK credentials |
 | `ydb/library/yql/providers/common/http_gateway/mock` | H9 `TScriptedHttpGateway` (`yql_http_scripted_gateway.h`) | the curl gateway interface |
@@ -129,6 +129,11 @@ still holds the gateway).
 ### H12 `TBlackholeListener` (`blackhole.h`, Linux only)
 Loopback listener with a saturated accept queue: `connect()` to `Url()` hangs until the client's connect
 timeout (replaces the non-routable IP trick).
+
+### `TRefusingPort` (`refusing_port.h`)
+A 127.0.0.1 port that stays bound without `listen()` while the object lives: `connect()` to `Url()` is
+refused (curl: `CURLE_COULDNT_CONNECT`). Use it instead of the port of a closed socket or a destroyed server,
+which another process can take at once.
 
 ## Gateway test hooks (seams S1, S2, S3, S4, S11)
 

@@ -18,6 +18,7 @@
 #include <ydb/library/yql/providers/common/ut_helpers/transport/credentials/fake_credentials.h>
 #include <ydb/library/yql/providers/common/ut_helpers/transport/known_bug_gtest.h>
 #include <ydb/library/yql/providers/common/ut_helpers/transport/loopback_http_server.h>
+#include <ydb/library/yql/providers/common/ut_helpers/transport/refusing_port.h>
 #include <ydb/library/yql/providers/common/ut_helpers/transport/test_pki.h>
 #include <ydb/library/yql/providers/common/ut_helpers/transport/yql/gateway_scope.h>
 #include <ydb/library/yql/providers/common/ut_helpers/transport/yql/log_capture.h>
@@ -444,11 +445,7 @@ TEST(TSolomonAccessorTransportTest, SolomonHttpRetryClassMatrix) {
 TEST(TSolomonAccessorTransportTest, HttpRetryClassificationEndToEnd) {
     TGatewayScope gateway;
     TLoopbackHttpServer server;
-    ui16 closedPort = 0;
-    {
-        TLoopbackHttpServer closed;
-        closedPort = closed.Port();
-    }
+    TRefusingPort closed; // bound, not listening: connections are refused
     const TString httpEndpoint = TStringBuilder() << "127.0.0.1:" << server.Port();
 
     {
@@ -479,7 +476,7 @@ TEST(TSolomonAccessorTransportTest, HttpRetryClassificationEndToEnd) {
     {
         // (c) a refused connection is retried MaxRetries times: 3 connect attempts in total.
         auto client = ISolomonAccessorClient::Make(
-            MakeSource(TStringBuilder() << "127.0.0.1:" << closedPort, "127.0.0.1:1"),
+            MakeSource(TStringBuilder() << "127.0.0.1:" << closed.Port(), "127.0.0.1:1"),
             MakeCredentials(), MakeConfig(2), gateway.Gateway());
         const auto labels = WaitResult(client->GetLabelNames({}, FROM, TO), TDuration::Seconds(10), "GetLabelNames (c)");
         EXPECT_NE(labels.Status, STATUS_OK);
