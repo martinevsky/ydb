@@ -203,6 +203,18 @@ Y_UNIT_TEST_SUITE(THttpClientTlsVerify) {
         setup.ExpectServedOk(certs.CaFile.Name());
     }
 
+    // Seam S6: a CaFile that cannot be loaded fails closed and is reported as such.
+    Y_UNIT_TEST(UnloadableCaFileIsReported) {
+        TTestCerts certs;
+        TTlsServerSetup setup(certs.Leaf);
+        const TString caFile = "/nonexistent/ca.pem";
+        auto response = setup.Get(caFile);
+        const TString error = response->Get()->GetError();
+        Cerr << "client error: '" << error << "'" << Endl;
+        UNIT_ASSERT_VALUES_EQUAL(setup.HandlerRequests->load(), 0u);
+        UNIT_ASSERT_STRING_CONTAINS(error, "failed to load CA file " + caFile);
+    }
+
     // Pin: without CaFile the client keeps today's behaviour and talks to a self-signed server.
     Y_UNIT_TEST(NoCaFileKeepsLegacyNoVerify) {
         TTestCerts certs;

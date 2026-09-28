@@ -166,6 +166,8 @@ struct TSecureSocketImpl : TPlainSocketImpl, TSslHelpers {
     // Client side only: opt-in server certificate verification, see TEvHttpOutgoingRequest::CaFile.
     // Empty (default) keeps the legacy behaviour: the server certificate is not verified.
     TString VerifyCaFile;
+    // Why VerifyCaFile could not be loaded; empty if it was loaded (or not requested).
+    TString VerifyCaLoadError;
 
     TSecureSocketImpl() = default;
 
@@ -221,6 +223,9 @@ struct TSecureSocketImpl : TPlainSocketImpl, TSslHelpers {
             return;
         }
         if (SSL_CTX_load_verify_locations(Ctx.Get(), VerifyCaFile.c_str(), nullptr) != 1) {
+            const char* reason = ERR_reason_error_string(ERR_peek_last_error());
+            VerifyCaLoadError = TStringBuilder() << "failed to load CA file " << VerifyCaFile << ": "
+                << (reason ? reason : "unknown error");
             ERR_clear_error();
         }
         SSL_set_verify(Ssl.Get(), SSL_VERIFY_PEER, nullptr);
@@ -237,6 +242,9 @@ struct TSecureSocketImpl : TPlainSocketImpl, TSslHelpers {
     TString GetVerifyError() const {
         if (VerifyCaFile.empty() || !Ssl) {
             return {};
+        }
+        if (VerifyCaLoadError) {
+            return VerifyCaLoadError;
         }
         const long result = SSL_get_verify_result(Ssl.Get());
         if (result == X509_V_OK) {
