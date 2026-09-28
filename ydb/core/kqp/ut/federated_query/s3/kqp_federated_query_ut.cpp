@@ -8,6 +8,7 @@
 #include <ydb/core/wrappers/ut_helpers/s3_mock.h>
 #include <ydb/library/yql/providers/common/ut_helpers/transport/known_bug.h>
 #include <ydb/library/yql/providers/common/ut_helpers/transport/loopback_http_server.h>
+#include <ydb/library/yql/providers/s3/actors/yql_s3_actors_factory_impl.h>
 #include <ydb/public/sdk/cpp/include/ydb-cpp-sdk/client/draft/ydb_scripting.h>
 #include <ydb/public/sdk/cpp/include/ydb-cpp-sdk/client/operation/operation.h>
 #include <ydb/public/sdk/cpp/include/ydb-cpp-sdk/client/proto/accessor.h>
@@ -4039,6 +4040,9 @@ Y_UNIT_TEST_SUITE(KqpFederatedQuery) {
     // drops a stalled S3 connection. The oracle is server-observable: the client closes the first
     // connection and opens a new one (a retry). Today the default has no LowSpeed guard and no total
     // timeout, so the client never closes. Query latency is not asserted.
+    // Before removing the skip: this target has no FORK_SUBTESTS, so run the test in a fresh process
+    // (FORK_SUBTESTS here or a separate forked target); otherwise the singleton check below can see a
+    // gateway created by an earlier test in the same process.
     Y_UNIT_TEST(DefaultHttpGatewayConfigDropsStalledS3Connection) {
         YDB_SKIP_KNOWN_BUG("F-A-4");
         using namespace NYql::NTransportTest;
