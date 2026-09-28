@@ -80,6 +80,8 @@ Observables: `Requests()` (snapshot of `TReceivedRequest`: method, path, query, 
 Sync points (all throw on guard): `WaitForRequests(n)`, `WaitBlockedOnSend(n)`,
 `WaitConnectionClosedByPeer(requestIndex)`, `WaitConnectionsDone(n)` (use it before asserting that
 nothing was delivered: the server's view of every connection is final), `WaitUntil(pred, guard, what)`.
+An exception that escapes a server thread (a throwing `SetHandler` callback, a malformed request) is kept:
+every sync point and `Stop()` rethrow it (the destructor prints it to `Cerr`).
 
 Non-HTTP input (e.g. a gopher selector) is logged as one request with `NonHttp = true` and closed.
 The server ignores `SIGPIPE` process-wide (TLS writes use `write(2)`).

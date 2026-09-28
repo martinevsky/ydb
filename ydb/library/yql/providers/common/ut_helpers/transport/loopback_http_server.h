@@ -166,6 +166,9 @@ public:
     ui64 HttpRequestsDecrypted() const;
 
     // Guarded waits (throw yexception on guard expiry); implemented with NTransportTest::WaitUntil.
+    // They also throw as soon as an exception has escaped a server thread (e.g. from a SetHandler
+    // callback or a malformed request); Stop() rethrows it too and the destructor prints it to Cerr.
+    // Handlers must not block past Stop(): it joins every thread.
     void WaitForRequests(size_t count, TDuration guard = TDuration::Seconds(10)) const;
     void WaitUntil(const std::function<bool()>& predicate, TDuration guard, TStringBuf what) const;
     void WaitBlockedOnSend(ui64 count = 1, TDuration guard = TDuration::Seconds(10)) const;

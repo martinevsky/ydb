@@ -235,6 +235,21 @@ Y_UNIT_TEST_SUITE(THttpGatewayTransportTest) {
 // exercise. Kept small; each test documents the harness contract other targets build on.
 Y_UNIT_TEST_SUITE(TTransportHarnessTest) {
 
+    // H1: an exception thrown on a server thread (here by the handler) fails the test through Stop()
+    // instead of terminating the process.
+    Y_UNIT_TEST(LoopbackThreadExceptionIsRethrown) {
+        TLoopbackHttpServer server;
+        server.SetHandler([](const TReceivedRequest&) -> TScriptedResponse {
+            ythrow yexception() << "handler boom";
+        });
+        TGatewayScope gateway;
+        TBufferedCall call;
+        gateway->Download(server.Url("/x"), {}, 0, 0, call.Callback(), {}, IHTTPGateway::TRetryPolicy::GetNoRetryPolicy());
+        UNIT_ASSERT_VALUES_EQUAL(call.Wait().HttpCode, 0); // the connection was closed without an answer
+        Finish(gateway);
+        UNIT_ASSERT_EXCEPTION_CONTAINS(server.Stop(), yexception, "handler boom");
+    }
+
     // H1: per-attempt scripts, Range handling, header echo.
     Y_UNIT_TEST(LoopbackScriptsAttemptsAndRange) {
         TLoopbackHttpServer server;

@@ -7,6 +7,7 @@
 #include <util/string/ascii.h>
 #include <util/string/builder.h>
 #include <util/string/cast.h>
+#include <util/stream/output.h>
 #include <util/string/strip.h>
 #include <util/system/error.h>
 
@@ -231,6 +232,10 @@ struct TLoopbackHttpServer::TImpl {
     bool GateOpen(const TString& gate) const;
     TReceivedRequest Record(TReceivedRequest request);
     void MarkClosedByPeer(ui64 index);
+    // Keeps the message of the first exception that escaped a server thread (called in a catch block).
+    void RecordThreadError(TStringBuf thread);
+    // Throws yexception with that message, if any.
+    void ThrowIfThreadFailed() const;
     bool Respond(TConnection& connection, const TReceivedRequest& request, const TScriptedResponse& response);
 
     const TLoopbackHttpServerOptions Options;
@@ -249,6 +254,7 @@ struct TLoopbackHttpServer::TImpl {
     THashMap<TString, TVector<TScriptedResponse>> Scripts;
     std::optional<TScriptedResponse> Default;
     THashSet<TString> ClosedGates;
+    TString ThreadError;
 
     std::atomic<ui64> ConnectionsAccepted = 0;
     std::atomic<ui64> ConnectionsFinished = 0;
@@ -632,7 +638,11 @@ TLoopbackHttpServer::TImpl::~TImpl() {
 
 void TLoopbackHttpServer::TImpl::Start() {
     Acceptor = std::thread([this]() {
-        AcceptLoop();
+        try {
+            AcceptLoop();
+        } catch (...) {
+            RecordThreadError("acceptor");
+        }
     });
 }
 
@@ -652,6 +662,21 @@ void TLoopbackHttpServer::TImpl::Stop() {
     }
     for (auto& worker : workers) {
         worker.join();
+    }
+}
+
+void TLoopbackHttpServer::TImpl::RecordThreadError(TStringBuf thread) {
+    const TString message = TStringBuilder() << "loopback server " << thread << " thread failed: " << CurrentExceptionMessage();
+    std::lock_guard lock(Mutex);
+    if (ThreadError.empty()) {
+        ThreadError = message;
+    }
+}
+
+void TLoopbackHttpServer::TImpl::ThrowIfThreadFailed() const {
+    std::lock_guard lock(Mutex);
+    if (!ThreadError.empty()) {
+        ythrow yexception() << ThreadError;
     }
 }
 
@@ -675,7 +700,11 @@ void TLoopbackHttpServer::TImpl::AcceptLoop() {
         const ui64 connectionId = ConnectionsAccepted++;
         std::lock_guard lock(Mutex);
         Workers.emplace_back([this, fd, connectionId]() {
-            Serve(fd, connectionId);
+            try {
+                Serve(fd, connectionId);
+            } catch (...) {
+                RecordThreadError(TStringBuilder() << "connection #" << connectionId);
+            }
         });
     }
 }
@@ -872,6 +901,11 @@ TLoopbackHttpServer::TLoopbackHttpServer(TLoopbackHttpServerOptions options)
 
 TLoopbackHttpServer::~TLoopbackHttpServer() {
     Impl_->Stop();
+    try {
+        Impl_->ThrowIfThreadFailed();
+    } catch (...) {
+        Cerr << CurrentExceptionMessage() << Endl;
+    }
 }
 
 ui16 TLoopbackHttpServer::Port() const {
@@ -939,7 +973,7 @@ ui64 TLoopbackHttpServer::ConnectionsFinished() const {
 }
 
 void TLoopbackHttpServer::WaitConnectionsDone(ui64 count, TDuration guard) const {
-    NTransportTest::WaitUntil([&]() {
+    WaitUntil([&]() {
         const ui64 accepted = ConnectionsAccepted();
         return accepted >= count && ConnectionsFinished() == accepted;
     }, guard, TStringBuilder() << "at least " << count << " connection(s) accepted and all of them finished");
@@ -969,23 +1003,26 @@ ui64 TLoopbackHttpServer::HttpRequestsDecrypted() const {
 }
 
 void TLoopbackHttpServer::WaitForRequests(size_t count, TDuration guard) const {
-    NTransportTest::WaitUntil([&]() {
+    WaitUntil([&]() {
         return RequestCount() >= count;
     }, guard, TStringBuilder() << count << " request(s) at the loopback server");
 }
 
 void TLoopbackHttpServer::WaitUntil(const std::function<bool()>& predicate, TDuration guard, TStringBuf what) const {
-    NTransportTest::WaitUntil(predicate, guard, what);
+    NTransportTest::WaitUntil([&]() {
+        Impl_->ThrowIfThreadFailed();
+        return predicate();
+    }, guard, what);
 }
 
 void TLoopbackHttpServer::WaitBlockedOnSend(ui64 count, TDuration guard) const {
-    NTransportTest::WaitUntil([&]() {
+    WaitUntil([&]() {
         return BlockedOnSendCount() >= count;
     }, guard, TStringBuilder() << "BlockedOnSend >= " << count);
 }
 
 void TLoopbackHttpServer::WaitConnectionClosedByPeer(ui64 requestIndex, TDuration guard) const {
-    NTransportTest::WaitUntil([&]() {
+    WaitUntil([&]() {
         std::lock_guard lock(Impl_->Mutex);
         return requestIndex < Impl_->Log.size() && Impl_->Log[requestIndex].ConnectionClosedByPeer;
     }, guard, TStringBuilder() << "peer closes the connection of request #" << requestIndex);
@@ -993,6 +1030,7 @@ void TLoopbackHttpServer::WaitConnectionClosedByPeer(ui64 requestIndex, TDuratio
 
 void TLoopbackHttpServer::Stop() {
     Impl_->Stop();
+    Impl_->ThrowIfThreadFailed();
 }
 
 } // namespace NYql::NTransportTest
