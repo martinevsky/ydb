@@ -5,7 +5,7 @@
 //   --test-env=YDB_TRANSPORT_RUN_KNOWN_BUGS=1
 // Every gateway test ends with the T-OBS-3 post-condition (gauges settle to 0) and TGatewayScope::Close().
 
-#include "yql_http_gateway.h"
+#include "yql_http_gateway_ut_common.h"
 
 #include <ydb/library/yql/providers/common/http_gateway/mock/yql_http_scripted_gateway.h>
 #include <ydb/library/yql/providers/common/ut_helpers/transport/counters_inspector.h>
@@ -36,66 +36,7 @@ namespace NYql {
 namespace {
 
 using namespace NTransportTest;
-
-const TDuration GUARD = TDuration::Seconds(10);
-
-struct TOutcome {
-    CURLcode CurlCode = CURLE_OK;
-    long HttpCode = 0;
-    TString Body;
-    TString Issues;
-};
-
-// Collects the result of a buffered gateway call and counts callback invocations.
-class TBufferedCall {
-public:
-    IHTTPGateway::TOnResult Callback() const {
-        return [state = State_](IHTTPGateway::TResult&& result) {
-            std::lock_guard lock(state->Mutex);
-            ++state->Calls;
-            state->Outcome.CurlCode = result.CurlResponseCode;
-            state->Outcome.HttpCode = result.Content.HttpResponseCode;
-            state->Outcome.Body = result.Content.Extract();
-            state->Outcome.Issues = result.Issues.ToOneLineString();
-            state->Done.notify_all();
-        };
-    }
-
-    TOutcome Wait(TDuration guard = GUARD) const {
-        std::unique_lock lock(State_->Mutex);
-        const bool done = State_->Done.wait_for(lock, std::chrono::microseconds(guard.MicroSeconds()), [&]() {
-            return State_->Calls > 0;
-        });
-        UNIT_ASSERT_C(done, "gateway callback not called within guard " << guard);
-        return State_->Outcome;
-    }
-
-    ui32 Calls() const {
-        std::lock_guard lock(State_->Mutex);
-        return State_->Calls;
-    }
-
-private:
-    struct TState {
-        std::mutex Mutex;
-        std::condition_variable Done;
-        ui32 Calls = 0;
-        TOutcome Outcome;
-    };
-    std::shared_ptr<TState> State_ = std::make_shared<TState>();
-};
-
-TOutcome Download(const TGatewayScope& gateway, const TString& url, IHTTPGateway::THeaders headers = {},
-    size_t sizeLimit = 0, TBufferedCall call = {})
-{
-    gateway->Download(url, std::move(headers), 0, sizeLimit, call.Callback());
-    return call.Wait();
-}
-
-void Finish(TGatewayScope& gateway) {
-    gateway.Inspector().AssertSettled(); // T-OBS-3
-    gateway.Close();
-}
+using namespace NHttpGatewayUt;
 
 THttpGatewayConfig WithCaFile(const TTestPki& pki) {
     THttpGatewayConfig config;
