@@ -367,11 +367,11 @@ Y_UNIT_TEST_SUITE(TS3ReadActorTransportTest) {
             "b.csv was downloaded again after the LIMIT poison cancelled its coroutine");
     }
 
-    // Candidate finding N-5 (found while writing T-LIF-10): the coroutine poisoned during its backoff
+    // Candidate finding N-6 (found while writing T-LIF-10): the coroutine poisoned during its backoff
     // aborts with the previous attempt's retriable issues still in Issues, and Run() reports them as a
     // fatal EXTERNAL_ERROR, although the read finished because the LIMIT was reached.
     Y_UNIT_TEST(LimitPoisonDuringBackoffIsNotAnError) {
-        YDB_SKIP_KNOWN_BUG("N-5");
+        YDB_SKIP_KNOWN_BUG("N-6");
 
         TLimitDuringBackoff scenario;
         const auto result = scenario.Run();
