@@ -13,6 +13,7 @@
 
 #include <library/cpp/testing/unittest/registar.h>
 
+#include <util/generic/algorithm.h>
 #include <util/generic/size_literals.h>
 #include <util/string/builder.h>
 
@@ -124,7 +125,12 @@ Y_UNIT_TEST_SUITE(THttpGatewayBudgetTest) {
         for (const auto* call : {&a, &b, &c}) {
             AssertOk(call->Wait());
         }
-        UNIT_ASSERT_VALUES_EQUAL(Join(Paths(server)), "[/a /b /c]");
+        // /b and /c fit the budget together and are admitted in one cycle: their arrival order at the
+        // server is a race, so compare them as a set.
+        auto paths = Paths(server);
+        UNIT_ASSERT_VALUES_EQUAL(paths.size(), 3u);
+        Sort(paths.begin() + 1, paths.end());
+        UNIT_ASSERT_VALUES_EQUAL(Join(paths), "[/a /b /c]");
         Finish(gateway);
     }
 
@@ -170,6 +176,7 @@ Y_UNIT_TEST_SUITE(THttpGatewayBudgetTest) {
         // Unsaturated: P1 exceeds its cap of 1.
         TBufferedCall p1a, p1b, p1c, d;
         DownloadAsync(gateway, server, "/p1a", 0, p1a, Pool("P1"));
+        server.WaitForRequests(1); // the arrival order of two concurrent requests is a race; the pin below lists it
         DownloadAsync(gateway, server, "/p1b", 0, p1b, Pool("P1"));
         server.WaitForRequests(2);
         UNIT_ASSERT_VALUES_EQUAL(server.MaxConcurrent(), 2);
