@@ -465,18 +465,33 @@ struct TEvSaveScriptFinalStatusResponse : public TEventLocal<TEvSaveScriptFinalS
 };
 
 struct TEvDescribeSecretsResponse : public TEventLocal<TEvDescribeSecretsResponse, TKqpScriptExecutionEvents::EvDescribeSecretsResponse> {
+    struct TSecretReference {
+        ui64 TabletId = 0;
+        TString DatabaseIncarnation;
+        TString CreateOperationId;
+        ui64 PathOwnerId = 0;
+        ui64 PathLocalId = 0;
+
+        bool operator==(const TSecretReference&) const = default;
+    };
+
     struct TDescription {
         TDescription(const Ydb::StatusIds::StatusCode status, NYql::TIssues issues)
             : Status(status)
             , Issues(std::move(issues))
         {}
 
-        explicit TDescription(std::vector<TString> secretValues)
+        explicit TDescription(std::vector<TString> secretValues,
+            std::vector<TSecretReference> references = {}, std::vector<TInstant> usableUntil = {})
             : SecretValues(std::move(secretValues))
+            , References(std::move(references))
+            , UsableUntil(std::move(usableUntil))
             , Status(Ydb::StatusIds::SUCCESS)
         {}
 
         const std::vector<TString> SecretValues;
+        const std::vector<TSecretReference> References;
+        const std::vector<TInstant> UsableUntil;
         const Ydb::StatusIds::StatusCode Status = Ydb::StatusIds::STATUS_CODE_UNSPECIFIED;
         const NYql::TIssues Issues;
     };

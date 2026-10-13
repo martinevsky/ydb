@@ -1416,6 +1416,7 @@ public:
             if constexpr (std::is_same_v<TReq, Ydb::Cms::CreateDatabaseRequest>
                 || std::is_same_v<TReq, Ydb::Cms::AlterDatabaseRequest>
                 || std::is_same_v<TReq, Ydb::Cms::GetDatabaseStatusRequest>
+                || std::is_same_v<TReq, Ydb::Cms::ListDatabaseIamDelegationsRequest>
                 || std::is_same_v<TReq, Ydb::Cms::GetScaleRecommendationRequest>
                 || std::is_same_v<TReq, Ydb::Cms::RemoveDatabaseRequest>
                 || std::is_same_v<TReq, Ydb::Discovery::NodeRegistrationRequest>) {

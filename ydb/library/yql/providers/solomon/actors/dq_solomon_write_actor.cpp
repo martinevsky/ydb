@@ -1,3 +1,4 @@
+#include <ydb/library/yql/providers/common/token_accessor/client/async_credentials.h>
 #include "dq_solomon_write_actor.h"
 #include "dq_solomon_actors_util.h"
 
@@ -125,7 +126,12 @@ public:
         EgressStats.Level = statsLevel;
     }
 
+    void HandleCredentials(NActors::TEvents::TEvInvokeResult::TPtr& ev) {
+        ev->Get()->Process(NActors::TActivationContext::AsActorContext());
+    }
+
     STRICT_STFUNC(StateFunc,
+        hFunc(NActors::TEvents::TEvInvokeResult, HandleCredentials);
         hFunc(TEvHttpBase::TEvSendResult, Handle);
     )
 
@@ -340,10 +346,10 @@ private:
         metricsCount = 0;
     }
 
-    std::optional<NHttp::THttpOutgoingRequestPtr> BuildSolomonRequest(const TString& data) {
+    std::optional<NHttp::THttpOutgoingRequestPtr> BuildSolomonRequest(const TString& data, const TString& authToken) {
         NHttp::THttpOutgoingRequestPtr httpRequest = NHttp::THttpOutgoingRequest::CreateRequestPost(Url);
         
-        if (!FillAuth(httpRequest)) {
+        if (!FillAuth(httpRequest, authToken)) {
             return {};
         }
 
@@ -353,17 +359,8 @@ private:
         return httpRequest;
     }
 
-    bool FillAuth(NHttp::THttpOutgoingRequestPtr& httpRequest) {
+    bool FillAuth(NHttp::THttpOutgoingRequestPtr& httpRequest, const TString& authToken) {
         const TString authorizationHeader = "Authorization";
-
-        TString authToken;
-        try {
-            authToken = CredentialsProvider->GetAuthInfo();
-        } catch (const std::exception& ex) {
-            TIssues issues { TIssue(TStringBuilder() << "Failed to get auth token: " << ex.what()) };
-            Callbacks->OnAsyncOutputError(OutputIndex, issues, NYql::NDqProto::StatusIds::EXTERNAL_ERROR);
-            return false;
-        }
 
         switch (WriteParams.Shard.GetClusterType()) {
             case NSo::NProto::ESolomonClusterType::CT_SOLOMON:
@@ -386,7 +383,7 @@ private:
         Metrics.ReportSendingBufferSize(SendingBuffer.size());
         Metrics.ReportInflightRequestsCount(InflightBuffer.size());
 
-        if (CheckpointInProgress || SendingBuffer.empty() || InflightBuffer.size() >= MaxRequestsInflight) {
+        if (AuthorizationPending || CheckpointInProgress || SendingBuffer.empty() || InflightBuffer.size() >= MaxRequestsInflight) {
             TStringBuilder skipReason;
             skipReason << "Skip sending to solomon. Reason: ";
             if (CheckpointInProgress) {
@@ -410,27 +407,35 @@ private:
                 HttpProxyId = Register(NHttp::CreateHttpProxy(NMonitoring::TMetricRegistry::SharedInstance()));
             }
 
-            const auto& metricsToSend = std::get<TMetricsToSend>(variant);
-            const auto httpRequest = BuildSolomonRequest(metricsToSend.Data);
-
-            if (!httpRequest) {
-                // BuildSolomonRequest failed (e.g. auth retrieval error).
-                // OnAsyncOutputError has already been called inside FillAuth.
-                // Restore FreeSpace so backpressure accounting stays consistent.
-                FreeSpace += metricsToSend.Data.size();
-                return false;
-            }
-
-            const size_t bodySize = metricsToSend.Data.size();
-            const TActorId httpSenderId = Register(CreateHttpSenderActor(SelfId(), HttpProxyId, RetryPolicy));
-            Send(httpSenderId, new NHttp::TEvHttpProxy::TEvHttpOutgoingRequest(*httpRequest), /*flags=*/0, Cookie);
-            SINK_LOG_T("Sent " << metricsToSend.MetricsCount << " metrics with size of " << metricsToSend.Data.size() << " bytes to solomon");
-
-            *Metrics.SentMetrics += metricsToSend.MetricsCount;
-            Y_VALIDATE(InflightBuffer.emplace(Cookie++, TMetricsInflight { httpSenderId, metricsToSend.MetricsCount, bodySize }).second, "Duplicated inflight event");
-            EgressStats.Bytes += bodySize;
-            EgressStats.Chunks++;
-            return true;
+            AuthorizationPending = true;
+            AwaitCredentials(NActors::TActivationContext::ActorSystem(), SelfId(), CredentialsProvider->GetAuthInfoAsync(),
+                [this, metricsToSend = std::get<TMetricsToSend>(std::move(variant))](const auto& ready) {
+                    AuthorizationPending = false;
+                    TString authToken;
+                    try {
+                        authToken = ready.GetValue();
+                    } catch (const std::exception&) {
+                        FreeSpace += metricsToSend.Data.size();
+                        Callbacks->OnAsyncOutputError(OutputIndex, {TIssue("Cannot acquire monitoring credentials")},
+                            NYql::NDqProto::StatusIds::EXTERNAL_ERROR);
+                        return;
+                    }
+                    const auto httpRequest = BuildSolomonRequest(metricsToSend.Data, authToken);
+                    if (!httpRequest) {
+                        FreeSpace += metricsToSend.Data.size();
+                        return;
+                    }
+                    const size_t bodySize = metricsToSend.Data.size();
+                    const TActorId httpSenderId = Register(CreateHttpSenderActor(SelfId(), HttpProxyId, RetryPolicy));
+                    Send(httpSenderId, new NHttp::TEvHttpProxy::TEvHttpOutgoingRequest(*httpRequest), 0, Cookie);
+                    *Metrics.SentMetrics += metricsToSend.MetricsCount;
+                    Y_VALIDATE(InflightBuffer.emplace(Cookie++, TMetricsInflight {
+                        httpSenderId, metricsToSend.MetricsCount, bodySize }).second, "Duplicated inflight event");
+                    EgressStats.Bytes += bodySize;
+                    EgressStats.Chunks++;
+                    while (TryToSendNextBatch()) {}
+                });
+            return false;
         }
 
         if (std::holds_alternative<NDqProto::TCheckpoint>(variant)) {
@@ -536,7 +541,7 @@ private:
     }
 
     void CheckFinished() {
-        if (Finished && InflightBuffer.empty() && SendingBuffer.empty()) {
+        if (Finished && !AuthorizationPending && InflightBuffer.empty() && SendingBuffer.empty()) {
             Callbacks->OnAsyncOutputFinished(OutputIndex);
         }
     }
@@ -562,6 +567,7 @@ private:
 
     TMetricsEncoder UserMetricsEncoder;
     std::shared_ptr<NYdb::ICredentialsProvider> CredentialsProvider;
+    bool AuthorizationPending = false;
     ui64 Cookie = 0;
 };
 

@@ -274,6 +274,9 @@ public:
     NNodes::TMaybeNode<NNodes::TCoAtom> Value;
     NNodes::TMaybeNode<NNodes::TCoAtom> ValueParamName;
     NNodes::TMaybeNode<NNodes::TCoAtom> InheritPermissions;
+    NNodes::TMaybeNode<NNodes::TCoAtom> Type;             // empty for a value, or "YC_IAM_DELEGATION"
+    NNodes::TMaybeNode<NNodes::TCoAtom> ServiceAccountId; // YC_IAM_DELEGATION only
+    NNodes::TMaybeNode<NNodes::TCoAtom> CloudId;          // YC_IAM_DELEGATION only
     bool HasError = false;
 
 public:
@@ -281,12 +284,18 @@ public:
         NNodes::TMaybeNode<NNodes::TCoAtom>&& mode,
         NNodes::TMaybeNode<NNodes::TCoAtom>&& value,
         NNodes::TMaybeNode<NNodes::TCoAtom>&& valueParamName,
-        NNodes::TMaybeNode<NNodes::TCoAtom>&& inheritPermissions
+        NNodes::TMaybeNode<NNodes::TCoAtom>&& inheritPermissions,
+        NNodes::TMaybeNode<NNodes::TCoAtom>&& type = {},
+        NNodes::TMaybeNode<NNodes::TCoAtom>&& serviceAccountId = {},
+        NNodes::TMaybeNode<NNodes::TCoAtom>&& cloudId = {}
     )
         : Mode(std::move(mode))
         , Value(std::move(value))
         , ValueParamName(std::move(valueParamName))
         , InheritPermissions(std::move(inheritPermissions))
+        , Type(std::move(type))
+        , ServiceAccountId(std::move(serviceAccountId))
+        , CloudId(std::move(cloudId))
     {
     }
 

@@ -1,3 +1,4 @@
+#include <ydb/services/scheme_secret/secret_credentials.h>
 #include <ydb/library/yql/providers/yt/async_io/yql_yt_message_stream_source.h>
 #include "kqp_compute_actor.h"
 #include "kqp_compute_actor_impl.h"
@@ -198,12 +199,14 @@ NYql::NDq::IDqAsyncIoFactory::TPtr CreateKqpAsyncIoFactory(
     RegisterDqSourceKikimrLookupProviderFactories(*factory);
 
     if (federatedQuerySetup) {
+        const auto credentialsFactory = NSecret::CreateRefreshingSecretCredentialsFactoryOverFactory(
+            federatedQuerySetup->CredentialsFactory);
         auto s3HttpRetryPolicy = NYql::GetFqHTTPRetryPolicy();
-        s3ActorsFactory->RegisterS3ReadActorFactory(*factory, federatedQuerySetup->CredentialsFactory, federatedQuerySetup->HttpGateway, s3HttpRetryPolicy, federatedQuerySetup->S3ReadActorFactoryConfig, nullptr, federatedQuerySetup->S3GatewayConfig.GetAllowLocalFiles());
-        s3ActorsFactory->RegisterS3WriteActorFactory(*factory,  federatedQuerySetup->CredentialsFactory, federatedQuerySetup->HttpGateway, s3HttpRetryPolicy);
+        s3ActorsFactory->RegisterS3ReadActorFactory(*factory, credentialsFactory, federatedQuerySetup->HttpGateway, s3HttpRetryPolicy, federatedQuerySetup->S3ReadActorFactoryConfig, nullptr, federatedQuerySetup->S3GatewayConfig.GetAllowLocalFiles());
+        s3ActorsFactory->RegisterS3WriteActorFactory(*factory,  credentialsFactory, federatedQuerySetup->HttpGateway, s3HttpRetryPolicy);
 
         if (federatedQuerySetup->ConnectorClient) {
-            RegisterGenericProviderFactories(*factory, federatedQuerySetup->CredentialsFactory, federatedQuerySetup->ConnectorClient);
+            RegisterGenericProviderFactories(*factory, credentialsFactory, federatedQuerySetup->ConnectorClient);
         }
 
         // Register the runtime independently of compilation-time availability.
@@ -212,13 +215,13 @@ NYql::NDq::IDqAsyncIoFactory::TPtr CreateKqpAsyncIoFactory(
             *factory, [resources = federatedQuerySetup->YdbExternalResources](bool useTls) {
                 return *resources->GetDriver(useTls);
             },
-            federatedQuerySetup->CredentialsFactory);
+            credentialsFactory);
 
         static_assert(
             static_cast<ui32>(NYql::NDq::EEventSpaceSolomonProvider::ES_SOLOMON_PROVIDER) == static_cast<ui32>(NKikimr::TKikimrEvents::ES_SOLOMON_PROVIDER),
             "ES_SOLOMON_PROVIDER is out of sync with ydb/core/base/events.h");
-        NYql::NDq::RegisterDQSolomonReadActorFactory(*factory, federatedQuerySetup->CredentialsFactory);
-        NYql::NDq::RegisterDQSolomonWriteActorFactory(*factory, federatedQuerySetup->CredentialsFactory, counters->GetKqpCounters()->GetSubgroup("subsystem", "DqSinkTracker"), enableStreamingQueriesCounters);
+        NYql::NDq::RegisterDQSolomonReadActorFactory(*factory, credentialsFactory);
+        NYql::NDq::RegisterDQSolomonWriteActorFactory(*factory, credentialsFactory, counters->GetKqpCounters()->GetSubgroup("subsystem", "DqSinkTracker"), enableStreamingQueriesCounters);
 
         const auto& pqGatewayFactory = federatedQuerySetup->PqGatewayFactory;
         Y_VALIDATE(pqGatewayFactory, "Missing PQ gateway factory in federated query setup");
@@ -230,16 +233,16 @@ NYql::NDq::IDqAsyncIoFactory::TPtr CreateKqpAsyncIoFactory(
         NYql::NDq::RegisterDqPqReadActorFactory(
             *factory,
             *driver,
-            federatedQuerySetup->CredentialsFactory,
+            credentialsFactory,
             pqGateway,
             counters->GetKqpCounters()->GetSubgroup("subsystem", "DqSourceTracker"),
             {},
             enableStreamingQueriesCounters,
             NKikimr::AppData()->FeatureFlags.GetEnableStreamingQueryTopicAutopartitioning());
-        NYql::NDq::RegisterYtMessageStreamReadActorFactory(*factory, federatedQuerySetup->CredentialsFactory);
-        NYql::NDq::RegisterDqPqWriteActorFactory(*factory, *driver, federatedQuerySetup->CredentialsFactory, pqGateway, counters->GetKqpCounters()->GetSubgroup("subsystem", "DqSinkTracker"), enableStreamingQueriesCounters, NKikimr::AppData()->FeatureFlags.GetEnableStreamingQueriesPqSinkDeduplication());
+        NYql::NDq::RegisterYtMessageStreamReadActorFactory(*factory, credentialsFactory);
+        NYql::NDq::RegisterDqPqWriteActorFactory(*factory, *driver, credentialsFactory, pqGateway, counters->GetKqpCounters()->GetSubgroup("subsystem", "DqSinkTracker"), enableStreamingQueriesCounters, NKikimr::AppData()->FeatureFlags.GetEnableStreamingQueriesPqSinkDeduplication());
         NYql::NDq::RegisterDqPqInfoAggregationActorFactory(*factory);
-        NYql::NDq::RegisterDqPqControlPlaneActorFactory(*factory, *driver, federatedQuerySetup->CredentialsFactory, pqGateway);
+        NYql::NDq::RegisterDqPqControlPlaneActorFactory(*factory, *driver, credentialsFactory, pqGateway);
     }
 
     return factory;

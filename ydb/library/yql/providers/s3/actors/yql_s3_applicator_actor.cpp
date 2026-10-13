@@ -1,3 +1,4 @@
+#include <ydb/library/yql/providers/common/token_accessor/client/async_credentials.h>
 #include "yql_s3_actors_util.h"
 #include "yql_s3_applicator_actor.h"
 
@@ -266,7 +267,13 @@ public:
         MaybeFinish();
     }
 
+    void HandleCredentials(NActors::TEvents::TEvInvokeResult::TPtr& ev) {
+        try { ev->Get()->Process(NActors::TActivationContext::AsActorContext()); }
+        catch (const std::exception&) { Finish(true, "Cannot acquire S3 credentials"); }
+    }
+
     STRICT_STFUNC(StateFunc,
+        hFunc(NActors::TEvents::TEvInvokeResult, HandleCredentials);
         hFunc(TEvPrivate::TEvCommitMultipartUpload, Handle);
         hFunc(TEvPrivate::TEvListMultipartUploads, Handle);
         hFunc(TEvPrivate::TEvAbortMultipartUpload, Handle);
@@ -561,20 +568,22 @@ public:
         }
     }
 
-    TS3Credentials::TAuthInfo GetAuthInfo(const TString& token) {
+    NThreading::TFuture<TS3Credentials::TAuthInfo> GetAuthInfoAsync(const TString& token) {
         const auto secureToken = SecureParams.Value(token, TString{});
-        return ::NYql::GetAuthInfo(CredentialsFactory, secureToken);
+        return TS3Credentials(CredentialsFactory, secureToken).GetAuthInfoAsync();
     }
 
     void CommitMultipartUpload(TCompleteMultipartUpload::TPtr state) {
         LOG_D("CommitMultipartUpload BEGIN " << state->BuildUrl());
-        auto authInfo = GetAuthInfo(state->Token);
-        Gateway->Upload(state->BuildUrl(),
-            IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), "application/xml", authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
-            state->BuildMessage(),
-            std::bind(&TS3ApplicatorActor::OnCommitMultipartUpload, ActorSystem, SelfId(), state, std::placeholders::_1),
-            false,
-            RetryPolicy);
+        AwaitCredentials(ActorSystem, SelfId(), GetAuthInfoAsync(state->Token), [this, state](const auto& ready) {
+            const auto& authInfo = ready.GetValue();
+            Gateway->Upload(state->BuildUrl(),
+                IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), "application/xml", authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
+                state->BuildMessage(),
+                std::bind(&TS3ApplicatorActor::OnCommitMultipartUpload, ActorSystem, SelfId(), state, std::placeholders::_1),
+                false,
+                RetryPolicy);
+        });
     }
 
     static void OnCommitMultipartUpload(NActors::TActorSystem* actorSystem, NActors::TActorId selfId, TCompleteMultipartUpload::TPtr state, IHTTPGateway::TResult&& result) {
@@ -583,14 +592,16 @@ public:
 
     void ListMultipartUploads(TListMultipartUploads::TPtr state) {
         LOG_D("ListMultipartUploads BEGIN " << state->BuildUrl());
-        auto authInfo = GetAuthInfo(state->Token);
-        Gateway->Download(state->BuildUrl(),
-            IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
-            0U,
-            0U,
-            std::bind(&TS3ApplicatorActor::OnListMultipartUploads, ActorSystem, SelfId(), state, std::placeholders::_1),
-            {},
-            RetryPolicy);
+        AwaitCredentials(ActorSystem, SelfId(), GetAuthInfoAsync(state->Token), [this, state](const auto& ready) {
+            const auto& authInfo = ready.GetValue();
+            Gateway->Download(state->BuildUrl(),
+                IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
+                0U,
+                0U,
+                std::bind(&TS3ApplicatorActor::OnListMultipartUploads, ActorSystem, SelfId(), state, std::placeholders::_1),
+                {},
+                RetryPolicy);
+        });
     }
 
     static void OnListMultipartUploads(NActors::TActorSystem* actorSystem, NActors::TActorId selfId, TListMultipartUploads::TPtr state, IHTTPGateway::TResult&& result) {
@@ -599,11 +610,13 @@ public:
 
     void AbortMultipartUpload(TAbortMultipartUpload::TPtr state) {
         LOG_D("AbortMultipartUpload BEGIN " << state->BuildUrl());
-        auto authInfo = GetAuthInfo(state->Token);
-        Gateway->Delete(state->BuildUrl(),
-            IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), "application/xml", authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
-            std::bind(&TS3ApplicatorActor::OnAbortMultipartUpload, ActorSystem, SelfId(), state, std::placeholders::_1),
-            RetryPolicy);
+        AwaitCredentials(ActorSystem, SelfId(), GetAuthInfoAsync(state->Token), [this, state](const auto& ready) {
+            const auto& authInfo = ready.GetValue();
+            Gateway->Delete(state->BuildUrl(),
+                IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), "application/xml", authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
+                std::bind(&TS3ApplicatorActor::OnAbortMultipartUpload, ActorSystem, SelfId(), state, std::placeholders::_1),
+                RetryPolicy);
+        });
     }
 
     static void OnAbortMultipartUpload(NActors::TActorSystem* actorSystem, NActors::TActorId selfId, TAbortMultipartUpload::TPtr state, IHTTPGateway::TResult&& result) {
@@ -612,14 +625,16 @@ public:
 
     void ListParts(TListParts::TPtr state) {
         LOG_D("ListParts BEGIN " << state->BuildUrl());
-        auto authInfo = GetAuthInfo(state->Token);
-        Gateway->Download(state->BuildUrl(),
-            IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
-            0U,
-            0U,
-            std::bind(&TS3ApplicatorActor::OnListParts, ActorSystem, SelfId(), state, std::placeholders::_1),
-            {},
-            RetryPolicy);
+        AwaitCredentials(ActorSystem, SelfId(), GetAuthInfoAsync(state->Token), [this, state](const auto& ready) {
+            const auto& authInfo = ready.GetValue();
+            Gateway->Download(state->BuildUrl(),
+                IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
+                0U,
+                0U,
+                std::bind(&TS3ApplicatorActor::OnListParts, ActorSystem, SelfId(), state, std::placeholders::_1),
+                {},
+                RetryPolicy);
+        });
     }
 
     static void OnListParts(NActors::TActorSystem* actorSystem, NActors::TActorId selfId, TListParts::TPtr state, IHTTPGateway::TResult&& result) {

@@ -9,6 +9,7 @@ SRCS(
     kqp_compute_actor_creation_ut.cpp
     kqp_executer_stats_ut.cpp
     kqp_executer_ut.cpp
+    kqp_iam_delegation_secret_orchestrator_ut.cpp
     kqp_tasks_graph_ut.cpp
     max_tasks_graph_ut.cpp
 )
@@ -16,6 +17,9 @@ SRCS(
 PEERDIR(
     ydb/core/kqp/common
     ydb/core/kqp/ut/common
+    ydb/core/tx/iam_delegation
+    ydb/core/security/iam_delegation_lifecycle
+    ydb/services/scheme_secret
     yql/essentials/sql/pg_dummy
 )
 

@@ -68,6 +68,54 @@ private:
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationColdScans) {
+    Y_UNIT_TEST(DatabaseEnumerationRetriesColdPagesWithoutPreloadingRegistry) {
+        TTestContext ctx;
+        TPageReadEvidence evidence(ctx);
+        EnableSmallCompactions(ctx, {TSchema::Databases::TableId});
+        TSet<TString> expected;
+        for (ui32 index = 0; index < 257; ++index) {
+            const TString incarnation = "incarnation-" + ToString(index);
+            ctx.Call(RegisterRequest(DatabaseIdentity(incarnation,
+                "/Root/" + TString(200, 'p') + ToString(index), TString(200, 'd'))));
+            expected.insert(incarnation);
+        }
+        UNIT_ASSERT(evidence.CompactedCollections > 0);
+        ctx.Reboot();
+        evidence.TransactionFetches = 0;
+
+        auto request = ListDatabasesRequest(64);
+        TSet<TString> actual;
+        ui32 pages = 0;
+        ui64 firstPageFetches = 0;
+        TString previous;
+        for (;;) {
+            const auto response = ctx.Call(request);
+            UNIT_ASSERT(++pages <= 5);
+            if (pages == 1) {
+                firstPageFetches = evidence.TransactionFetches;
+            }
+            for (const auto& record : response.GetDatabases()) {
+                const auto& incarnation = record.GetIdentity().GetIncarnation();
+                UNIT_ASSERT(actual.insert(incarnation).second);
+                UNIT_ASSERT(previous.empty() || previous < incarnation);
+                previous = incarnation;
+                UNIT_ASSERT_VALUES_EQUAL(record.GetIdentity().GetDatabaseId(), TString(200, 'd'));
+            }
+            if (response.GetNextAfterIncarnation().empty()) {
+                UNIT_ASSERT_VALUES_EQUAL(response.DatabasesSize(), 1);
+                break;
+            }
+            UNIT_ASSERT_VALUES_EQUAL(response.DatabasesSize(), 64);
+            UNIT_ASSERT_VALUES_EQUAL(response.GetNextAfterIncarnation(), previous);
+            request.MutableListDatabases()->SetAfterIncarnation(previous);
+        }
+        UNIT_ASSERT(actual == expected);
+        UNIT_ASSERT_VALUES_EQUAL(pages, 5);
+        UNIT_ASSERT_C(evidence.TransactionFetches > firstPageFetches,
+            "A bounded database page must not preload the entire registry");
+        UNIT_ASSERT_C(evidence.TransactionFetches > 1, "Database enumeration must retry cold transaction reads");
+    }
+
     Y_UNIT_TEST(PaginationRetriesColdPagesWithoutDuplicatesOrShortNonfinalPages) {
         TTestContext ctx;
         TPageReadEvidence evidence(ctx);

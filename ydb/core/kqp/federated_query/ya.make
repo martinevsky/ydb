@@ -6,6 +6,7 @@ SRCS(
 )
 
 PEERDIR(
+    ydb/services/scheme_secret
     ydb/core/base
     ydb/core/fq/libs/credentials
     ydb/core/fq/libs/db_id_async_resolver_impl

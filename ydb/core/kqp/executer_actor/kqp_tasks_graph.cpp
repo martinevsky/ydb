@@ -1,3 +1,4 @@
+#include <ydb/services/scheme_secret/secret_credentials.h>
 #include "kqp_tasks_graph.h"
 #include "max_tasks_graph.h"
 
@@ -3998,7 +3999,13 @@ TString TKqpTasksGraph::ReplaceStructuredTokenReferences(const TString& token) c
     const auto parser = NYql::CreateStructuredTokenParser(token);
     auto builder = parser.ToBuilder();
     if (!parser.HasTransientToken()) {
+        const auto tokenReference = NYql::IsStructuredTokenJson(token)
+            ? NYql::ParseStructuredToken(token).GetFieldOrDefault("token_ref", "") : TString{};
         builder.ReplaceReferences(GetMeta().SecureParams);
+        if (const auto it = GetMeta().ReReadSecrets.find(tokenReference); it != GetMeta().ReReadSecrets.end()) {
+            return NSecret::KeepTokenSecretReference(builder.ToJson(), tokenReference, GetMeta().Database,
+                it->second, UserToken);
+        }
     } else if (UserToken && UserToken->GetSerializedToken()) {
         builder.SetTransientTokenAuth(UserToken->GetSerializedToken());
     }

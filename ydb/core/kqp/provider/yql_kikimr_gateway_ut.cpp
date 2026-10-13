@@ -325,6 +325,29 @@ TKikimrRunner GetKikimrRunnerWithStreamingQuerys() {
 
 
 Y_UNIT_TEST_SUITE(KikimrIcGateway) {
+    Y_UNIT_TEST(ExplainDelegationSecretWithoutIamConfiguration) {
+        NKikimrConfig::TFeatureFlags flags;
+        flags.SetEnableSchemaSecrets(true);
+        flags.SetEnableIamDelegationSecrets(true);
+        TKikimrRunner kikimr(NKqp::TKikimrSettings().SetWithSampleTables(false).SetFeatureFlags(flags));
+        auto queryClient = kikimr.GetQueryClient();
+        const TVector<TString> statements = {
+            R"(CREATE SECRET `/Root/explained` WITH (SOURCE = "YC_IAM_DELEGATION", SERVICE_ACCOUNT_ID = "sa-1");)",
+            R"(CREATE SECRET IF NOT EXISTS `/Root/explained` WITH (SOURCE = "YC_IAM_DELEGATION", SERVICE_ACCOUNT_ID = "sa-1", RESOURCE = "cloud-1");)",
+            R"(CREATE OR REPLACE SECRET `/Root/explained` WITH (SOURCE = "YC_IAM_DELEGATION", SERVICE_ACCOUNT_ID = "sa-2");)",
+            R"(ALTER SECRET `/Root/explained` WITH (SERVICE_ACCOUNT_ID = "sa-2");)",
+            R"(ALTER SECRET IF EXISTS `/Root/explained` WITH (RESOURCE = "cloud-2");)",
+        };
+        for (const auto& statement : statements) {
+            const auto result = queryClient.ExecuteQuery(statement, NYdb::NQuery::TTxControl::NoTx(),
+                NYdb::NQuery::TExecuteQuerySettings().ExecMode(NYdb::NQuery::EExecMode::Explain)).GetValueSync();
+            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), NYdb::EStatus::SUCCESS,
+                statement << ": " << result.GetIssues().ToString());
+        }
+        const auto described = kikimr.GetSchemeClient().DescribePath("/Root/explained").GetValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(described.GetStatus(), NYdb::EStatus::SCHEME_ERROR);
+    }
+
     Y_UNIT_TEST(TestListPath) {
         TKikimrRunner kikimr(NKqp::TKikimrSettings().SetWithSampleTables(false));
         CreateSampleTables(kikimr);

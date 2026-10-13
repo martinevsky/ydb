@@ -112,7 +112,7 @@ NActors::async<typename TResponseEv::TPtr> IamCallWithRetry(const TIamDelegation
     NActors::TActorId client, TStringBuf method, TFill fill, ENotFound notFound = ENotFound::IsError, TMonotonic deadline = TMonotonic::Max())
 {
     TBackoff backoff = IamCallBackoff(settings);
-    // the same request id for every attempt lets IAM deduplicate retries of one call
+    // Correlate attempts of one call; x-request-id does not provide remote idempotency.
     const TString requestId = CreateGuidAsString();
     for (;;) {
         CheckIamCallDeadline(deadline);

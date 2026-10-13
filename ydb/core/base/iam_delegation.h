@@ -6,6 +6,9 @@
 #include <ydb/public/api/protos/ydb_status_codes.pb.h>
 #include <yql/essentials/public/issue/yql_issue.h>
 
+#include <util/datetime/base.h>
+#include <util/digest/multi.h>
+#include <util/generic/hash.h>
 #include <util/generic/string.h>
 #include <util/string/builder.h>
 
@@ -44,6 +47,44 @@ struct TDelegationResult {
     }
 };
 
+// Persisted identity of an IAM grant. Recovery must use these values, even if the node's
+// current service identity changes. Transport endpoints and credentials remain node settings.
+struct TDelegationBinding {
+    TString ServiceAccountId;
+    TString CloudId;
+    TString ReferrerId;
+    TString ServiceId;
+    TString MicroserviceId;
+    TString ResourceType;
+    TString ReferrerType;
+    bool WithReferences = false;
+};
+
+enum class EDelegationOperationKind { Setup, Revoke };
+enum class EDelegationOperationOutcome { Unknown, Accepted, Succeeded, Failed };
+
+struct TDelegationOperationResult {
+    EDelegationOperationOutcome Outcome = EDelegationOperationOutcome::Unknown;
+    TString OperationId;
+    Ydb::StatusIds::StatusCode Status = Ydb::StatusIds::UNAVAILABLE;
+    NYql::TIssues Issues;
+};
+
+struct TTokenKey {
+    TString ServiceAccountId;
+    TString CloudId;
+    // Old callers may omit the service identity and use the node configuration. Durable
+    // delegation readers carry the complete persisted identity, which is part of the key.
+    TString ServiceId;
+    TString MicroserviceId;
+    TString ResourceType;
+
+    bool operator==(const TTokenKey&) const = default;
+
+    size_t Hash() const { return MultiHash(ServiceAccountId, CloudId, ServiceId, MicroserviceId, ResourceType); }
+    TString ToString() const { return TStringBuilder() << CloudId << "/" << ServiceAccountId; }
+};
+
 struct TEvIamDelegation {
     enum EEv {
         // delegation service
@@ -52,6 +93,11 @@ struct TEvIamDelegation {
         EvRevokeDelegation,
         EvRevokeDelegationResult,
 
+        EvGetToken,
+        EvGetTokenResult,
+        EvSubmitDelegationOperation,
+        EvPollDelegationOperation,
+        EvDelegationOperationResult,
         EvEnd
     };
 
@@ -91,6 +137,47 @@ struct TEvIamDelegation {
         {}
     };
 
+    struct TEvGetToken : NActors::TEventLocal<TEvGetToken, EvGetToken> {
+        TTokenKey Key;
+        explicit TEvGetToken(TTokenKey key) : Key(std::move(key)) {}
+    };
+
+    struct TEvGetTokenResult : NActors::TEventLocal<TEvGetTokenResult, EvGetTokenResult> {
+        TTokenKey Key;
+        TString Token;
+        TInstant ExpiresAt;
+        TInstant UsableUntil;
+        Ydb::StatusIds::StatusCode Status = Ydb::StatusIds::SUCCESS;
+        NYql::TIssues Issues;
+
+        bool IsSuccess() const { return Status == Ydb::StatusIds::SUCCESS; }
+    };
+
+    // A single submission. Unknown means the caller must retain the uncertain grant and
+    // cannot assume that another submission or a revocation is safe. RequestId is correlation
+    // metadata only; it does not provide remote idempotency.
+    struct TEvSubmitDelegationOperation : NActors::TEventLocal<TEvSubmitDelegationOperation, EvSubmitDelegationOperation> {
+        EDelegationOperationKind Kind;
+        TDelegationBinding Binding;
+        TString SubjectId;
+        TString RequestId;
+
+        TEvSubmitDelegationOperation(EDelegationOperationKind kind, TDelegationBinding binding,
+                TString subjectId = {}, TString requestId = {})
+            : Kind(kind), Binding(std::move(binding)), SubjectId(std::move(subjectId)), RequestId(std::move(requestId)) {}
+    };
+
+    // Polling never resubmits the mutation. A failed Get keeps Outcome=Unknown and the ID.
+    struct TEvPollDelegationOperation : NActors::TEventLocal<TEvPollDelegationOperation, EvPollDelegationOperation> {
+        TString OperationId;
+        explicit TEvPollDelegationOperation(TString operationId) : OperationId(std::move(operationId)) {}
+    };
+
+    struct TEvDelegationOperationResult : NActors::TEventLocal<TEvDelegationOperationResult, EvDelegationOperationResult> {
+        TDelegationOperationResult Result;
+        explicit TEvDelegationOperationResult(TDelegationOperationResult result) : Result(std::move(result)) {}
+    };
+
 };
 
 // Node-local service for privileged components performing SetupDelegation / RevokeDelegation.
@@ -98,4 +185,13 @@ inline NActors::TActorId MakeIamDelegationServiceId(ui32 nodeId = 0) {
     return NActors::TActorId(nodeId, "iam_dlg_srv");
 }
 
+// Node-local minting is available only to callers that already authorized access to the secret.
+inline NActors::TActorId MakeIamDelegatedTokenServiceId(ui32 nodeId = 0) {
+    return NActors::TActorId(nodeId, "iam_dlg_tok");
+}
 } // namespace NKikimr::NIamDelegation
+
+template <>
+struct THash<NKikimr::NIamDelegation::TTokenKey> {
+    size_t operator()(const NKikimr::NIamDelegation::TTokenKey& key) const { return key.Hash(); }
+};

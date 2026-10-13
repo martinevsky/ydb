@@ -1691,6 +1691,10 @@ bool TSchemeShard::CheckApplyIf(const NKikimrSchemeOp::TModifyScheme& scheme, TS
     const auto& conditions = scheme.GetApplyIf();
 
     for (const auto& item: conditions) {
+        if (item.HasPathOwnerId() && item.GetPathOwnerId() != TabletID()) {
+            errStr = "fail user constraint: ApplyIf section: path owner changed";
+            return false;
+        }
         if (item.HasPathId()) {
             TLocalPathId localPathId = item.GetPathId();
             const auto pathId = TPathId(TabletID(), localPathId);

@@ -32,6 +32,8 @@
 #include <ydb/core/kqp/federated_query/actors/pq_checkpoint_provider_integration/pq_checkpoint_provider_integration.h>
 #include <ydb/core/protos/auth.pb.h>
 #include <ydb/core/security/iam_delegation/iam_delegation_service.h>
+#include <ydb/core/security/iam_delegation/iam_delegated_token_service.h>
+#include <ydb/core/security/iam_delegation_lifecycle/worker.h>
 #include <ydb/core/security/iam_delegation/settings.h>
 #include <ydb/core/kqp/finalize_script_service/kqp_finalize_script_service.h>
 #include <ydb/core/kqp/gateway/behaviour/streaming_query/behaviour.h>
@@ -2407,32 +2409,38 @@ private:
     // IAM delegation secrets: the node-local delegation service (SetupDelegation/RevokeDelegation for
     // CREATE/ALTER/DROP SECRET) behind the system token service (the token of YDB's own service account).
     //
-    // Runs at bootstrap and on every config notification, so that turning the feature flag on takes effect
-    // at once: a service not running yet is started. Turning the flag off, or changing IamConfig, takes effect
-    // at the next start of the node: a running service is never stopped or restarted.
+    // Cleanup and reads survive disabling admission of new external secrets.
+    // Endpoint/provider changes take effect after node restart.
     void InitIamDelegationServices() {
-        if (!FeatureFlags.GetEnableIamDelegationSecrets()) {
+        const auto settings = NIamDelegation::TIamDelegationSettings::FromConfig(AppData()->IamConfig, AppData()->ReplicationConfig);
+        if (!FeatureFlags.GetEnableIamDelegationSecrets() && !settings.Config.GetDelegationTabletId()) {
+            return;
+        }
+        if (!AppData()->AuthConfig.GetTokenManager().GetEnable()) {
+            YDB_LOG_WARN("IAM services require AuthConfig.TokenManager");
             return;
         }
         auto* actorSystem = TActivationContext::ActorSystem();
-        const auto running = [actorSystem](const TActorId& serviceId) {
-            return bool(actorSystem->LookupLocalService(serviceId));
+        const auto start = [actorSystem](const TActorId& id, auto factory) {
+            if (!actorSystem->LookupLocalService(id)) {
+                actorSystem->RegisterLocalService(id, TActivationContext::Register(factory()));
+            }
         };
-        if (running(NIamDelegation::MakeIamDelegationServiceId())) {
-            return;
+        if (settings.ValidateForTokenService().empty()) {
+            start(NIamDelegation::MakeIamDelegatedTokenServiceId(), [&] {
+                return NIamDelegation::CreateIamDelegatedTokenService(settings);
+            });
         }
-        const auto settings = NIamDelegation::TIamDelegationSettings::FromConfig(AppData()->IamConfig, AppData()->ReplicationConfig);
-        if (const TString error = settings.ValidateForDelegation()) {
-            YDB_LOG_WARN("IAM delegation service is not started", {"reason", error});
-            return;
+        if (settings.ValidateForDelegation().empty()) {
+            start(NIamDelegation::MakeIamDelegationServiceId(), [&] {
+                return NIamDelegation::CreateIamDelegationService(settings);
+            });
+            if (settings.Config.GetDelegationTabletId()) {
+                start(NIamDelegation::MakeIamDelegationRecoveryWorkerId(), [&] {
+                    return NIamDelegation::CreateIamDelegationRecoveryWorker(settings.Config.GetDelegationTabletId());
+                });
+            }
         }
-        // Security initialization owns the token manager, including the node-specific factory.
-        if (!AppData()->AuthConfig.GetTokenManager().GetEnable()) {
-            YDB_LOG_WARN("IAM delegation service is not started", {"reason", "AuthConfig.TokenManager is disabled"});
-            return;
-        }
-        actorSystem->RegisterLocalService(NIamDelegation::MakeIamDelegationServiceId(),
-            TActivationContext::Register(NIamDelegation::CreateIamDelegationService(settings)));
     }
 
     void InitAccessServiceService() {

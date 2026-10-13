@@ -14,6 +14,7 @@ PEERDIR(
 YQL_LAST_ABI_VERSION()
 
 SRCS(
+    iam_delegated_token_actor_ut.cpp
     iam_delegation_actor_ut.cpp
     iam_delegation_ut.cpp
 )

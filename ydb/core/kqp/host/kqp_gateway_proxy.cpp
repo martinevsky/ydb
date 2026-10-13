@@ -3640,6 +3640,20 @@ public:
         }
     }
 
+    // Fills the user-provided part of IamDelegation (ServiceAccountId, CloudId) of an IAM delegation secret; its
+    // presence makes the request one about such a secret. ReferrerId is filled by the delegation orchestrator at execution.
+    static void FillSecretTypeSchemaOperation(const NYql::TSecretSettings& settings, NKikimrSchemeOp::TSecretSchemaOp& op) {
+        if (settings.Source == NYql::TSecretSettings::ESource::IamDelegation) {
+            auto& delegation = *op.MutableIamDelegation();
+            if (settings.ServiceAccountId) {
+                delegation.SetServiceAccountId(settings.ServiceAccountId);
+            }
+            if (settings.CloudId) {
+                delegation.SetCloudId(settings.CloudId);
+            }
+        }
+    }
+
     template<class TSecretSchemaOp>
     class TSecretSchemaModifier {
     public:
@@ -3654,6 +3668,19 @@ public:
                 return MakeErrorFuture<IKikimrGateway::TGenericResult>(
                     std::make_exception_ptr(yexception() << "Secrets are disabled. Please contact your system administrator to enable it")
                 );
+            }
+            if (settings.Source == NYql::TSecretSettings::ESource::IamDelegation) {
+                if (!SessionCtx_->Config().FeatureFlags.GetEnableIamDelegationSecrets()) {
+                    return MakeErrorFuture<IKikimrGateway::TGenericResult>(
+                        std::make_exception_ptr(yexception() << "IAM delegation secrets are disabled. Please contact your system administrator to enable it")
+                    );
+                }
+                if (!SessionCtx_->Query().PrepareOnly) {
+                    // the delegation is orchestrated by the scheme executer of the query service
+                    return MakeErrorFuture<IKikimrGateway::TGenericResult>(
+                        std::make_exception_ptr(yexception() << "IAM delegation secrets are supported only in the query service")
+                    );
+                }
             }
 
             try {
@@ -3758,10 +3785,13 @@ public:
         }
 
         void FillSchemaOperation(const NYql::TSecretSettings& settings, TSecretSchemaOp& op) const override {
-            if (!settings.ValueParamName.empty()) {
-                op.SetValueParamName(settings.ValueParamName);
-            } else {
-                op.SetValue(settings.Value);
+            FillSecretTypeSchemaOperation(settings, op);
+            if (settings.Source == NYql::TSecretSettings::ESource::Value) {
+                if (!settings.ValueParamName.empty()) {
+                    op.SetValueParamName(settings.ValueParamName);
+                } else {
+                    op.SetValue(settings.Value);
+                }
             }
             if (settings.InheritPermissions.has_value()) {
                 op.SetInheritPermissions(*settings.InheritPermissions);
@@ -3795,10 +3825,13 @@ public:
         }
 
         void FillSchemaOperation(const NYql::TSecretSettings& settings, TSecretSchemaOp& op) const override {
-            if (!settings.ValueParamName.empty()) {
-                op.SetValueParamName(settings.ValueParamName);
-            } else {
-                op.SetValue(settings.Value);
+            FillSecretTypeSchemaOperation(settings, op);
+            if (settings.Source == NYql::TSecretSettings::ESource::Value) {
+                if (!settings.ValueParamName.empty()) {
+                    op.SetValueParamName(settings.ValueParamName);
+                } else {
+                    op.SetValue(settings.Value);
+                }
             }
         }
 

@@ -8,6 +8,7 @@ SRCS(
 )
 
 PEERDIR(
+    ydb/library/actors/core
     ydb/library/yql/providers/common/token_accessor/grpc
     ydb/public/sdk/cpp/src/client/types/credentials
     ydb/public/sdk/cpp/src/client/types/credentials/login

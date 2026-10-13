@@ -23,6 +23,7 @@ struct TS3Credentials {
     TS3Credentials(IStructuredTokenCredentialsFactory::TPtr credentialsFactory, const TString& structuredTokenJson, bool addBearerToToken = false);
 
     TAuthInfo GetAuthInfo() const;
+    NThreading::TFuture<TAuthInfo> GetAuthInfoAsync() const;
 
     bool operator<(const TS3Credentials& other) const;
     friend IOutputStream& operator<<(IOutputStream& stream, const TS3Credentials& credentials);

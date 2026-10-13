@@ -4,10 +4,9 @@ This tablet owns the durable inventory and revocation outbox for IAM delegation
 secrets. It stores identities and operation state, never user tokens, IAM tokens
 or service account keys. It is independent of SchemeShard and tenant teardown.
 
-This first change provides the storage protocol, tablet factory and recovery
-tests. IAM callers, KQP orchestration, secret readers and the CMS export RPC are
-separate integration changes. The tablet does not enable delegation secrets on
-its own.
+The storage protocol is used by the KQP secret coordinator, node recovery
+worker, secret reader and administrative CMS inventory RPC. Registering the
+tablet factory does not enable delegation secrets on its own.
 
 ## Placement and identity
 
@@ -15,8 +14,10 @@ The tablet uses `TTabletTypes::IamDelegation` and the normal Hive/local tablet
 factory. Provision it under a service-owned Hive owner, with storage channels
 that survive the managed tenants. A tenant must not own this tablet's lifetime.
 There is no automatic per-database provisioning or SchemeShard lifecycle hook.
-Service discovery and the deployment configuration belong to the integration
-change; merely registering a factory does not create a tablet.
+Set `IamConfig.DelegationTabletId` to the provisioned tablet ID on nodes that
+coordinate secrets or run recovery. This configuration does not create a tablet.
+Schema objects retain that ID, so changing the configuration is not a migration
+of existing secrets or their outstanding cleanup work.
 
 Register each database before creating an intent. Its incarnation identifies one
 immutable database object: the caller must derive it from the full domain root
@@ -55,8 +56,10 @@ mechanism.
 | `SetSetupResult` | Record an unknown or definitive setup outcome. |
 | `Promote` | Activate a successful setup and atomically queue its predecessor. |
 | `DropSecret` | Retire a secret or an unbound CREATE intent. |
+| `RetirePending` | Release only the pending slot, retaining any unresolved setup in inventory. |
 | `GetSecret`, `GetDelegation` | Read authoritative lifecycle state. |
-| `ListInventory` | Enumerate retained nonterminal delegation identities. |
+| `ListDatabases` | Discover registered database incarnations for recovery, including known empty databases. |
+| `ListInventory` | Enumerate unfinished delegations and recovery entries for unactivated schema shells. |
 | `ClaimRevocations` | Lease a bounded batch of eligible cleanup work. |
 | `FinishRevocation` | Acknowledge success or schedule a retry with a claim token. |
 
@@ -84,17 +87,35 @@ failure with no IAM side effect can be cancelled. Terminal records retain
 identity/idempotency information; this initial implementation has no garbage
 collection policy that could allow stale work to recreate a referrer.
 
+`RetirePending` checks the immutable secret identity and both secret and
+delegation revisions. It preserves the current binding and releases the pending
+slot in the same transaction that retains its cleanup responsibility. An
+unresolved retired setup remains `WAITING_SETUP` even after another ALTER is
+staged or promoted. A late successful outcome queues only the retired binding;
+a late failure cannot clear a newer pending operation. Exact retirement request
+replay is safe across restarts and later lifecycle changes; a changed replay is
+rejected. Any caller policy that delays another ALTER is separate from the
+remote setup outcome: elapsed time alone never authorizes revocation.
+
 Claim tokens include the tablet generation and attempt number. A delayed
 acknowledgement must not release or complete a newer claim. Due times and lease
 deadlines are calculated from the tablet's clock. A worker reports an IAM revoke
 as successful only after its operation completes or IAM authoritatively reports
 that the delegation is absent. A failed revoke remains durable cleanup work.
 
-## Inventory and future CMS export
+## Inventory and CMS export
 
 Inventory includes active, pending, unknown-setup and revoking identities,
 including those whose secrets have disappeared. It is not reconstructed by
 walking schema objects or by deduplicating service accounts.
+
+Recovery workers discover databases through bounded `ListDatabases` scans. The
+registry retains immutable incarnations and aliases, including for databases
+whose inventories are empty. Its lexicographic cursor is exclusive, and
+nonfinal pages are full. This discovery API is not an immutable snapshot:
+workers repeat scans from the beginning to discover concurrent registrations
+behind a previous cursor. Use `ListInventory` with its own revision-bound
+pagination for each discovered incarnation. Both APIs accept page sizes 1..1000.
 
 The initial internal API uses optimistic pagination: continuation requests carry
 the inventory revision from the first page. A mutation invalidates that revision
@@ -104,13 +125,18 @@ for arbitrary concurrent mutation. Nonfinal pages must be full so that ydbcp's
 existing short-page termination rule cannot lose records. The internal limit is
 1,000 records per page; unsupported sizes are rejected rather than clamped.
 Terminal records remain available through `GetDelegation` and idempotent replay,
-but are removed from the inventory index.
+but are removed from the inventory index, except the creating delegation of a
+live secret without an active binding. That single recovery entry keeps a failed
+or retired CREATE shell discoverable until `DropSecret` or replacement promotion.
+`Stage` retains its first transaction timestamp and optional initiating subject ID;
+recovery never requires storing the initiating authentication bearer.
 
-The follow-up public RPC is intended to be
+The public RPC is
 `Ydb.Cms.V1.CmsService.ListDatabaseIamDelegations`, with the normal CMS `path`
 argument, YDB operation/result envelope, and opaque continuation tokens bound to
-the database incarnation, revision and cursor. It will
-use the surviving administrative endpoint and enforce administrative permissions.
+the database incarnation, revision and cursor. It uses the surviving
+administrative endpoint and enforces administrative permissions. Supply the
+incarnation explicitly after database deletion or when a path has been reused.
 Exported `cloud_id`, `service_account_id` and complete referrer/binding fields
 allow ydbcp to construct its existing IAM revoke request shape. Secret referrers
 have type `ydb.secret`; ydbcp's current database revoke helper hardcodes
@@ -131,3 +157,7 @@ Run the real tablet storage and reboot tests with:
 
 The tests exercise transaction boundaries and recovered state, using the actor
 runtime clock for lease expiry. No live IAM service is used.
+Seeded recovery tests vary late outcomes, replay ordering, tablet restarts,
+database identity reuse and worker takeover against an independent inventory
+model. Storage-reopen tests retain an abandoned pending setup and its replay
+receipt across entirely new actor runtimes.

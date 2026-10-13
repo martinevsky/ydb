@@ -13,6 +13,7 @@ SRCS(
     kqp_pq_topic_resolver.cpp
     kqp_scan_executer.cpp
     kqp_scheme_executer.cpp
+    kqp_iam_delegation_secret_orchestrator.cpp
     kqp_streaming_helper.cpp
     kqp_table_resolver.cpp
     kqp_tasks_graph.cpp
@@ -22,6 +23,7 @@ SRCS(
 )
 
 PEERDIR(
+    ydb/services/scheme_secret
     library/cpp/containers/absl
     library/cpp/html/pcdata
     library/cpp/protobuf/interop
@@ -41,6 +43,9 @@ PEERDIR(
     ydb/core/kqp/topics
     ydb/core/kqp/tracing
     ydb/core/protos
+    ydb/core/security/iam_delegation
+    ydb/core/security/iam_delegation_lifecycle
+    ydb/library/actors/async
     ydb/core/sys_view/common
     ydb/core/tx/long_tx_service/public
     ydb/core/ydb_convert

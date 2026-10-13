@@ -1,0 +1,346 @@
+#include "iam_delegated_token_service.h"
+#include "iam_actor_base.h"
+
+#include <ydb/core/base/appdata.h>
+#include <ydb/core/base/counters.h>
+#include <ydb/library/actors/async/event.h>
+#include <ydb/library/actors/async/sleep.h>
+#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/library/ycloud/api/iam_token_service.h>
+#include <ydb/library/ycloud/impl/iam_token_service.h>
+
+#define YDB_LOG_THIS_FILE_COMPONENT NKikimrServices::IAM_DELEGATION
+
+namespace NKikimr::NIamDelegation {
+
+using namespace NActors;
+
+class TIamDelegatedTokenService : public TIamActorBase<TIamDelegatedTokenService> {
+private:
+    using TBase = TIamActorBase<TIamDelegatedTokenService>;
+
+    struct TMintResult {
+        TString Token;
+        TInstant ExpiresAt;
+        Ydb::StatusIds::StatusCode Status = Ydb::StatusIds::SUCCESS;
+        grpc::StatusCode GrpcCode = grpc::StatusCode::OK; // of the last IAM answer, when there was one
+        TString Error;
+
+        bool IsSuccess() const {
+            return Status == Ydb::StatusIds::SUCCESS;
+        }
+    };
+
+    struct TEntry {
+        // current token (empty when none could be obtained yet, the last one expired or IAM refused a new one)
+        TString Token;
+        TInstant ExpiresAt;
+        TInstant UsableUntil; // ExpiresAt minus the minimum served lifetime: after it the token counts as absent
+        TInstant NextRefreshAt;
+        // last failure, reported when there is no token
+        Ydb::StatusIds::StatusCode LastStatus = Ydb::StatusIds::SUCCESS;
+        TString LastError;
+        ui32 ConsecutiveFailures = 0;
+        // incremented after every mint attempt; waiters compare it to detect a new result
+        ui64 Generation = 0;
+        TAsyncEvent Updated; // a mint attempt finished
+        bool LoopRunning = false;
+        TInstant LastUse;
+
+        bool HasValidToken(TInstant now) const {
+            return !Token.empty() && now < UsableUntil;
+        }
+    };
+
+public:
+    static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
+        return NKikimrServices::TActivity::IAM_DELEGATED_TOKEN_SERVICE_ACTOR;
+    }
+
+    TIamDelegatedTokenService(const TIamDelegationSettings& settings)
+        : TBase(settings)
+    {}
+
+    void Bootstrap() {
+        Become(&TThis::StateWork);
+        Send(MakeTokenManagerID(), new TEvTokenManager::TEvSubscribeUpdateToken(Settings.Config.GetSystemTokenName()),
+            IEventHandle::FlagTrackDelivery);
+
+        // sensors of the node: mints of delegated tokens and the keys currently cached
+        const auto counters = GetServiceCounters(AppData()->Counters, "iam_delegation")->GetSubgroup("component", "token_service");
+        Mints = counters->GetCounter("Mints", true);
+        MintErrors = counters->GetCounter("MintErrors", true);
+        CachedKeys = counters->GetCounter("CachedKeys", false);
+
+        NCloud::TIamTokenServiceSettings clientSettings(Settings.Config.GetTokenServiceEndpoint(), "ydb-iam-delegation");
+        clientSettings.EnableSsl = Settings.Config.GetEnableSsl();
+        clientSettings.RequestTimeoutMs = Settings.RequestTimeout.MilliSeconds();
+        IamTokenClient = Register(NCloud::CreateIamTokenService(clientSettings));
+
+        YDB_LOG_INFO("Delegated token service started",
+            {"tokenServiceEndpoint", Settings.Config.GetTokenServiceEndpoint()},
+            {"minServedLifetime", Settings.MinServedLifetime},
+            {"maxCacheLifetime", Settings.MaxTokenCacheLifetime}
+        );
+    }
+
+    STRICT_STFUNC(StateWork,
+        hFunc(TEvIamDelegation::TEvGetToken, HandleGetToken);
+        // late replies after a timeout
+        IgnoreFunc(NCloud::TEvIamTokenService::TEvCreateForServiceResponse);
+        hFunc(TEvTokenManager::TEvUpdateToken, HandleToken);
+        hFunc(TEvents::TEvUndelivered, HandleUndelivered);
+        cFunc(TEvents::TEvPoison::EventType, BeginShutdown);
+    )
+
+    STFUNC(StateDying) {
+        Y_UNUSED(ev); // PassAway may be waiting for coroutine tasks
+    }
+
+private:
+    void HandleToken(TEvTokenManager::TEvUpdateToken::TPtr& ev) {
+        const auto& update = *ev->Get();
+        if (update.Id != Settings.Config.GetSystemTokenName()) {
+            return;
+        }
+        Credentials.Status = update.Status;
+        Credentials.Token = update.Status.Code == TEvTokenManager::TStatus::ECode::SUCCESS ? update.Token : TString();
+        Credentials.Updated.NotifyAll();
+    }
+
+    void HandleUndelivered(TEvents::TEvUndelivered::TPtr& ev) {
+        if (ev->Get()->SourceType == TEvTokenManager::TEvSubscribeUpdateToken::EventType) {
+            Credentials.Token.clear();
+            Credentials.Status = {TEvTokenManager::TStatus::ECode::ERROR, "token manager is not available"};
+            Credentials.Updated.NotifyAll();
+        }
+    }
+
+    void BeginShutdown() {
+        Become(&TThis::StateDying);
+        Send(IamTokenClient, new TEvents::TEvPoison());
+        *CachedKeys = 0; // the entries die with the actor
+        PassAway();
+    }
+
+    TEntry* FindEntry(const TTokenKey& key) {
+        auto it = Entries.find(key);
+        return it == Entries.end() ? nullptr : &it->second;
+    }
+
+    TEntry& EnsureEntry(const TTokenKey& key) {
+        TEntry* entry = FindEntry(key);
+        if (!entry) {
+            entry = &Entries[key]; // constructed in place: TEntry is not movable
+            *CachedKeys = Entries.size();
+        }
+        entry->LastUse = TActivationContext::Now();
+        if (!entry->LoopRunning) {
+            entry->LoopRunning = true;
+            StartRefresh(key);
+        }
+        return *entry;
+    }
+
+    // top-level coroutine: one per request
+    void HandleGetToken(TEvIamDelegation::TEvGetToken::TPtr ev) {
+        const TActorId replyTo = ev->Sender;
+        const ui64 cookie = ev->Cookie;
+        const TTokenKey key = ev->Get()->Key;
+        ev.Reset();
+
+        TEntry& entry = EnsureEntry(key);
+        if (!entry.HasValidToken(TActivationContext::Now())) {
+            // Wait for the result of the next mint attempt of the refresh loop. A request that arrives while the
+            // loop sleeps between failed attempts waits out that backoff (1 s growing to 1 min) too: it is
+            // answered by the next attempt, not by the failure the loop already knows. This keeps one attempt
+            // per backoff period however many requests arrive, at the price of a slower first answer.
+            co_await WithTimeout(MintAttemptTimeout(), &TThis::WaitForNewResult, this, key, entry.Generation + 1);
+        }
+
+        auto result = MakeHolder<TEvIamDelegation::TEvGetTokenResult>();
+        result->Key = key;
+        if (TEntry* current = FindEntry(key); current && current->HasValidToken(TActivationContext::Now())) {
+            result->Token = current->Token;
+            result->ExpiresAt = current->ExpiresAt;
+            result->UsableUntil = current->UsableUntil;
+        } else if (current && current->LastStatus != Ydb::StatusIds::SUCCESS) {
+            result->Status = current->LastStatus;
+            result->Issues.AddIssue(current->LastError);
+        } else {
+            result->Status = Ydb::StatusIds::TIMEOUT;
+            result->Issues.AddIssue(TStringBuilder() << "timeout while obtaining the IAM token for " << key.ToString());
+        }
+        Send(replyTo, result.Release(), 0, cookie);
+    }
+
+    // Include an already-running refresh loop's maximum error backoff, every credential/RPC
+    // wait and the maximum retry delay. This bound must not sample randomized backoffs.
+    TDuration MintAttemptTimeout() const {
+        return TDuration::Seconds(75) + (Settings.RequestTimeout * 2 + TDuration::Seconds(14))
+            * Max<ui32>(Settings.MaxRetries, 1) + TDuration::Seconds(1);
+    }
+
+    void StartRefresh(TTokenKey key) {
+        co_await RefreshLoop(std::move(key));
+    }
+
+    async<void> WaitForNewResult(TTokenKey key, ui64 targetGeneration) {
+        for (;;) {
+            TEntry* entry = FindEntry(key);
+            if (!entry || entry->Generation >= targetGeneration) {
+                co_return;
+            }
+            if (!co_await entry->Updated.Wait()) {
+                co_return; // the entry was destroyed
+            }
+        }
+    }
+
+    // Background refresh loop of one key, a task of the actor: mints, publishes the result to the
+    // requests parked on the entry, sleeps until the next refresh, and ends when the entry is dropped.
+    async<void> RefreshLoop(TTokenKey key) {
+        Y_DEFER {
+            if (TEntry* entry = FindEntry(key)) {
+                entry->LoopRunning = false;
+            }
+        };
+
+        TBackoff errorBackoff(TDuration::Seconds(1), TDuration::Minutes(1));
+        for (;;) {
+            if (!FindEntry(key)) {
+                co_return;
+            }
+
+            const TMintResult mint = co_await Mint(key);
+
+            TEntry* entry = FindEntry(key);
+            if (!entry) {
+                co_return;
+            }
+            const TInstant now = TActivationContext::Now();
+            TDuration delay;
+            ++entry->Generation;
+            if (mint.IsSuccess()) {
+                Mints->Inc();
+                entry->Token = mint.Token;
+                entry->ExpiresAt = mint.ExpiresAt;
+                const TDuration lifetime = entry->ExpiresAt - now;
+                entry->UsableUntil = entry->ExpiresAt - Settings.MinServedLifetime;
+                entry->LastStatus = Ydb::StatusIds::SUCCESS;
+                entry->LastError.clear();
+                entry->ConsecutiveFailures = 0;
+                errorBackoff.Reset();
+                // refresh at half of the lifetime, and at least every MaxTokenCacheLifetime
+                const TInstant refreshAt = Min(now + Min(lifetime / 2, Settings.MaxTokenCacheLifetime), entry->UsableUntil);
+                // A near-boundary token must not cause a busy refresh loop. It may become absent
+                // while IAM is issuing tokens this short, but it is never served past UsableUntil.
+                entry->NextRefreshAt = Max(refreshAt, now + TDuration::Seconds(1));
+                delay = entry->NextRefreshAt - now;
+                YDB_LOG_DEBUG("Token obtained",
+                    {"key", key.ToString()},
+                    {"expiresAt", entry->ExpiresAt},
+                    {"nextRefreshAt", entry->NextRefreshAt}
+                );
+            } else {
+                MintErrors->Inc();
+                ++entry->ConsecutiveFailures;
+                entry->LastStatus = mint.Status;
+                entry->LastError = mint.Error;
+                if (!entry->Token.empty() && (now >= entry->UsableUntil || mint.GrpcCode == grpc::StatusCode::PERMISSION_DENIED || mint.GrpcCode == grpc::StatusCode::NOT_FOUND)) {
+                    // expired, or IAM refuses tokens for the key (the delegation was revoked): stop serving it.
+                    // A rejected system token (UNAUTHENTICATED) is a problem of this node, not of the delegation:
+                    // the cached token stays valid and is served while the loop retries.
+                    entry->Token.clear();
+                }
+                delay = errorBackoff.Next();
+                if (!entry->Token.empty() && now < entry->UsableUntil) {
+                    // keep serving the cached token, but retry before it stops being servable
+                    delay = Min(delay, Max((entry->UsableUntil - now) / 2, TDuration::Seconds(1)));
+                }
+                YDB_LOG_WARN("Cannot obtain token",
+                    {"key", key.ToString()},
+                    {"status", mint.Status},
+                    {"error", mint.Error},
+                    {"failures", entry->ConsecutiveFailures},
+                    {"retryIn", delay}
+                );
+            }
+            entry->Updated.NotifyAll();
+
+            co_await AsyncSleepFor(delay);
+
+            entry = FindEntry(key);
+            if (!entry) {
+                co_return;
+            }
+            if (TActivationContext::Now() - entry->LastUse >= Settings.IdleKeyTtl && !entry->Updated.HasAwaiters()) {
+                // a request parked on the entry keeps it: it is answered by the next attempt, not by an eviction
+                YDB_LOG_DEBUG("Dropping idle token entry", {"key", key.ToString()});
+                Entries.erase(key);
+                *CachedKeys = Entries.size();
+                co_return;
+            }
+        }
+    }
+
+    async<TMintResult> Mint(TTokenKey key) {
+        TMintResult result;
+        try {
+            auto response = co_await CallWithRetry<NCloud::TEvIamTokenService::TEvCreateForServiceRequest, NCloud::TEvIamTokenService::TEvCreateForServiceResponse>(
+                IamTokenClient, "IamTokenService.CreateForService",
+                [&](yandex::cloud::priv::iam::v1::CreateIamTokenForServiceRequest& request) {
+                    request.set_service_id(key.ServiceId.empty() ? Settings.Config.GetServiceId() : key.ServiceId);
+                    request.set_microservice_id(key.MicroserviceId.empty() ? Settings.Config.GetMicroserviceId() : key.MicroserviceId);
+                    request.set_resource_id(key.CloudId);
+                    request.set_resource_type(key.ResourceType.empty() ? Settings.Config.GetResourceType() : key.ResourceType);
+                    request.set_target_service_account_id(key.ServiceAccountId);
+                });
+            const auto& proto = response->Get()->Response;
+            result.Token = proto.iam_token();
+            if (result.Token.empty()) {
+                result.Status = Ydb::StatusIds::INTERNAL_ERROR;
+                result.Error = "IamTokenService returned an empty token";
+                co_return result;
+            }
+            if (!proto.has_expires_at() || proto.expires_at().seconds() <= 0) {
+                // IAM always says when a token expires; a token without that is not served, since nothing could
+                // tell when it stops being valid
+                result.Token.clear();
+                result.Status = Ydb::StatusIds::INTERNAL_ERROR;
+                result.Error = "IamTokenService returned a token without expires_at";
+                co_return result;
+            }
+            result.ExpiresAt = TInstant::Seconds(proto.expires_at().seconds());
+            if (result.ExpiresAt <= TActivationContext::Now() + Settings.MinServedLifetime) {
+                result.Token.clear();
+                result.Status = Ydb::StatusIds::INTERNAL_ERROR;
+                result.Error = "IamTokenService returned a token with at most five minutes remaining";
+            }
+        } catch (const TIamCallError& e) {
+            result.Status = e.Status;
+            result.GrpcCode = e.GrpcCode;
+            result.Error = e.what();
+        } catch (const std::exception& e) {
+            result.Status = Ydb::StatusIds::INTERNAL_ERROR;
+            result.Error = TStringBuilder() << "unexpected exception: " << e.what();
+        }
+        co_return result;
+    }
+
+private:
+    TActorId IamTokenClient;
+    // The entries are address-stable for their whole life (THashMap keeps every value in its own node and
+    // only relinks the nodes on rehash): the requests parked on TEntry::Updated and the refresh loops hold
+    // pointers into them across suspensions.
+    THashMap<TTokenKey, TEntry> Entries;
+    ::NMonitoring::TDynamicCounters::TCounterPtr Mints;
+    ::NMonitoring::TDynamicCounters::TCounterPtr MintErrors;
+    ::NMonitoring::TDynamicCounters::TCounterPtr CachedKeys;
+};
+
+IActor* CreateIamDelegatedTokenService(const TIamDelegationSettings& settings) {
+    return new TIamDelegatedTokenService(settings);
+}
+
+} // namespace NKikimr::NIamDelegation

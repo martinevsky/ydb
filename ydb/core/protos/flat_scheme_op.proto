@@ -1905,6 +1905,8 @@ message TApplyIf {
     optional uint64 LockedTxId = 3;
     optional bool CheckEntityVersion = 4 [default = false];
     repeated EPathType PathTypes = 5;
+    // Fence a local PathId against database/SchemeShard replacement.
+    optional uint64 PathOwnerId = 6;
 }
 
 message TUpgradeSubDomain {
@@ -2640,10 +2642,30 @@ message TIncrementalRestoreLockTargets {
     optional uint64 RestoreOpId = 3;
 }
 
+// Input parameters of SOURCE = "YC_IAM_DELEGATION". These are resolved by the
+// KQP coordinator and are never stored in the SchemeShard secret description.
+message TIamDelegation {
+    optional string ServiceAccountId = 1;
+    optional string CloudId = 2;
+    optional string ReferrerId = 3;
+}
+
+// Immutable locator of the independent tablet that owns the delegation lifecycle.
+// The create operation binds this reference to the full schema PathId/CreateTxId.
+message TIamDelegationSecretReference {
+    optional uint64 TabletId = 1;
+    optional string DatabaseIncarnation = 2;
+    optional string CreateOperationId = 3;
+}
+
 message TSecretDescription {
     optional string Name = 1;
-    optional string Value = 2 [(Ydb.sensitive) = true]; // original, unencrypted value
+    oneof Source {
+        string Value = 2 [(Ydb.sensitive) = true]; // original, unencrypted value
+        TIamDelegationSecretReference IamDelegation = 5;
+    }
     optional uint64 Version = 3;
+    reserved 4, 6, 7; // previous source discriminator and mutable delegation metadata
 }
 
 message TSecretSchemaOp {
@@ -2654,6 +2676,13 @@ message TSecretSchemaOp {
     // However, this field is supposed to be resolved at KQP to the actual value and be cleared.
     // Schemeshard always uses secret's value from the Value field and asserts that the ValueParamName field is empty.
     optional string ValueParamName = 4;
+    reserved 5, 7; // previous source discriminator and SchemeShard lifecycle operation
+    // Query input, consumed and cleared by the coordinator before sending to SchemeShard.
+    optional TIamDelegation IamDelegation = 6;
+    // The coordinator supplies this immutable reference when creating the schema shell.
+    optional TIamDelegationSecretReference IamDelegationReference = 8;
+    // The coordinator fences CREATE against database path reuse after staging.
+    optional NKikimrProto.TPathID ExpectedDatabaseDomainKey = 9;
 }
 
 message TStreamingQueryProperties {

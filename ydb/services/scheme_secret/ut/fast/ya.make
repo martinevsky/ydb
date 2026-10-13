@@ -11,11 +11,15 @@ PEERDIR(
     ydb/services/scheme_secret
     ydb/services/scheme_secret/ut/common
     ydb/core/kqp/ut/common
+    ydb/core/tx/iam_delegation
+    ydb/core/testlib/default
     yql/essentials/sql/pg_dummy
 )
 
 SRCS(
     service_ut.cpp
+    iam_delegation_reader_ut.cpp
+    secret_credentials_ut.cpp
 )
 
 YQL_LAST_ABI_VERSION()

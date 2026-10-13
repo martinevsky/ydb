@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ydb/services/scheme_secret/resolver.h>
+#include <ydb/services/scheme_secret/iam_delegation_reader.h>
 
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
@@ -91,19 +92,23 @@ private:
     struct TVersionedSecret {
         ui64 SecretVersion = 0;
         ui64 PathId = 0;
+        ui64 PathOwnerId = 0;
         TString Name;
         TString Value;
+        NKqp::TEvDescribeSecretsResponse::TSecretReference Reference;
+        TInstant UsableUntil;
     };
 
     struct TResponseContext {
         using TIncomingOrderId = ui64;
         THashMultiMap<TString, TIncomingOrderId> Secrets;
         NThreading::TPromise<NKqp::TEvDescribeSecretsResponse::TDescription> Result;
-        size_t FilledSecretsCnt = 0;
+        THashMap<TString, TVersionedSecret> ResolvedSecrets;
     };
 
     struct TRequestContext {
         THolder<TEvResolveSecret> Request;
+        THashMap<TString, NKqp::TEvDescribeSecretsResponse::TSecretReference> ExternalReferences;
         // SchemeCache support batch requests, so there's a single retry state for the whole batch
         TRetryPolicy::IRetryState::TPtr SchemeCacheRetryState;
         // SchemeShard does not support batch requests, so there's a separate retry state for each secret
@@ -118,6 +123,7 @@ private:
 private:
     STRICT_STFUNC(StateWait,
         hFunc(TEvResolveSecret, HandleIncomingRequest);
+        hFunc(TEvIamDelegationSecretReadResult, HandleExternalSecret);
         hFunc(TEvResolveSecretSchemeCacheRetry, HandleIncomingSchemeCacheRetryRequest);
         hFunc(TEvResolveSecretSchemeShardRetry, HandleIncomingSchemeShardRetryRequest);
         hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, HandleSchemeCacheResponse);
@@ -128,6 +134,7 @@ private:
     )
 
     void HandleIncomingRequest(TEvResolveSecret::TPtr& ev);
+    void HandleExternalSecret(TEvIamDelegationSecretReadResult::TPtr& ev);
     void HandleIncomingSchemeCacheRetryRequest(TEvResolveSecretSchemeCacheRetry::TPtr& ev);
     void HandleIncomingSchemeShardRetryRequest(TEvResolveSecretSchemeShardRetry::TPtr& ev);
     void HandleSchemeCacheResponse(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev);

@@ -26,6 +26,9 @@ struct TIamDelegationSettings {
     static constexpr TDuration OperationPollInterval = TDuration::Seconds(1);
     static constexpr TDuration OperationPollTimeout = TDuration::Seconds(60);
     static constexpr ui32 MaxRetries = 5; // total attempts of one IAM call
+    static constexpr TDuration MinServedLifetime = TDuration::Minutes(5);
+    static constexpr TDuration MaxTokenCacheLifetime = TDuration::Hours(1);
+    static constexpr TDuration IdleKeyTtl = TDuration::Minutes(10);
 
     static TIamDelegationSettings FromConfig(const NKikimrConfig::TIamConfig& iamConfig);
 
@@ -45,6 +48,9 @@ struct TIamDelegationSettings {
     // Validate() requires plus the control plane endpoint and system token provider ID, so a cluster configured only for the IAM
     // auth of external data sources passes Validate() and fails this one.
     TString ValidateForDelegation() const;
+
+    // Minting additionally requires a configured system token-manager provider.
+    TString ValidateForTokenService() const;
 
     // Whether the cloud of a service account can be looked up (ServiceAccountService.Get on the
     // control plane, then FolderService.Resolve on Resource Manager). Optional: without it the

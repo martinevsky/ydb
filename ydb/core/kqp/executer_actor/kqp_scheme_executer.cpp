@@ -1,4 +1,5 @@
 #include "kqp_executer.h"
+#include "kqp_iam_delegation_secret_orchestrator.h"
 #include "kqp_executer_impl.h"
 
 #include <ydb/core/base/auth.h>
@@ -681,6 +682,10 @@ public:
 
             case NKqpProto::TKqpSchemeOperation::kCreateSecret: {
                 auto modifyScheme = schemeOp.GetCreateSecret();
+                if (modifyScheme.GetCreateSecret().HasIamDelegation()) {
+                    ev->Record.MutableTransaction()->MutableModifyScheme()->CopyFrom(modifyScheme);
+                    return StartIamDelegationSecretOrchestrator(std::move(ev), &CreateIamDelegationSecretCreator);
+                }
                 if (modifyScheme.GetCreateSecret().HasValueParamName()) {
                     const auto paramValue = ResolveSecretValueFromParam(
                         "CREATE SECRET", QueryData, modifyScheme.GetCreateSecret().GetValueParamName(),
@@ -698,6 +703,10 @@ public:
 
             case NKqpProto::TKqpSchemeOperation::kAlterSecret: {
                 auto modifyScheme = schemeOp.GetAlterSecret();
+                if (modifyScheme.GetAlterSecret().HasIamDelegation()) {
+                    ev->Record.MutableTransaction()->MutableModifyScheme()->CopyFrom(modifyScheme);
+                    return StartIamDelegationSecretOrchestrator(std::move(ev), &CreateIamDelegationSecretAlterer);
+                }
                 if (modifyScheme.GetAlterSecret().HasValueParamName()) {
                     const auto paramValue = ResolveSecretValueFromParam(
                         "ALTER SECRET", QueryData, modifyScheme.GetAlterSecret().GetValueParamName(),
@@ -755,6 +764,53 @@ public:
             NWilson::TTraceId(TraceId)
         );
         RegisterWithSameMailbox(requestHandler);
+
+        auto actorSystem = TActivationContext::ActorSystem();
+        auto selfId = SelfId();
+        promise.GetFuture().Subscribe([actorSystem, selfId, operationType](const TFuture<IKqpGateway::TGenericResult>& future) {
+            const auto& value = future.GetValue();
+            auto ev = MakeHolder<TEvPrivate::TEvResult>();
+            ev->Result.SetStatus(value.Status());
+            ev->Result.OperationId = value.OperationId;
+
+            if (value.Issues()) {
+                NYql::TIssue rootIssue(TStringBuilder() << "Executing " << NKikimrSchemeOp::EOperationType_Name(operationType));
+                rootIssue.SetCode(ev->Result.Status(), NYql::TSeverityIds::S_INFO);
+                for (const auto& issue : value.Issues()) {
+                    rootIssue.AddSubIssue(MakeIntrusive<NYql::TIssue>(issue));
+                }
+                ev->Result.AddIssue(rootIssue);
+            }
+
+            actorSystem->Send(selfId, ev.Release());
+        });
+
+        Become(&TKqpSchemeExecuter::ExecuteState);
+    }
+
+    void StartIamDelegationSecretOrchestrator(THolder<TEvTxUserProxy::TEvProposeTransaction> ev, IActor* (*createOrchestrator)(TIamDelegationSecretOperation)) {
+        if (!AppData()->FeatureFlags.GetEnableIamDelegationSecrets()) {
+            return ReplyErrorAndDie(Ydb::StatusIds::PRECONDITION_FAILED,
+                NYql::TIssue("IAM delegation secrets are disabled. Please contact your system administrator to enable it"));
+        }
+
+        bool successOnNotExist = false;
+        bool failedOnAlreadyExists = false;
+        if (IsQueryService()) {
+            successOnNotExist = ev->Record.GetTransaction().GetModifyScheme().GetSuccessOnNotExist();
+            failedOnAlreadyExists = ev->Record.GetTransaction().GetModifyScheme().GetFailedOnAlreadyExists();
+        }
+        const auto operationType = ev->Record.GetTransaction().GetModifyScheme().GetOperationType();
+
+        auto promise = NewPromise<IKqpGateway::TGenericResult>();
+        RegisterWithSameMailbox(createOrchestrator({
+            .Request = std::move(ev),
+            .Database = Database,
+            .UserToken = UserToken,
+            .Promise = promise,
+            .FailedOnAlreadyExists = failedOnAlreadyExists,
+            .SuccessOnNotExist = successOnNotExist,
+        }));
 
         auto actorSystem = TActivationContext::ActorSystem();
         auto selfId = SelfId();

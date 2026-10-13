@@ -19,6 +19,13 @@ public:
         return "Bearer " + result;
     }
 
+    NThreading::TFuture<std::string> GetAuthInfoAsync() const override {
+        return Delegatee->GetAuthInfoAsync().Apply([](const NThreading::TFuture<std::string>& ready) {
+            const auto& token = ready.GetValue();
+            return token.empty() || token.starts_with("Bearer ") ? token : "Bearer " + token;
+        });
+    }
+
     bool IsValid() const override {
         return Delegatee->IsValid();
     }

@@ -30,6 +30,7 @@ PEERDIR(
     ydb/core/mon
     ydb/core/protos
     ydb/core/security/iam_delegation
+    ydb/core/security/iam_delegation_lifecycle
     ydb/core/tx/scheme_cache
     ydb/core/tx/schemeshard
     ydb/core/tx/tx_proxy

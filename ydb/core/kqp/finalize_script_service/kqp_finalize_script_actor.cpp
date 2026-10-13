@@ -1,6 +1,9 @@
+#include <ydb/services/scheme_secret/secret_credentials.h>
 #include "kqp_finalize_script_actor.h"
+#include "kqp_script_secrets.h"
 
 #include <ydb/core/fq/libs/events/events.h>
+#include <ydb/core/kqp/common/kqp_external_effect_secrets.h>
 #include <ydb/core/kqp/common/kqp_script_executions.h>
 #include <ydb/core/kqp/common/simple/services.h>
 #include <ydb/core/kqp/federated_query/actors/kqp_federated_query_actors.h>
@@ -73,8 +76,6 @@ public:
 
         if (Sinks.empty()) {
             FinishScriptFinalization();
-        } else if (SecretNames.empty()) {
-            ComputeScriptExternalEffect();
         } else {
             FetchSecrets();
         }
@@ -92,7 +93,7 @@ private:
     }
 
     void FetchSecrets() {
-        RegisterDescribeSecretsActor(SelfId(), UserToken, Database, SecretNames, ActorContext().ActorSystem());
+        Register(CreateScriptSecretsResolverActor(SelfId(), UserToken, Database, SecretNames, Sinks));
     }
 
     void Handle(TEvDescribeSecretsResponse::TPtr& ev) {
@@ -101,21 +102,29 @@ private:
             return;
         }
 
-        FillSecureParams(ev->Get()->Description.SecretValues);
+        FillSecureParams(ev->Get()->Description);
     }
 
-    void FillSecureParams(const std::vector<TString>& secretValues) {
+    void FillSecureParams(const TEvDescribeSecretsResponse::TDescription& description) {
+        const auto& secretValues = description.SecretValues;
         std::map<TString, TString> secretsMap;
+        THashMap<TString, TEvDescribeSecretsResponse::TSecretReference> references;
         for (size_t i = 0; i < secretValues.size(); ++i) {
             secretsMap.emplace(SecretNames[i], secretValues[i]);
+            if (i < description.References.size() && description.References[i].TabletId) {
+                references.emplace(SecretNames[i], description.References[i]);
+            }
         }
 
         for (const auto& sink : Sinks) {
             const auto& sinkName = sink.GetSinkName();
 
             if (sinkName) {
-                const auto& structuredToken = NYql::CreateStructuredTokenParser(sink.GetAuthInfo()).ToBuilder().ReplaceReferences(secretsMap).ToJson();
-                SecureParams.emplace(sinkName, structuredToken);
+                auto auth = ResolveScriptExternalEffectAuth(sink.GetAuthInfo(), secretsMap);
+                if (const auto it = references.find(auth.SecretPath); it != references.end()) {
+                    auth.Token = NSecret::KeepTokenSecretReference(auth.Token, auth.SecretPath, Database, it->second, UserToken);
+                }
+                SecureParams.emplace(sinkName, std::move(auth.Token));
             }
         }
 

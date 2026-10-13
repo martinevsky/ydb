@@ -1,3 +1,4 @@
+#include <ydb/library/yql/providers/common/ut_helpers/async_credentials.h>
 #include <ydb/library/yql/providers/s3/actors/yql_s3_read_actor.h>
 #include <ydb/library/yql/providers/s3/events/events.h>
 #include <ydb/library/yql/providers/s3/proto/range.pb.h>
@@ -169,7 +170,8 @@ public:
         Execute([](TFakeActor& actor) { actor.Terminate(); });
     }
 
-    void Start(std::shared_ptr<TParquetGateway> gateway, NS3::TSource source, ui64 dataInflight = 200_MB) {
+    void Start(std::shared_ptr<TParquetGateway> gateway, NS3::TSource source, ui64 dataInflight = 200_MB,
+        IStructuredTokenCredentialsFactory::TPtr credentials = CreateStructuredTokenCredentialsFactory()) {
         NS3::TRange range;
         auto* path = range.AddPaths();
         path->SetName("file.parquet");
@@ -183,7 +185,7 @@ public:
             auto [input, inputActor] = CreateS3ReadActor(actor.TypeEnv, actor.HolderFactory,
                 std::shared_ptr<TScopedAlloc>(&actor.Alloc, [](TScopedAlloc*) {}), gateway, std::move(source),
                 0, TCollectStatsLevel::None, TTxId{}, {}, {}, {encodedRange.Str()}, FakeActorId,
-                CreateStructuredTokenCredentialsFactory(), GetHTTPDefaultRetryPolicy(), config, nullptr, nullptr,
+                credentials, GetHTTPDefaultRetryPolicy(), config, nullptr, nullptr,
                 std::make_shared<TGuaranteeQuotaManager>(dataInflight, dataInflight), false);
             actor.InitAsyncInput(input, inputActor);
         });
@@ -263,6 +265,35 @@ void CheckReaderCount(ui64 parallelRowGroups, ui64 expectedCount, ui64 dataInfli
 } // namespace
 
 Y_UNIT_TEST_SUITE(TS3ParquetFooter) {
+    Y_UNIT_TEST(ParquetRangesAwaitCredentialsWithoutBlockingActor) {
+        TParquetReader reader;
+        auto gateway = std::make_shared<TParquetGateway>();
+        gateway->Body = MakeParquet(3);
+        auto credentials = std::make_shared<NTests::TAsyncCredentialsFactory>();
+        reader.Start(gateway, ParquetSource(), 200_MB, credentials);
+        reader.Pump();
+        UNIT_ASSERT(credentials->State->Calls > 0);
+        UNIT_ASSERT_VALUES_EQUAL(gateway->RangeCalls, 0);
+        credentials->Release("fresh-token");
+        reader.ReadToEnd();
+        UNIT_ASSERT_C(reader.Result.Errors.empty(), reader.Result.Issues);
+        UNIT_ASSERT_VALUES_EQUAL(reader.Result.Rows, 3);
+        UNIT_ASSERT_VALUES_EQUAL(credentials->State->Calls, gateway->RangeCalls);
+    }
+
+    Y_UNIT_TEST(ParquetAuthorizationFailureNeverStartsHttpRequest) {
+        TParquetReader reader;
+        auto gateway = std::make_shared<TParquetGateway>();
+        gateway->Body = MakeParquet(1);
+        auto credentials = std::make_shared<NTests::TAsyncCredentialsFactory>();
+        reader.Start(gateway, ParquetSource(), 200_MB, credentials);
+        reader.Pump();
+        credentials->Fail();
+        reader.ReadToEnd();
+        UNIT_ASSERT(!reader.Result.Errors.empty());
+        UNIT_ASSERT_VALUES_EQUAL(gateway->RangeCalls, 0);
+    }
+
     Y_UNIT_TEST(ZeroCompressedSize) {
         for (ui64 parallel : {0, 1, 2}) {
             auto result = ReadFooter({0}, parallel);

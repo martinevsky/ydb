@@ -271,6 +271,73 @@ message ListDatabasesResult {
     repeated string paths = 1;
 }
 
+// Administrative inventory retained independently of a database's schema and lifetime.
+message ListDatabaseIamDelegationsRequest {
+    Ydb.Operations.OperationParams operation_params = 1;
+    string path = 2 [(required) = true];
+    // Selects an immutable database incarnation. Required when a retained path is ambiguous.
+    string database_incarnation = 3;
+    // Defaults to 100; maximum 1000. Nonfinal pages are full.
+    uint32 page_size = 4;
+    // Opaque, bound to the path, incarnation and inventory revision.
+    string page_token = 5;
+}
+
+message ListDatabaseIamDelegationsResponse {
+    // operation.result holds ListDatabaseIamDelegationsResult.
+    Ydb.Operations.Operation operation = 1;
+}
+
+message DatabaseIamDelegation {
+    enum ReferencePolicy {
+        REFERENCE_POLICY_UNSPECIFIED = 0;
+        WITHOUT_REFERENCES = 1;
+        WITH_REFERENCES = 2;
+    }
+    enum State {
+        STATE_UNSPECIFIED = 0;
+        PENDING = 1;
+        ACTIVE = 2;
+        WAITING_SETUP = 3;
+        REVOCATION_PENDING = 4;
+        REVOKING = 5;
+        REVOKED = 6;
+        CANCELLED = 7;
+    }
+    enum SetupState {
+        SETUP_STATE_UNSPECIFIED = 0;
+        SETUP_NOT_STARTED = 1;
+        SETUP_STARTED = 2;
+        SETUP_UNKNOWN = 3;
+        SETUP_SUCCEEDED = 4;
+        SETUP_FAILED = 5;
+    }
+    string operation_id = 1;
+    string service_account_id = 2;
+    string cloud_id = 3;
+    string resource_type = 4;
+    string referrer_id = 5;
+    string referrer_type = 6;
+    string service_id = 7;
+    string microservice_id = 8;
+    ReferencePolicy reference_policy = 9;
+    State state = 10;
+    SetupState setup_state = 11;
+    string secret_path = 12;
+    uint64 revision = 13;
+    string setup_operation_id = 14;
+    string revoke_operation_id = 15;
+}
+
+message ListDatabaseIamDelegationsResult {
+    string database_incarnation = 1;
+    uint64 inventory_revision = 2;
+    repeated DatabaseIamDelegation delegations = 3;
+    // Empty on the final page. An expired revision returns PRECONDITION_FAILED;
+    // restart enumeration without a token instead of combining different snapshots.
+    string next_page_token = 4;
+}
+
 // Completely remove database and all his data.
 message RemoveDatabaseRequest {
     // Required. Full path to database's home dir.

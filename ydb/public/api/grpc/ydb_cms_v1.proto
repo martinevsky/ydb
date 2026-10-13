@@ -22,6 +22,9 @@ service CmsService {
     // List all databases.
     rpc ListDatabases(Cms.ListDatabasesRequest) returns (Cms.ListDatabasesResponse);
 
+    // Cluster-administrator inventory, including delegations retained after database deletion.
+    rpc ListDatabaseIamDelegations(Cms.ListDatabaseIamDelegationsRequest) returns (Cms.ListDatabaseIamDelegationsResponse);
+
     // Remove database.
     rpc RemoveDatabase(Cms.RemoveDatabaseRequest) returns (Cms.RemoveDatabaseResponse);
 

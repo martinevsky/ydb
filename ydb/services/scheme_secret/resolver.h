@@ -11,11 +11,13 @@
 
 #include <util/generic/string.h>
 #include <util/generic/vector.h>
+#include <optional>
 
 namespace NKikimr::NSecret {
 
 struct TDescribeSecretSettings {
     IRetryPolicy<>::TPtr RetryPolicy;
+    std::optional<NKqp::TEvDescribeSecretsResponse::TSecretReference> ExpectedReference;
 };
 
 IRetryPolicy<>::TPtr MakeShortRetryPolicy();

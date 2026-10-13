@@ -6,6 +6,8 @@ namespace NKikimr::NIamDelegation {
 
 struct TSchema : NIceDb::Schema {
     struct Databases : Table<1> {
+        using Precharge = NoAutoPrecharge;
+
         struct Incarnation : Column<1, NScheme::NTypeIds::String> {};
         struct Data : Column<2, NScheme::NTypeIds::String> {};
         using TKey = TableKey<Incarnation>;
@@ -26,8 +28,9 @@ struct TSchema : NIceDb::Schema {
         struct Data : Column<2, NScheme::NTypeIds::String> {};
         struct OriginalStage : Column<3, NScheme::NTypeIds::String> {};
         struct LastFinish : Column<4, NScheme::NTypeIds::String> {};
+        struct RetirePending : Column<5, NScheme::NTypeIds::String> {};
         using TKey = TableKey<OperationId>;
-        using TColumns = TableColumns<OperationId, Data, OriginalStage, LastFinish>;
+        using TColumns = TableColumns<OperationId, Data, OriginalStage, LastFinish, RetirePending>;
     };
 
     // Referrers and operation IDs are never recycled, including after revocation.

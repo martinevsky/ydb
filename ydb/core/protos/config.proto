@@ -3659,6 +3659,9 @@ message TIamConfig {
     // in AuthConfig.TokenManager (VM metadata or the node's token-agent factory). This identity
     // is independent of AuthConfig.AccessServiceTokenName; it must be selected explicitly.
     optional string SystemTokenName = 9;
+    // Service-owned IAM delegation tablet. Provision it outside tenant lifetime
+    // so pending cleanup survives database deletion. Zero disables new intents.
+    optional uint64 DelegationTabletId = 10;
 }
 
 // Local path-prefix aliases. Rules are ordered and take effect on node restart.

@@ -4,9 +4,11 @@ SRCS(
     kqp_check_script_lease_actor.cpp
     kqp_finalize_script_actor.cpp
     kqp_finalize_script_service.cpp
+    kqp_script_secrets.cpp
 )
 
 PEERDIR(
+    ydb/services/scheme_secret
     ydb/core/kqp/counters
     ydb/core/kqp/federated_query/actors
     ydb/core/kqp/proxy_service
@@ -19,3 +21,7 @@ PEERDIR(
 YQL_LAST_ABI_VERSION()
 
 END()
+
+RECURSE_FOR_TESTS(
+    ut
+)

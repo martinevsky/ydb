@@ -78,6 +78,249 @@ namespace {
 }
 
 Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
+    Y_UNIT_TEST(DropSecretRejectsAnotherPathOwner) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        ui64 txId = 100;
+        TestCreateSecret(runtime, ++txId, "/MyRoot", R"(Name: "secret" Value: "value")");
+        env.TestWaitNotification(runtime, txId);
+        const auto self = DescribePath(runtime, "/MyRoot/secret").GetPathDescription().GetSelf();
+        auto* request = DropSecretRequest(++txId, "/MyRoot", "secret");
+        auto* condition = request->Record.MutableTransaction(0)->AddApplyIf();
+        condition->SetPathId(self.GetPathId());
+        condition->SetPathOwnerId(self.GetSchemeshardId() + 1);
+        AsyncSend(runtime, TTestTxConfig::SchemeShard, request);
+        TestModificationResult(runtime, txId, EStatus::StatusPreconditionFailed);
+        UNIT_ASSERT_VALUES_EQUAL(DescribePathWithSecretValue(runtime, "/MyRoot/secret")
+            .GetPathDescription().GetSecretDescription().GetValue(), "value");
+
+        request = DropSecretRequest(++txId, "/MyRoot", "secret");
+        condition = request->Record.MutableTransaction(0)->AddApplyIf();
+        condition->SetPathId(self.GetPathId());
+        condition->SetPathOwnerId(self.GetSchemeshardId());
+        AsyncSend(runtime, TTestTxConfig::SchemeShard, request);
+        TestModificationResult(runtime, txId);
+        env.TestWaitNotification(runtime, txId);
+        TestLs(runtime, "/MyRoot/secret", false, NLs::PathNotExist);
+    }
+
+    Y_UNIT_TEST(AlterSecretChecksOwnerAndVersionBeforeChangingAclOrValue) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        ui64 txId = 100;
+        TestCreateSecret(runtime, ++txId, "/MyRoot", R"(Name: "secret" Value: "original")");
+        env.TestWaitNotification(runtime, txId);
+        const auto self = DescribePath(runtime, "/MyRoot/secret").GetPathDescription().GetSelf();
+        for (const bool wrongOwner : {true, false}) {
+            auto* request = AlterSecretRequest(++txId, "/MyRoot",
+                R"(Name: "secret" Value: "rejected" InheritPermissions: false)");
+            auto* condition = request->Record.MutableTransaction(0)->AddApplyIf();
+            condition->SetPathId(self.GetPathId());
+            condition->SetPathOwnerId(self.GetSchemeshardId() + (wrongOwner ? 1 : 0));
+            condition->SetPathVersion(self.GetPathVersion() + (wrongOwner ? 0 : 1));
+            AsyncSend(runtime, TTestTxConfig::SchemeShard, request);
+            TestModificationResult(runtime, txId, EStatus::StatusPreconditionFailed);
+            const auto unchanged = DescribePathWithSecretValue(runtime, "/MyRoot/secret");
+            ExpectEqualSecretDescription(unchanged, "secret", "original", 0);
+            UNIT_ASSERT_VALUES_EQUAL(unchanged.GetPathDescription().GetSelf().GetACL(), self.GetACL());
+        }
+        auto* request = AlterSecretRequest(++txId, "/MyRoot", R"(Name: "secret" Value: "updated")");
+        auto* condition = request->Record.MutableTransaction(0)->AddApplyIf();
+        condition->SetPathId(self.GetPathId());
+        condition->SetPathOwnerId(self.GetSchemeshardId());
+        condition->SetPathVersion(self.GetPathVersion());
+        AsyncSend(runtime, TTestTxConfig::SchemeShard, request);
+        TestModificationResult(runtime, txId);
+        env.TestWaitNotification(runtime, txId);
+        ExpectEqualSecretDescription(DescribePathWithSecretValue(runtime, "/MyRoot/secret"), "secret", "updated", 1);
+    }
+
+    Y_UNIT_TEST(IamDelegationReferenceSurvivesRestart) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+
+        TestCreateSecret(runtime, ++txId, "/MyRoot", R"(
+            Name: "external"
+            IamDelegationReference {
+                TabletId: 72075186224037888
+                DatabaseIncarnation: "database-1"
+                CreateOperationId: "create-101"
+            }
+        )");
+        env.TestWaitNotification(runtime, txId);
+
+        const auto check = [&] {
+            for (bool returnValue : {false, true}) {
+                NKikimrSchemeOp::TDescribeOptions options;
+                options.SetReturnSecretValue(returnValue);
+                const auto result = DescribePath(runtime, "/MyRoot/external", options);
+                TestDescribeResult(result, {NLs::Finished, NLs::IsSecret});
+                const auto& path = result.GetPathDescription();
+                UNIT_ASSERT_VALUES_EQUAL(path.GetSelf().GetCreateTxId(), 101);
+                const auto& secret = path.GetSecretDescription();
+                UNIT_ASSERT(!secret.HasValue());
+                UNIT_ASSERT(secret.HasIamDelegation());
+                UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetTabletId(), 72075186224037888ULL);
+                UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetDatabaseIncarnation(), "database-1");
+                UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetCreateOperationId(), "create-101");
+            }
+        };
+        check();
+        RebootTablet(runtime, TTestTxConfig::SchemeShard, runtime.AllocateEdgeActor());
+        check();
+
+        // Schema deletion is independent of IAM configuration and tablet availability.
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(false);
+        TestDropSecret(runtime, ++txId, "/MyRoot", "external");
+        env.TestWaitNotification(runtime, txId);
+        TestLs(runtime, "/MyRoot/external", false, NLs::PathNotExist);
+    }
+
+    Y_UNIT_TEST(IamDelegationCreateRequiresCompleteReference) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(false);
+        ui64 txId = 100;
+        const TString reference = R"(IamDelegationReference {
+            TabletId: 72075186224037888
+            DatabaseIncarnation: "database-1"
+            CreateOperationId: "create-1"
+        })";
+        TestCreateSecret(runtime, ++txId, "/MyRoot", "Name: \"external\" " + reference,
+            {{EStatus::StatusPreconditionFailed, "IAM delegation secrets are disabled"}});
+        env.TestWaitNotification(runtime, txId);
+
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        const TVector<TString> invalid = {
+            R"(IamDelegation { ServiceAccountId: "sa" CloudId: "cloud" ReferrerId: "ref" })",
+            R"(IamDelegationReference {})",
+            R"(IamDelegationReference { TabletId: 1 DatabaseIncarnation: "database-1" })",
+            R"(IamDelegationReference { TabletId: 1 CreateOperationId: "create-1" })",
+            R"(IamDelegationReference { DatabaseIncarnation: "database-1" CreateOperationId: "create-1" })",
+            reference + R"( Value: "value")",
+            reference + R"( IamDelegation { ServiceAccountId: "sa" })",
+            reference + R"( ValueParamName: "$value")",
+        };
+        for (const auto& fields : invalid) {
+            TestCreateSecret(runtime, ++txId, "/MyRoot", "Name: \"external\" " + fields,
+                {EStatus::StatusInvalidParameter});
+            env.TestWaitNotification(runtime, txId);
+            TestLs(runtime, "/MyRoot/external", false, NLs::PathNotExist);
+        }
+    }
+
+    Y_UNIT_TEST(IamDelegationCreateChecksDatabaseDomainIdentity) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+        const auto domain = DescribePath(runtime, "/MyRoot").GetPathDescription().GetSelf();
+        TestMkDir(runtime, ++txId, "/MyRoot", "dir");
+        env.TestWaitNotification(runtime, txId);
+        const TString reference = R"(Name: "external" IamDelegationReference {
+            TabletId: 72075186224037888
+            DatabaseIncarnation: "database-1"
+            CreateOperationId: "create-101"
+        })";
+        for (const bool wrongOwner : {true, false}) {
+            auto* request = CreateSecretRequest(++txId, "/MyRoot/dir", reference);
+            auto* expected = request->Record.MutableTransaction(0)->MutableCreateSecret()->MutableExpectedDatabaseDomainKey();
+            expected->SetOwnerId(domain.GetSchemeshardId() + (wrongOwner ? 1 : 0));
+            expected->SetLocalId(domain.GetPathId() + (wrongOwner ? 0 : 1));
+            AsyncSend(runtime, TTestTxConfig::SchemeShard, request);
+            TestModificationResult(runtime, txId, EStatus::StatusPreconditionFailed);
+            TestLs(runtime, "/MyRoot/dir/external", false, NLs::PathNotExist);
+        }
+        // The enclosing database identity applies even when creating in a subdirectory.
+        auto* request = CreateSecretRequest(++txId, "/MyRoot/dir", reference);
+        auto* expected = request->Record.MutableTransaction(0)->MutableCreateSecret()->MutableExpectedDatabaseDomainKey();
+        expected->SetOwnerId(domain.GetSchemeshardId());
+        expected->SetLocalId(domain.GetPathId());
+        AsyncSend(runtime, TTestTxConfig::SchemeShard, request);
+        TestModificationResult(runtime, txId);
+        env.TestWaitNotification(runtime, txId);
+        TestLs(runtime, "/MyRoot/dir/external", false, NLs::IsSecret);
+    }
+
+    Y_UNIT_TEST(IamDelegationSourceAndReferenceAreImmutable) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+        const TString reference = R"(IamDelegationReference {
+            TabletId: 72075186224037888
+            DatabaseIncarnation: "database-1"
+            CreateOperationId: "create-101"
+        })";
+        TestCreateSecret(runtime, ++txId, "/MyRoot", "Name: \"external\" " + reference);
+        env.TestWaitNotification(runtime, txId);
+        TestCreateSecret(runtime, ++txId, "/MyRoot", R"(Name: "stored" Value: "original")");
+        env.TestWaitNotification(runtime, txId);
+
+        const TVector<TString> invalid = {
+            R"(Value: "new-value")",
+            R"(Value: "")",
+            R"(IamDelegation { ServiceAccountId: "another-sa" })",
+            R"(IamDelegationReference { TabletId: 1 DatabaseIncarnation: "database-1" CreateOperationId: "create-101" })",
+            R"(IamDelegationReference { TabletId: 72075186224037888 DatabaseIncarnation: "database-2" CreateOperationId: "create-101" })",
+            R"(IamDelegationReference { TabletId: 72075186224037888 DatabaseIncarnation: "database-1" CreateOperationId: "create-102" })",
+        };
+        for (const auto& fields : invalid) {
+            TestAlterSecret(runtime, ++txId, "/MyRoot", "Name: \"external\" " + fields,
+                {EStatus::StatusInvalidParameter});
+            env.TestWaitNotification(runtime, txId);
+        }
+        TestAlterSecret(runtime, ++txId, "/MyRoot", "Name: \"stored\" " + reference,
+            {EStatus::StatusInvalidParameter});
+        env.TestWaitNotification(runtime, txId);
+
+        // A schema operation may authorize an ALTER while retaining the exact reference.
+        TestAlterSecret(runtime, ++txId, "/MyRoot", "Name: \"external\" " + reference);
+        env.TestWaitNotification(runtime, txId);
+        TestAlterSecret(runtime, ++txId, "/MyRoot", R"(Name: "external")");
+        env.TestWaitNotification(runtime, txId);
+        const auto result = DescribePathWithSecretValue(runtime, "/MyRoot/external");
+        const auto& secret = result.GetPathDescription().GetSecretDescription();
+        UNIT_ASSERT(secret.HasIamDelegation());
+        UNIT_ASSERT(!secret.HasValue());
+        UNIT_ASSERT_VALUES_EQUAL(secret.GetIamDelegation().GetCreateOperationId(), "create-101");
+        UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 2);
+        ExpectEqualSecretDescription(DescribePathWithSecretValue(runtime, "/MyRoot/stored"), "stored", "original", 0);
+    }
+
+    Y_UNIT_TEST(ReplaceSecretCannotChangeSource) {
+        TTestBasicRuntime runtime;
+        TTestEnv env(runtime);
+        runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
+        ui64 txId = 100;
+        const TString reference = R"(IamDelegationReference {
+            TabletId: 72075186224037888
+            DatabaseIncarnation: "database-1"
+            CreateOperationId: "create-101"
+        })";
+        TestCreateSecret(runtime, ++txId, "/MyRoot", "Name: \"external\" " + reference);
+        env.TestWaitNotification(runtime, txId);
+        TestCreateSecret(runtime, ++txId, "/MyRoot", R"(Name: "stored" Value: "original")");
+        env.TestWaitNotification(runtime, txId);
+
+        for (const TString& fields : {TString(), TString("Value: \"value\"")}) {
+            TestCreateSecretOrReplace(runtime, ++txId, "/MyRoot", "Name: \"external\" " + fields,
+                {EStatus::StatusInvalidParameter});
+            env.TestWaitNotification(runtime, txId);
+        }
+        TestCreateSecretOrReplace(runtime, ++txId, "/MyRoot", "Name: \"stored\" " + reference,
+            {EStatus::StatusInvalidParameter});
+        env.TestWaitNotification(runtime, txId);
+        const auto result = DescribePathWithSecretValue(runtime, "/MyRoot/external");
+        const auto& secret = result.GetPathDescription().GetSecretDescription();
+        UNIT_ASSERT(secret.HasIamDelegation());
+        UNIT_ASSERT(!secret.HasValue());
+        UNIT_ASSERT_VALUES_EQUAL(secret.GetVersion(), 0);
+        ExpectEqualSecretDescription(DescribePathWithSecretValue(runtime, "/MyRoot/stored"), "stored", "original", 0);
+    }
+
     Y_UNIT_TEST(CreateSecret) {
         TTestBasicRuntime runtime;
         TTestEnv env(runtime);

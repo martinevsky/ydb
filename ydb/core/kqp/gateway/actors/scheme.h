@@ -27,15 +27,16 @@ public:
         , FailedOnAlreadyExists(failedOnAlreadyExists)
         {}
 
-    TSchemeOpRequestHandler(TRequest* request, NThreading::TPromise<TResult> promise, bool failedOnAlreadyExists, bool successOnNotExist, NWilson::TTraceId traceId = {})
+    TSchemeOpRequestHandler(TRequest* request, NThreading::TPromise<TResult> promise, bool failedOnAlreadyExists, bool successOnNotExist, NWilson::TTraceId traceId = {}, TActorId txProxyId = {})
         : TBase(request, promise, {}, std::move(traceId))
         , FailedOnAlreadyExists(failedOnAlreadyExists)
         , SuccessOnNotExist(successOnNotExist)
+        , TxProxyId(txProxyId)
         {}
 
 
     void Bootstrap(const TActorContext& ctx) {
-        TActorId txproxy = MakeTxProxyID();
+        TActorId txproxy = TxProxyId ? TxProxyId : MakeTxProxyID();
         ctx.Send(txproxy, this->Request.Release(), 0, 0, NWilson::TTraceId(this->TraceId));
 
         this->Become(&TSchemeOpRequestHandler::AwaitState);
@@ -110,6 +111,12 @@ public:
                     this->Die(ctx);
                     return;
                 }
+                if (FailedOnAlreadyExists && response.GetSchemeShardStatus() == NKikimrScheme::StatusAlreadyExists) {
+                    Promise.SetValue(NYql::NCommon::ResultFromIssues<TResult>(NYql::TIssuesIds::KIKIMR_SCHEME_ERROR,
+                        response.GetSchemeShardReason(), {}));
+                    this->Die(ctx);
+                    return;
+                }
                 break;
             }
 
@@ -163,6 +170,15 @@ public:
 
             case TEvTxUserProxy::TResultStatus::ExecError:
                 switch (response.GetSchemeShardStatus()) {
+                    case NKikimrScheme::EStatus::StatusAlreadyExists: {
+                        if (FailedOnAlreadyExists) {
+                            Promise.SetValue(NYql::NCommon::ResultFromIssues<TResult>(NYql::TIssuesIds::KIKIMR_SCHEME_ERROR,
+                                response.GetSchemeShardReason(), {}));
+                            this->Die(ctx);
+                            return;
+                        }
+                        break;
+                    }
                     case NKikimrScheme::EStatus::StatusMultipleModifications: {
                         Promise.SetValue(NYql::NCommon::ResultFromIssues<TResult>(NYql::TIssuesIds::KIKIMR_MULTIPLE_SCHEME_MODIFICATIONS,
                             response.GetSchemeShardReason(), {}));
@@ -259,6 +275,7 @@ private:
     TString OperationId;
     bool FailedOnAlreadyExists = false;
     bool SuccessOnNotExist = false;
+    TActorId TxProxyId;
 };
 
 } // namespace NKqp

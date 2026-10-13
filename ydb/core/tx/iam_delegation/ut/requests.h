@@ -136,6 +136,18 @@ inline NProto::TRequest DropRequest(const NProto::TDelegation& delegation) {
     return request;
 }
 
+inline NProto::TRequest RetirePendingRequest(const NProto::TSecretRecord& secret,
+    const NProto::TDelegation& delegation)
+{
+    NProto::TRequest request;
+    auto* retire = request.MutableRetirePending();
+    retire->MutableSecret()->CopyFrom(secret.GetIdentity());
+    retire->SetOperationId(delegation.GetOperationId());
+    retire->SetExpectedSecretRevision(secret.GetRevision());
+    retire->SetExpectedRevision(delegation.GetRevision());
+    return request;
+}
+
 inline NProto::TDelegation GetDelegation(TTestContext& ctx, const TString& operationId) {
     NProto::TRequest request;
     request.MutableGetDelegation()->SetOperationId(operationId);
@@ -153,6 +165,13 @@ inline NProto::TRequest ListRequest(const TString& incarnation = "database-incar
     auto* list = request.MutableListInventory();
     list->SetDatabaseIncarnation(incarnation);
     list->SetPageSize(pageSize);
+    return request;
+}
+
+inline NProto::TRequest ListDatabasesRequest(ui32 pageSize = 100, const TString& afterIncarnation = {}) {
+    NProto::TRequest request;
+    request.MutableListDatabases()->SetPageSize(pageSize);
+    request.MutableListDatabases()->SetAfterIncarnation(afterIncarnation);
     return request;
 }
 

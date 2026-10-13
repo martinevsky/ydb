@@ -46,6 +46,7 @@ SRCS(
     rpc_kh_snapshots.cpp
     rpc_list_objects_in_s3_export.cpp
     rpc_list_operations.cpp
+    rpc_list_database_iam_delegations.cpp
     rpc_load_rows.cpp
     rpc_rate_limiter_api.cpp
     rpc_read_columns.cpp
@@ -190,6 +191,7 @@ PEERDIR(
     contrib/libs/xxhash
     library/cpp/cgiparam
     library/cpp/digest/old_crc
+    library/cpp/string_utils/base64
     ydb/core/actorlib_impl
     ydb/core/audit
     ydb/core/backup/common
@@ -226,6 +228,7 @@ PEERDIR(
     ydb/core/util
     ydb/core/ydb_convert
     ydb/core/security
+    ydb/core/security/iam_delegation_lifecycle
     ydb/core/security/ldap_auth_provider
     ydb/core/security/sasl
     ydb/library/aclib

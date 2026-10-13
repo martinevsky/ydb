@@ -164,6 +164,31 @@ public:
 
         auto result = MakeHolder<TProposeResponse>(NKikimrScheme::StatusAccepted, ui64(OperationId.GetTxId()), ui64(ssId));
 
+        if (createSecretProto.HasValueParamName()) {
+            result->SetError(NKikimrScheme::StatusInvalidParameter,
+                "Secret value must be set via Value, however ValueParamName was passed");
+            return result;
+        }
+        if (createSecretProto.HasIamDelegation()) {
+            result->SetError(NKikimrScheme::StatusInvalidParameter,
+                "IAM delegation parameters must be resolved by the secret coordinator");
+            return result;
+        }
+        if (createSecretProto.HasIamDelegationReference()) {
+            if (!AppData()->FeatureFlags.GetEnableIamDelegationSecrets()) {
+                result->SetError(NKikimrScheme::StatusPreconditionFailed, "IAM delegation secrets are disabled");
+                return result;
+            }
+            const auto& reference = createSecretProto.GetIamDelegationReference();
+            if (createSecretProto.HasValue() || !reference.GetTabletId()
+                || reference.GetDatabaseIncarnation().empty() || reference.GetCreateOperationId().empty())
+            {
+                result->SetError(NKikimrScheme::StatusInvalidParameter,
+                    "IAM delegation secret requires a complete immutable reference and cannot contain Value");
+                return result;
+            }
+        }
+
         const auto parentPath = NSchemeShard::TPath::Resolve(parentPathStr, context.SS);
         {
             const auto checks = parentPath.Check();
@@ -179,6 +204,15 @@ public:
 
             if (!checks) {
                 result->SetError(checks.GetStatus(), checks.GetError());
+                return result;
+            }
+        }
+
+        if (createSecretProto.HasExpectedDatabaseDomainKey()) {
+            const auto& expected = createSecretProto.GetExpectedDatabaseDomainKey();
+            const auto actual = parentPath.GetDomainKey();
+            if (actual.OwnerId != expected.GetOwnerId() || actual.LocalPathId != expected.GetLocalId()) {
+                result->SetError(NKikimrScheme::StatusPreconditionFailed, "Database incarnation changed");
                 return result;
             }
         }
@@ -267,15 +301,13 @@ public:
             }
         }
 
-        if (createSecretProto.HasValueParamName()) {
-            result->SetError(NKikimrScheme::StatusInvalidParameter,
-                "Secret value must be set via Value, however ValueParamName was passed");
-            return result;
-        }
-
         NKikimrSchemeOp::TSecretDescription secretDescription;
         secretDescription.SetName(createSecretProto.GetName());
-        secretDescription.SetValue(createSecretProto.GetValue());
+        if (createSecretProto.HasIamDelegationReference()) {
+            *secretDescription.MutableIamDelegation() = createSecretProto.GetIamDelegationReference();
+        } else {
+            secretDescription.SetValue(createSecretProto.GetValue());
+        }
 
         const auto secretInfo = TSecretInfo::Create(std::move(secretDescription));
         context.SS->Secrets.Set(secretPathId, secretInfo);
@@ -356,13 +388,11 @@ ISubOperation::TPtr CreateNewSecret(TOperationId id, const TTxTransaction& tx, T
             // Convert to alter: build an alter transaction from the create transaction
             TTxTransaction alterTx = tx;
             alterTx.SetOperationType(NKikimrSchemeOp::ESchemeOpAlterSecret);
-            auto* alterSecret = alterTx.MutableAlterSecret();
-            alterSecret->SetName(createSecretProto.GetName());
-            if (createSecretProto.HasValue()) {
-                alterSecret->SetValue(createSecretProto.GetValue());
-            }
-            if (createSecretProto.HasInheritPermissions()) {
-                alterSecret->SetInheritPermissions(createSecretProto.GetInheritPermissions());
+            // Preserve source information so ALTER can enforce source/reference immutability.
+            *alterTx.MutableAlterSecret() = createSecretProto;
+            if (!createSecretProto.HasIamDelegation() && !createSecretProto.HasIamDelegationReference()) {
+                // A CREATE without a source denotes a stored value, including an empty value.
+                alterTx.MutableAlterSecret()->SetValue(createSecretProto.GetValue());
             }
             return CreateAlterSecret(id, alterTx);
         }

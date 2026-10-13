@@ -35,6 +35,7 @@ void CountSchemaRequestPaths(const TContext& context, const TRequest& request) {
     if constexpr (std::is_same_v<TRequest, Ydb::Cms::CreateDatabaseRequest>
         || std::is_same_v<TRequest, Ydb::Cms::AlterDatabaseRequest>
         || std::is_same_v<TRequest, Ydb::Cms::GetDatabaseStatusRequest>
+        || std::is_same_v<TRequest, Ydb::Cms::ListDatabaseIamDelegationsRequest>
         || std::is_same_v<TRequest, Ydb::Cms::GetScaleRecommendationRequest>
         || std::is_same_v<TRequest, Ydb::Cms::RemoveDatabaseRequest>
         || std::is_same_v<TRequest, Ydb::Discovery::NodeRegistrationRequest>) {

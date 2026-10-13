@@ -1244,7 +1244,9 @@ void TPathDescriber::DescribeSecret(const TActorContext&, TPathId pathId, TPathE
 
     auto entry = Result->Record.MutablePathDescription()->MutableSecretDescription();
     entry->SetName(pathEl->Name);
-    if (Params.GetOptions().GetReturnSecretValue()) {
+    if (secretInfo->Description.HasIamDelegation()) {
+        *entry->MutableIamDelegation() = secretInfo->Description.GetIamDelegation();
+    } else if (Params.GetOptions().GetReturnSecretValue()) {
         entry->SetValue(secretInfo->Description.GetValue());
     }
     entry->SetVersion(secretInfo->Description.GetVersion());

@@ -260,7 +260,13 @@ void TDescribeSchemaSecretsService::HandleIncomingSchemeShardRetryRequest(TEvRes
         return;
     }
     Y_ENSURE(it->second.Request.Get(), "Initial request was not saved");
-    SendSchemeShardRequest(*it->second.Request.Get(), ev->Get()->InitialRequestId, ev->Get()->SecretPath);
+    const auto external = it->second.ExternalReferences.find(ev->Get()->SecretPath);
+    if (external != it->second.ExternalReferences.end()) {
+        Register(CreateIamDelegationSecretReaderActor(SelfId(), ev->Get()->InitialRequestId,
+            ev->Get()->SecretPath, it->second.Request->Database, it->second.Request->UserToken, external->second));
+    } else {
+        SendSchemeShardRequest(*it->second.Request.Get(), ev->Get()->InitialRequestId, ev->Get()->SecretPath);
+    }
 }
 
 void TDescribeSchemaSecretsService::HandleSchemeCacheResponse(
@@ -273,7 +279,7 @@ void TDescribeSchemaSecretsService::HandleSchemeCacheResponse(
     );
 
     auto respIt = ResolveInFlight.find(requestId);
-    Y_ENSURE(respIt != ResolveInFlight.end(), "such requestId is not registered");
+    if (respIt == ResolveInFlight.end()) return;
 
     TAutoPtr<NSchemeCache::TSchemeCacheNavigate> request = ev->Get()->Request;
     if (HandleSchemeCacheErrorsIfAny(requestId, *request)) {
@@ -285,14 +291,44 @@ void TDescribeSchemaSecretsService::HandleSchemeCacheResponse(
         Y_ENSURE(!secretDescription.HasValue(), "SchemeCache must never contain secret values");
 
         const TString secretPath = CanonizePath(entry.Path);
+        auto& requestContext = RequestsInFlight.at(requestId);
+        if (respIt->second.ResolvedSecrets.contains(secretPath)) continue;
+        if (secretDescription.HasIamDelegation()) {
+            if (!AppData()->FeatureFlags.GetEnableIamDelegationSecrets()) {
+                FillResponse(requestId, NKqp::TEvDescribeSecretsResponse::TDescription(Ydb::StatusIds::UNSUPPORTED,
+                    {NYql::TIssue("IAM delegation secrets are disabled")}));
+                return;
+            }
+            const auto& locator = secretDescription.GetIamDelegation();
+            NKqp::TEvDescribeSecretsResponse::TSecretReference reference{locator.GetTabletId(),
+                locator.GetDatabaseIncarnation(), locator.GetCreateOperationId(),
+                entry.Self->Info.GetSchemeshardId(), entry.Self->Info.GetPathId()};
+            const auto& expected = requestContext.Request->Settings.ExpectedReference;
+            if (expected && *expected != reference) {
+                FillResponse(requestId, NKqp::TEvDescribeSecretsResponse::TDescription(Ydb::StatusIds::NOT_FOUND,
+                    {NYql::TIssue("Secret schema incarnation changed")}));
+                return;
+            }
+            if (requestContext.ExternalReferences.emplace(secretPath, reference).second) {
+                Register(CreateIamDelegationSecretReaderActor(SelfId(), requestId, secretPath,
+                    requestContext.Request->Database, requestContext.Request->UserToken, reference));
+            }
+            continue;
+        }
+        if (requestContext.Request->Settings.ExpectedReference) {
+            FillResponse(requestId, NKqp::TEvDescribeSecretsResponse::TDescription(Ydb::StatusIds::NOT_FOUND,
+                {NYql::TIssue("Secret is no longer an IAM delegation")}));
+            return;
+        }
         const auto secretIt = VersionedSecrets.find(secretPath);
 
         if (secretIt != VersionedSecrets.end() &&
             (LocalCacheHasActualVersion(secretIt->second, secretDescription.GetVersion()) &&
-            LocalCacheHasActualObject(secretIt->second, entry.Self->Info.GetPathId())))
+            LocalCacheHasActualObject(secretIt->second, entry.Self->Info.GetPathId()) &&
+            secretIt->second.PathOwnerId == entry.Self->Info.GetSchemeshardId()))
         {
             // some secret version is in cache
-            ++respIt->second.FilledSecretsCnt;
+            respIt->second.ResolvedSecrets[secretPath] = secretIt->second;
         } else {
             const auto requestIt = RequestsInFlight.find(requestId);
             Y_ENSURE(requestIt != RequestsInFlight.end(), "Unregistered requestId: " << ToString(requestId));
@@ -311,6 +347,9 @@ void TDescribeSchemaSecretsService::SendSchemeShardRequest(
     TAutoPtr<TEvTxUserProxy::TEvNavigate> navigateRequest(new TEvTxUserProxy::TEvNavigate());
     Y_ENSURE(!ev.Database.empty(), "Database name must be set in TxProxy requests");
     navigateRequest->Record.SetDatabaseName(ev.Database);
+    if (ev.UserToken) {
+        navigateRequest->Record.SetUserToken(ev.UserToken->SerializeAsString());
+    }
     NKikimrSchemeOp::TDescribePath* record = navigateRequest->Record.MutableDescribePath();
     record->SetPath(secretPath);
     record->MutableOptions()->SetReturnSecretValue(true);
@@ -341,6 +380,15 @@ void TDescribeSchemaSecretsService::HandleSchemeShardResponse(
     }
 
     const auto& secretName = CanonizePath(rec.GetPath());
+    const auto& description = rec.GetPathDescription().GetSecretDescription();
+    if (description.HasIamDelegation()) {
+        // The path may have changed source after the first cache read. Re-run the
+        // synchronized schema lookup so the external path uses the same ACL and
+        // immutable identity checks as every other delegated read.
+        const auto& request = *RequestsInFlight.at(requestId).Request;
+        SendSchemeCacheRequests(request, requestId);
+        return;
+    }
 
     if (const auto it = SchemeBoardSubscribers.find(secretName); it == SchemeBoardSubscribers.end()) {
         SchemeBoardSubscribers[secretName] = Register(CreateSchemeBoardSubscriber(SelfId(), secretName));
@@ -351,11 +399,12 @@ void TDescribeSchemaSecretsService::HandleSchemeShardResponse(
     VersionedSecrets[secretName] = TVersionedSecret{
         .SecretVersion = secretVersion,
         .PathId = rec.GetPathId(),
+        .PathOwnerId = rec.GetPathDescription().GetSelf().GetSchemeshardId(),
         .Name = secretName,
         .Value = secretValue,
     };
 
-    ++respIt->second.FilledSecretsCnt;
+    respIt->second.ResolvedSecrets[secretName] = VersionedSecrets.at(secretName);
 
     FillResponseIfFinished(requestId, respIt->second);
 }
@@ -392,6 +441,7 @@ void TDescribeSchemaSecretsService::SendSchemeCacheRequests(const TEvResolveSecr
     for (const auto& secretName : ev.SecretNames) {
         NSchemeCache::TSchemeCacheNavigate::TEntry entry;
         entry.Operation = NSchemeCache::TSchemeCacheNavigate::OpPath;
+        entry.SyncVersion = true;
         entry.Path = SplitPath(secretName);
         if (userToken && userToken->GetUserSID()) {
             entry.Access = NACLib::SelectRow;
@@ -596,13 +646,14 @@ bool TDescribeSchemaSecretsService::ScheduleSchemeShardRetry(const ui64& request
     Y_ENSURE(requestIt != RequestsInFlight.end(), "Unregistered requestId: " << ToString(requestId));
 
     const auto& retryPolicy = requestIt->second.Request->Settings.RetryPolicy;
-    if (!retryPolicy) {
+    if (!retryPolicy && !requestIt->second.ExternalReferences.contains(secretPath)) {
         return false;
     }
 
     auto& retryState = requestIt->second.SchemeShardRetryStates[secretPath];
     if (!retryState) {
-        retryState = retryPolicy->CreateRetryState();
+        static const auto defaultExternalRetryPolicy = MakeShortRetryPolicy();
+        retryState = (retryPolicy ? retryPolicy : defaultExternalRetryPolicy)->CreateRetryState();
     }
 
     if (const auto delay = retryState->GetNextRetryDelay()) {
@@ -641,35 +692,47 @@ IRetryPolicy<>::TPtr MakeLongRetryPolicy() {
     );
 }
 
-void TDescribeSchemaSecretsService::FillResponseIfFinished(const ui64& requestId, const TResponseContext& responseCtx) {
-    if (responseCtx.FilledSecretsCnt != responseCtx.Secrets.size()) {
+void TDescribeSchemaSecretsService::HandleExternalSecret(TEvIamDelegationSecretReadResult::TPtr& ev) {
+    const auto requestId = ev->Cookie;
+    const auto response = ResolveInFlight.find(requestId);
+    if (response == ResolveInFlight.end()) return;
+    const auto& result = *ev->Get();
+    if (result.Status != Ydb::StatusIds::SUCCESS) {
+        const bool retryable = result.Status == Ydb::StatusIds::UNAVAILABLE
+            || result.Status == Ydb::StatusIds::TIMEOUT
+            || result.Status == Ydb::StatusIds::OVERLOADED
+            || result.Status == Ydb::StatusIds::INTERNAL_ERROR;
+        if (retryable && ScheduleSchemeShardRetry(requestId, result.SecretPath)) return;
+        FillResponse(requestId, NKqp::TEvDescribeSecretsResponse::TDescription(result.Status, result.Issues));
         return;
     }
+    auto& secret = response->second.ResolvedSecrets[result.SecretPath];
+    secret.Name = result.SecretPath;
+    secret.Reference = result.Reference;
+    secret.Value = result.Token;
+    secret.UsableUntil = result.UsableUntil;
+    FillResponseIfFinished(requestId, response->second);
+}
 
-    std::vector<TString> secretValues;
-    secretValues.resize(responseCtx.Secrets.size());
-    for (const auto& secret : responseCtx.Secrets) {
-        const auto& secretPath = secret.first;
-        auto it = VersionedSecrets.find(secret.first);
-        if (it == VersionedSecrets.end()) {
-            YDB_LOG_NOTICE("FillResponseIfFinished: secret was dropped during request",
-                {"requestId", requestId},
-                {"secret", secretPath}
-            );
-            FillResponse(
-                requestId,
-                NKqp::TEvDescribeSecretsResponse::TDescription(
-                    Ydb::StatusIds::BAD_REQUEST,
-                    { NYql::TIssue(TStringBuilder() << "secret `" << secretPath << "` not found") }
-                )
-            );
+void TDescribeSchemaSecretsService::FillResponseIfFinished(const ui64& requestId, const TResponseContext& responseCtx) {
+    std::vector<TString> secretValues(responseCtx.Secrets.size());
+    std::vector<NKqp::TEvDescribeSecretsResponse::TSecretReference> references(responseCtx.Secrets.size());
+    std::vector<TInstant> usableUntil(responseCtx.Secrets.size(), TInstant::Max());
+    for (const auto& [secretPath, index] : responseCtx.Secrets) {
+        const auto it = responseCtx.ResolvedSecrets.find(secretPath);
+        if (it == responseCtx.ResolvedSecrets.end()) return;
+        const auto& secret = it->second;
+        if (secret.Reference.TabletId && NActors::TActivationContext::Now() >= secret.UsableUntil) {
+            FillResponse(requestId, NKqp::TEvDescribeSecretsResponse::TDescription(Ydb::StatusIds::UNAVAILABLE,
+                {NYql::TIssue("Delegated token expired before the secret batch completed")}));
             return;
         }
-
-        Y_ENSURE(secret.second < secretValues.size());
-        secretValues[secret.second] = it->second.Value;
+        secretValues[index] = secret.Value;
+        references[index] = secret.Reference;
+        usableUntil[index] = secret.UsableUntil;
     }
-    FillResponse(requestId, NKqp::TEvDescribeSecretsResponse::TDescription(secretValues));
+    FillResponse(requestId, NKqp::TEvDescribeSecretsResponse::TDescription(
+        std::move(secretValues), std::move(references), std::move(usableUntil)));
 }
 
 void TDescribeSchemaSecretsService::HandleNotifyUpdate(TSchemeBoardEvents::TEvNotifyUpdate::TPtr& ev) {

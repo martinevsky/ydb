@@ -11,6 +11,7 @@
 #include <ydb/core/kqp/common/buffer/events.h>
 #include <ydb/core/kqp/common/kqp.h>
 #include <ydb/core/kqp/common/kqp_data_integrity_trails.h>
+#include <ydb/core/kqp/common/kqp_external_effect_secrets.h>
 #include <ydb/core/kqp/common/kqp_script_executions.h>
 #include <ydb/core/kqp/common/kqp_tx.h>
 #include <ydb/core/kqp/common/kqp_tx_manager.h>
@@ -532,9 +533,16 @@ private:
 
         for (size_t i = 0; i < SecretNames.size(); ++i) {
             TasksGraph.GetMeta().SecureParams.emplace(SecretNames[i], ev->Get()->Description.SecretValues[i]);
+            const auto& references = ev->Get()->Description.References;
+            if (i < references.size() && references[i].TabletId) {
+                TasksGraph.GetMeta().ReReadSecrets.emplace(SecretNames[i], references[i]);
+            }
         }
 
         SecretSnapshotRequired = false;
+        if (PendingScriptExternalEffect) {
+            SavePendingScriptExternalEffect();
+        }
         // SecureParams is now populated — launch any deferred PQ topic describes
         // that need the resolved secret token.
         if (TopicPartitionSnapshotRequired) {
@@ -590,6 +598,13 @@ private:
         }
     }
 
+    void SavePendingScriptExternalEffect() {
+        YQL_ENSURE(PendingScriptExternalEffect && !SecretSnapshotRequired);
+        PinScriptExternalEffectSecrets(PendingScriptExternalEffect->Description.Sinks, Database,
+            TasksGraph.GetMeta().ReReadSecrets);
+        SaveScriptExternalEffect(std::move(PendingScriptExternalEffect));
+    }
+
     void DoExecute() {
         const auto& requestContext = GetUserRequestContext();
         auto scriptExternalEffect = std::make_unique<TEvSaveScriptExternalEffectRequest>(requestContext->CustomerSuppliedId);
@@ -623,6 +638,11 @@ private:
             }
         }
         scriptExternalEffect->Description.SecretNames = SecretNames;
+        if (SaveScriptExternalEffectRequired) {
+            // The save acknowledgement gates Execute(). Resolve and persist
+            // immutable secret pins before any external effect may be produced.
+            PendingScriptExternalEffect = std::move(scriptExternalEffect);
+        }
 
         if (!WaitRequired()) {
             return Execute();
@@ -635,8 +655,8 @@ private:
         if (ResourceSnapshotRequired) {
             GetResourcesSnapshot();
         }
-        if (SaveScriptExternalEffectRequired) {
-            SaveScriptExternalEffect(std::move(scriptExternalEffect));
+        if (PendingScriptExternalEffect && !SecretSnapshotRequired) {
+            SavePendingScriptExternalEffect();
         }
     }
 
@@ -1524,6 +1544,7 @@ private:
     bool SecretSnapshotRequired = false;
     bool ResourceSnapshotRequired = false;
     bool SaveScriptExternalEffectRequired = false;
+    std::unique_ptr<TEvSaveScriptExternalEffectRequest> PendingScriptExternalEffect;
     bool TopicPartitionSnapshotRequired = false;
 
     const bool ReadOnlyTx;

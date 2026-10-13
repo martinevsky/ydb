@@ -17,6 +17,7 @@ SRCS(
 )
 
 PEERDIR(
+    ydb/services/scheme_secret
     ydb/core/kqp/tracing
     ydb/core/actorlib_impl
     ydb/core/base

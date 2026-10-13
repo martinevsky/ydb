@@ -5,6 +5,7 @@
 #include <memory>
 
 #include <ydb/core/kqp/common/kqp_user_request_context.h>
+#include <ydb/core/kqp/common/events/script_executions.h>
 #include <ydb/core/kqp/common/kqp_yql.h>
 #include <ydb/core/kqp/gateway/kqp_gateway.h>
 
@@ -250,6 +251,7 @@ struct TGraphMeta {
     TMaybe<ui64> MaxBatchSize;
     bool UnknownAffectedShardCount = false; // used by Data executer
     std::map<TString, TString> SecureParams;
+    THashMap<TString, TEvDescribeSecretsResponse::TSecretReference> ReReadSecrets;
     bool AllowOlapDataQuery = true; // used by Data executer - always true for Scan executer
     bool StreamResult = false;
     Ydb::Table::QueryStatsCollection::Mode StatsMode = Ydb::Table::QueryStatsCollection::STATS_COLLECTION_NONE;

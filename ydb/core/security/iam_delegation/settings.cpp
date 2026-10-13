@@ -80,4 +80,14 @@ TString TIamDelegationSettings::ValidateForDelegation() const {
     return {};
 }
 
+TString TIamDelegationSettings::ValidateForTokenService() const {
+    if (const auto error = Validate()) {
+        return error;
+    }
+    if (Config.GetSystemTokenName().empty()) {
+        return "IAM delegated token service is not configured, missing IamConfig field: SystemTokenName";
+    }
+    return {};
+}
+
 } // namespace NKikimr::NIamDelegation

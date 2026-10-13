@@ -1,3 +1,4 @@
+#include <ydb/library/yql/providers/common/token_accessor/client/async_credentials.h>
 #include "yql_s3_write_actor.h"
 #include "yql_s3_actors_util.h"
 #if defined(_linux_) || defined(_darwin_)
@@ -167,7 +168,9 @@ public:
         ParentId = parentId;
         LOG_D("TS3FileWriteActor", "Bootstrap by " << ParentId << " for Key: [" << Key << "], Url: [" << Url << "], request id: [" << RequestId << "]");
         try {
-            BeginPartsUpload(Credentials.GetAuthInfo());
+            Become(&TS3FileWriteActor::StateFuncWrapper<&TS3FileWriteActor::MultipartInitialStateFunc>);
+            AwaitCredentials(ActorSystem, SelfId(), Credentials.GetAuthInfoAsync(),
+                [this](const auto& ready) { BeginPartsUpload(ready.GetValue()); });
         } catch (...) {
             FailOnException();
         }
@@ -267,7 +270,11 @@ private:
     template <void (TS3FileWriteActor::* DelegatedStateFunc)(STFUNC_SIG)>
     STFUNC(StateFuncWrapper) {
         try {
-            (this->*DelegatedStateFunc)(ev);
+            if (ev->GetTypeRewrite() == TEvents::TEvInvokeResult::EventType) {
+                ev->Get<TEvents::TEvInvokeResult>()->Process(TActivationContext::AsActorContext());
+            } else {
+                (this->*DelegatedStateFunc)(ev);
+            }
         } catch (...) {
             FailOnException();
         }
@@ -395,13 +402,16 @@ private:
             InFlight += size;
             SentSize += size;
             SentCount++;
-            auto authInfo = Credentials.GetAuthInfo();
-            Gateway->Upload(Url + "?partNumber=" + std::to_string(index + 1) + "&uploadId=" + UploadId,
-                IHTTPGateway::MakeYcHeaders(RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
-                std::move(part),
-                std::bind(&TS3FileWriteActor::OnPartUploadFinish, ActorSystem, SelfId(), ParentId, size, index, Url, RequestId, std::placeholders::_1),
-                true,
-                RetryPolicy);
+            AwaitCredentials(ActorSystem, SelfId(), Credentials.GetAuthInfoAsync(),
+                [this, part = std::move(part), size, index](const auto& ready) mutable {
+                    const auto& authInfo = ready.GetValue();
+                    Gateway->Upload(Url + "?partNumber=" + std::to_string(index + 1) + "&uploadId=" + UploadId,
+                        IHTTPGateway::MakeYcHeaders(RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
+                        std::move(part),
+                        std::bind(&TS3FileWriteActor::OnPartUploadFinish, ActorSystem, SelfId(), ParentId, size, index, Url, RequestId, std::placeholders::_1),
+                        true,
+                        RetryPolicy);
+            });
         }
     }
 
@@ -415,7 +425,7 @@ private:
     }
 
     void CommitUploadedParts() {
-        Become(nullptr);
+        Become(&TS3FileWriteActor::StateFuncWrapper<&TS3FileWriteActor::SinglepartWorkingStateFunc>);
         TStringBuilder xml;
         xml << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" << Endl;
         xml << "<CompleteMultipartUpload xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">" << Endl;
@@ -423,36 +433,38 @@ private:
         for (const auto& tag : Tags)
             xml << "<Part><PartNumber>" << ++i << "</PartNumber><ETag>" << tag << "</ETag></Part>" << Endl;
         xml << "</CompleteMultipartUpload>" << Endl;
-        auto authInfo = Credentials.GetAuthInfo();
-        Gateway->Upload(Url + "?uploadId=" + UploadId,
-            IHTTPGateway::MakeYcHeaders(RequestId, authInfo.GetToken(), "application/xml", authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
-            xml,
-            std::bind(&TS3FileWriteActor::OnMultipartUploadFinish, ActorSystem, SelfId(), ParentId, Key, Url, RequestId, SentSize, std::placeholders::_1),
-            false,
-            RetryPolicy);
+        AwaitCredentials(ActorSystem, SelfId(), Credentials.GetAuthInfoAsync(),
+            [this, body = TString(xml)](const auto& ready) {
+                const auto& authInfo = ready.GetValue();
+                Gateway->Upload(Url + "?uploadId=" + UploadId,
+                    IHTTPGateway::MakeYcHeaders(RequestId, authInfo.GetToken(), "application/xml", authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
+                    body,
+                    std::bind(&TS3FileWriteActor::OnMultipartUploadFinish, ActorSystem, SelfId(), ParentId, Key, Url, RequestId, SentSize, std::placeholders::_1),
+                    false,
+                    RetryPolicy);
+        });
     }
 
     void SafeAbortMultipartUpload() {
-        try {
-            AbortMultipartUpload(Credentials.GetAuthInfo());
-        } catch (...) {
-            LOG_W("TS3FileWriteActor", "Failed to abort multipart upload, error: " << CurrentExceptionMessage());
-        }
-    }
-
-    void AbortMultipartUpload(const TS3Credentials::TAuthInfo& authInfo) {
-        // Try to abort multipart upload in case of unexpected termination.
-        // In case of error just logs warning.
-
-        if (!UploadId) {
-            return;
-        }
-
-        Gateway->Delete(Url + "?uploadId=" + UploadId,
-            IHTTPGateway::MakeYcHeaders(RequestId, authInfo.GetToken(), "application/xml", authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
-            std::bind(&TS3FileWriteActor::OnMultipartUploadAbort, ActorSystem, SelfId(), TxId, RequestId, std::placeholders::_1),
-            RetryPolicy);
+        if (!UploadId) return;
+        // The writer can terminate before credential acquisition completes. Capture
+        // only request values so best-effort cleanup never dereferences a dead actor.
+        const auto url = Url + "?uploadId=" + UploadId;
         UploadId.clear();
+        Credentials.GetAuthInfoAsync().Subscribe(
+            [gateway = Gateway, url, requestId = RequestId, retry = RetryPolicy,
+             actorSystem = ActorSystem, self = SelfId(), txId = TxId](const auto& ready) {
+                try {
+                    const auto& authInfo = ready.GetValue();
+                    gateway->Delete(url,
+                        IHTTPGateway::MakeYcHeaders(requestId, authInfo.GetToken(), "application/xml", authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
+                        std::bind(&TS3FileWriteActor::OnMultipartUploadAbort, actorSystem, self, txId, requestId, std::placeholders::_1),
+                        retry);
+                } catch (const std::exception&) {
+                    LOG_WARN_S(*actorSystem, NKikimrServices::KQP_COMPUTE,
+                        "Cannot authorize multipart upload cleanup");
+                }
+            });
     }
 
     void FailOnException() {

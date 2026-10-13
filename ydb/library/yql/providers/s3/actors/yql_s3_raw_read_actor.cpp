@@ -1,3 +1,4 @@
+#include <ydb/library/yql/providers/common/token_accessor/client/async_credentials.h>
 #include "yql_s3_actors_util.h"
 #include "yql_s3_raw_read_actor.h"
 #include "yql_s3_source_queue.h"
@@ -182,16 +183,19 @@ public:
         auto url = Url + object.GetPath();
         auto id = object.GetPathIndex();
         const TString requestId = CreateGuidAsString();
-        const auto& authInfo = Credentials.GetAuthInfo();
-        LOG_D("TS3ReadActor", "Download: " << url << ", ID: " << id << ", request id: [" << requestId << "]");
-        Gateway->Download(
-            NS3Util::UrlEscapeRet(url),
-            IHTTPGateway::MakeYcHeaders(requestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
-            0U,
-            std::min(object.GetSize(), SizeLimit),
-            std::bind(&TS3ReadActor::OnDownloadFinished, ActorSystem, SelfId(), requestId, std::placeholders::_1, id, object.GetPath()),
-            {},
-            RetryPolicy);
+        AwaitCredentials(ActorSystem, SelfId(), Credentials.GetAuthInfoAsync(),
+            [this, object, url, id, requestId](const auto& ready) {
+                const auto& authInfo = ready.GetValue();
+                LOG_D("TS3ReadActor", "Download: " << url << ", ID: " << id << ", request id: [" << requestId << "]");
+                Gateway->Download(
+                    NS3Util::UrlEscapeRet(url),
+                    IHTTPGateway::MakeYcHeaders(requestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
+                    0U,
+                    std::min(object.GetSize(), SizeLimit),
+                    std::bind(&TS3ReadActor::OnDownloadFinished, ActorSystem, SelfId(), requestId, std::placeholders::_1, id, object.GetPath()),
+                    {},
+                    RetryPolicy);
+        });
     }
 
     NS3::FileQueue::TObjectPath ReadPathFromCache() {
@@ -240,7 +244,10 @@ private:
         return FilesRemained && (*FilesRemained == 0);
     }
 
+    void HandleCredentials(NActors::TEvents::TEvInvokeResult::TPtr& ev) { ev->Get()->Process(NActors::TActivationContext::AsActorContext()); }
+
     STRICT_STFUNC_EXC(StateFunc,
+        hFunc(NActors::TEvents::TEvInvokeResult, HandleCredentials);
         hFunc(TEvS3Provider::TEvReadResult, Handle);
         hFunc(TEvS3Provider::TEvReadError, Handle);
         hFunc(TEvS3Provider::TEvObjectPathBatch, HandleObjectPathBatch);

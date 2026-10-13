@@ -1,4 +1,5 @@
 #include "kqp_federated_query_helpers.h"
+#include <ydb/services/scheme_secret/secret_credentials.h>
 
 #include <ydb/library/yql/providers/yt/gateway/clients/message_stream/yql_yt_client.h>
 
@@ -363,12 +364,13 @@ namespace {
             LocalTopicClientSettings->ActorSystem = actorSystem;
         }
 
+        const auto refreshingCredentialsFactory = NSecret::CreateRefreshingSecretCredentialsFactoryOverFactory(CredentialsFactory);
         auto result = TKqpFederatedQuerySetup{
             Driver,
             YdbExternalResources,
             HttpGateway,
             ConnectorClient,
-            CredentialsFactory,
+            refreshingCredentialsFactory,
             nullptr,
             S3GatewayConfig,
             GenericGatewaysConfig,
@@ -379,7 +381,7 @@ namespace {
             S3ReadActorFactoryConfig,
             DqTaskTransformFactory,
             PqGatewayConfig,
-            MakePqGatewayFactory(Driver, CredentialsFactory, LocalTopicClientSettings),
+            MakePqGatewayFactory(Driver, refreshingCredentialsFactory, LocalTopicClientSettings),
             ActorSystemPtr,
             ScriptExecutionSettings,
         };

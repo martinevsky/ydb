@@ -60,6 +60,21 @@ message TClaim {
     optional uint64 DeadlineUs = 4;
 }
 
+// Reconstructs the admitted CREATE without retaining the user's bearer token.
+// Every copy uses the same transaction ID and immutable database/parent fence.
+message TSchemaCreateIntent {
+    optional string DatabasePath = 1;
+    optional string UserSID = 2;
+    repeated string GroupSIDs = 3;
+    optional uint64 ParentPathOwnerId = 4;
+    optional uint64 ParentPathLocalId = 5;
+    optional uint64 ParentPathVersion = 6;
+    optional uint64 DatabaseDomainOwnerId = 7;
+    optional uint64 DatabaseDomainLocalId = 8;
+    optional bool InheritPermissions = 9;
+    optional string DiffACL = 10;
+}
+
 message TDelegation {
     optional string OperationId = 1;
     optional string DatabaseIncarnation = 2;
@@ -75,6 +90,9 @@ message TDelegation {
     optional uint64 ActivatedRevision = 12;
     optional TClaim Claim = 13;
     optional uint64 DueAtUs = 14;
+    optional uint64 StagedAtUs = 15;
+    optional string SubjectId = 16;
+    optional TSchemaCreateIntent SchemaCreate = 17;
 }
 
 enum ESecretState {
@@ -119,6 +137,8 @@ message TStageRequest {
     optional TSecretIdentity Secret = 6;
     optional uint64 ExpectedSecretRevision = 7;
     optional TIamBinding Binding = 8;
+    optional string SubjectId = 9;
+    optional TSchemaCreateIntent SchemaCreate = 10;
 }
 
 message TBindSecretRequest {
@@ -156,6 +176,15 @@ message TDropSecretRequest {
     optional uint64 ExpectedRevision = 3;
 }
 
+// Release the pending slot without retiring the current delegation. Unknown
+// setup remains inventoried and cannot be revoked until its outcome is resolved.
+message TRetirePendingRequest {
+    optional TSecretIdentity Secret = 1;
+    optional string OperationId = 2;
+    optional uint64 ExpectedSecretRevision = 3;
+    optional uint64 ExpectedRevision = 4;
+}
+
 message TGetSecretRequest {
     optional TSecretIdentity Secret = 1;
 }
@@ -170,6 +199,14 @@ message TListInventoryRequest {
     optional string AfterOperationId = 3;
     // Required on continuation; a changed revision returns SNAPSHOT_EXPIRED.
     optional uint64 InventoryRevision = 4;
+}
+
+// Recovery discovery over the append-only database registry. This is not an
+// immutable snapshot: workers repeat full scans to find concurrent insertions
+// behind the cursor. Each returned database can be enumerated with ListInventory.
+message TListDatabasesRequest {
+    optional uint32 PageSize = 1;
+    optional string AfterIncarnation = 2;
 }
 
 message TClaimRevocationsRequest {
@@ -190,6 +227,9 @@ message TFinishRevocationRequest {
     optional ERevokeOutcome Outcome = 3;
     optional string RevokeOperationId = 4;
     optional uint64 RetryAfterUs = 5;
+    // Only after a definitive remote operation failure, never a polling error.
+    // Requires REVOKE_RETRY and an empty RevokeOperationId. Empty alone retains it.
+    optional bool ClearRevokeOperationId = 6;
 }
 
 message TRequest {
@@ -206,6 +246,8 @@ message TRequest {
         TListInventoryRequest ListInventory = 10;
         TClaimRevocationsRequest ClaimRevocations = 11;
         TFinishRevocationRequest FinishRevocation = 12;
+        TListDatabasesRequest ListDatabases = 13;
+        TRetirePendingRequest RetirePending = 14;
     }
 }
 
@@ -228,4 +270,6 @@ message TResponse {
     optional TDelegation Delegation = 5;
     repeated TDelegation Delegations = 6;
     optional string NextAfterOperationId = 7;
+    repeated TDatabaseRecord Databases = 8;
+    optional string NextAfterIncarnation = 9;
 }

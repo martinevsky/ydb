@@ -390,8 +390,12 @@ void TDescribeReq::Handle(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr &
         return Die(ctx);
     }
 
+    const auto& describePath = SchemeRequest->Ev->Get()->Record.GetDescribePath();
+
     if (UserToken != nullptr) {
-        ui32 access = NACLib::EAccessRights::DescribeSchema;
+        const ui32 access = entry.Kind == NSchemeCache::TSchemeCacheNavigate::KindSecret
+            && describePath.GetOptions().GetReturnSecretValue()
+            ? NACLib::EAccessRights::SelectRow : NACLib::EAccessRights::DescribeSchema;
         if (entry.SecurityObject != nullptr && !entry.SecurityObject->CheckAccess(access, *UserToken)) {
             YDB_LOG_ERROR_CTX(ctx, "Access denied",
                 {"userSID", UserToken->GetUserSID()},
@@ -401,8 +405,6 @@ void TDescribeReq::Handle(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr &
             return Die(ctx);
         }
     }
-
-    const auto& describePath = SchemeRequest->Ev->Get()->Record.GetDescribePath();
 
     if (entry.TableId.IsSystemView()) {
         // don't go to schemeshard if entry describes sys view path and this path is virtual

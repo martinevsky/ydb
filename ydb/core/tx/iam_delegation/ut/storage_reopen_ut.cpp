@@ -22,6 +22,54 @@ NFake::TStorage DiskStorage(const TTempDir& directory, EStorageOpenMode mode) {
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationStorageReopen) {
+    Y_UNIT_TEST(RetiredPendingAndItsReplayReceiptSurviveWholeRuntimeReplacement) {
+        TTempDir directory;
+        NProto::TRequest retirement;
+        NProto::TSecretRecord live;
+        NProto::TResponse inventory;
+        TInstant clock;
+        {
+            TTestContext ctx(DiskStorage(directory, EStorageOpenMode::Format));
+            CreateActive(ctx);
+            auto unknown = ctx.Call(StageAlterRequest(GetSecret(ctx), "unknown",
+                Binding("unknown-referrer"))).GetDelegation();
+            unknown = ctx.Call(StartRequest(unknown)).GetDelegation();
+            unknown = ctx.Call(SetupResultRequest(unknown, NProto::SETUP_UNKNOWN)).GetDelegation();
+            retirement = RetirePendingRequest(GetSecret(ctx), unknown);
+            ctx.Call(retirement);
+            ctx.Call(StageAlterRequest(GetSecret(ctx), "newer", Binding("newer-referrer")));
+            live = GetSecret(ctx);
+            inventory = ctx.Call(ListRequest());
+            clock = ctx.GetRuntime().GetCurrentTime();
+        }
+        {
+            TTestContext ctx(DiskStorage(directory, EStorageOpenMode::Reopen));
+            ctx.GetRuntime().UpdateCurrentTime(Max(clock, ctx.GetRuntime().GetCurrentTime()));
+            const auto databases = ctx.Call(ListDatabasesRequest());
+            UNIT_ASSERT_VALUES_EQUAL(databases.DatabasesSize(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(databases.GetDatabases(0).GetIdentity().GetIncarnation(), "database-incarnation-1");
+            UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListRequest()).SerializeAsString(), inventory.SerializeAsString());
+            ctx.Call(retirement);
+            UNIT_ASSERT_VALUES_EQUAL(GetSecret(ctx).SerializeAsString(), live.SerializeAsString());
+            ctx.AdvanceTime(TDuration::Days(1));
+            UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ClaimRequest()).DelegationsSize(), 0);
+            ctx.Call(SetupResultRequest(GetDelegation(ctx, "unknown"), NProto::SETUP_SUCCEEDED));
+            UNIT_ASSERT_VALUES_EQUAL(GetSecret(ctx).SerializeAsString(), live.SerializeAsString());
+            clock = ctx.GetRuntime().GetCurrentTime();
+        }
+        {
+            TTestContext ctx(DiskStorage(directory, EStorageOpenMode::Reopen));
+            ctx.GetRuntime().UpdateCurrentTime(Max(clock, ctx.GetRuntime().GetCurrentTime()));
+            ctx.Call(retirement);
+            UNIT_ASSERT_VALUES_EQUAL(GetSecret(ctx).SerializeAsString(), live.SerializeAsString());
+            const auto claims = ctx.Call(ClaimRequest());
+            UNIT_ASSERT_VALUES_EQUAL(claims.DelegationsSize(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(claims.GetDelegations(0).GetOperationId(), "unknown");
+            ctx.Call(FinishRequest(claims.GetDelegations(0)));
+            UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListRequest()).DelegationsSize(), 2);
+        }
+    }
+
     Y_UNIT_TEST(DatabaseAndUnboundIntentSurviveWholeRuntimeReplacement) {
         TTempDir directory;
         NProto::TResponse inventory;

@@ -314,7 +314,11 @@ Y_UNIT_TEST_SUITE(IamDelegationTablet) {
         UNIT_ASSERT_VALUES_EQUAL(failed.GetDelegation().GetSetupState(), NProto::SETUP_FAILED);
         ctx.Call(SetupResultRequest(failed.GetDelegation(), NProto::SETUP_SUCCEEDED), NProto::PRECONDITION_FAILED);
         UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ClaimRequest()).DelegationsSize(), 0);
-        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListRequest()).DelegationsSize(), 0);
+        // Keep the failed CREATE discoverable until its schema shell is removed.
+        const auto inventory = ctx.Call(ListRequest());
+        UNIT_ASSERT_VALUES_EQUAL(inventory.DelegationsSize(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(inventory.GetDelegations(0).SerializeAsString(),
+            failed.GetDelegation().SerializeAsString());
     }
 
     Y_UNIT_TEST(FailedAlterReleasesPendingWithoutLosingCurrent) {

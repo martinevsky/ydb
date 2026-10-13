@@ -195,14 +195,14 @@ struct TRetryStuff {
     TRetryStuff(
         IHTTPGateway::TPtr gateway,
         TString url,
-        const IHTTPGateway::THeaders& headers,
+        TS3Credentials credentials,
         std::size_t sizeLimit,
         const TTxId& txId,
         const TString& requestId,
         const IHTTPGateway::TRetryPolicy::TPtr& retryPolicy
     ) : Gateway(std::move(gateway))
       , Url(NS3Util::UrlEscapeRet(url))
-      , Headers(headers)
+      , Credentials(std::move(credentials))
       , Offset(0U)
       , SizeLimit(sizeLimit)
       , TxId(txId)
@@ -213,7 +213,7 @@ struct TRetryStuff {
 
     const IHTTPGateway::TPtr Gateway;
     const TString Url;
-    const IHTTPGateway::THeaders Headers;
+    const TS3Credentials Credentials;
     std::size_t Offset, SizeLimit;
     const TTxId TxId;
     const TString RequestId;
@@ -256,16 +256,27 @@ void OnDownloadFinished(TActorSystem* actorSystem, const TActorId& self, const T
 }
 
 void DownloadStart(const TRetryStuff::TPtr& retryStuff, TActorSystem* actorSystem, const TActorId& self, const TActorId& parent, size_t pathIndex, const ::NMonitoring::TDynamicCounters::TCounterPtr& inflightCounter, IHttpRequestContext::TPtr context = nullptr) {
-    retryStuff->CancelHook = retryStuff->Gateway->Download(
-        retryStuff->Url,
-        retryStuff->Headers,
-        retryStuff->Offset,
-        retryStuff->SizeLimit,
-        std::bind(&OnDownloadStart, actorSystem, self, parent, std::placeholders::_1, std::placeholders::_2),
-        std::bind(&OnNewData, actorSystem, self, parent, std::placeholders::_1),
-        std::bind(&OnDownloadFinished, actorSystem, self, parent, pathIndex, std::placeholders::_1, std::placeholders::_2),
-        inflightCounter,
-        std::move(context));
+    retryStuff->Credentials.GetAuthInfoAsync().Subscribe(
+        [retryStuff, actorSystem, self, parent, pathIndex, inflightCounter, context = std::move(context)](const auto& result) mutable {
+            actorSystem->Send(new IEventHandle(parent, self, new TEvS3Provider::TEvRetryEventFunc(
+                [retryStuff, actorSystem, self, parent, pathIndex, inflightCounter, context = std::move(context), result]() mutable {
+                    if (retryStuff->IsCancelled()) return;
+                    try {
+                        const auto& authInfo = result.GetValue();
+                        retryStuff->CancelHook = retryStuff->Gateway->Download(
+                            retryStuff->Url,
+                            IHTTPGateway::MakeYcHeaders(retryStuff->RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
+                            retryStuff->Offset, retryStuff->SizeLimit,
+                            std::bind(&OnDownloadStart, actorSystem, self, parent, std::placeholders::_1, std::placeholders::_2),
+                            std::bind(&OnNewData, actorSystem, self, parent, std::placeholders::_1),
+                            std::bind(&OnDownloadFinished, actorSystem, self, parent, pathIndex, std::placeholders::_1, std::placeholders::_2),
+                            inflightCounter, std::move(context));
+                    } catch (const std::exception&) {
+                        OnDownloadFinished(actorSystem, self, parent, pathIndex, CURLE_LOGIN_DENIED,
+                            {TIssue("Cannot acquire S3 credentials")});
+                    }
+                })));
+        });
 }
 
 struct TParquetFileInfo {
@@ -647,13 +658,23 @@ public:
             LOG_CORO_D("S3 GetOrCreate: db=" << scope.Namespace << " pool=" << scope.Name);
             context = MakeIntrusive<TDefaultHttpRequestContext>(scope);
         }
-        RetryStuff->Gateway->Download(RetryStuff->Url, RetryStuff->Headers,
-                            range.Offset,
-                            range.Length,
-                            std::bind(&OnResult, GetActorSystem(), SelfActorId, range, ++RangeCookie, std::placeholders::_1),
-                            {},
-                            RetryStuff->RetryPolicy,
-                            std::move(context));
+        const auto cookie = ++RangeCookie;
+        RetryStuff->Credentials.GetAuthInfoAsync().Subscribe(
+            [stuff = RetryStuff, actorSystem = GetActorSystem(), self = SelfActorId, range, cookie,
+             context = std::move(context)](const auto& ready) mutable {
+                if (stuff->IsCancelled()) return;
+                try {
+                    const auto& authInfo = ready.GetValue();
+                    stuff->Gateway->Download(stuff->Url,
+                        IHTTPGateway::MakeYcHeaders(stuff->RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
+                        range.Offset, range.Length,
+                        std::bind(&OnResult, actorSystem, self, range, cookie, std::placeholders::_1),
+                        {}, stuff->RetryPolicy, std::move(context));
+                } catch (const std::exception&) {
+                    IHTTPGateway::TResult result(CURLE_LOGIN_DENIED, {TIssue("Cannot acquire S3 credentials")});
+                    OnResult(actorSystem, self, range, cookie, std::move(result));
+                }
+            });
         LOG_CORO_D("Download STARTED [" << range.Offset << "-" << range.Length << "], cookie: " << RangeCookie);
         auto& result = RangeCache[range];
         if (result.Cookie) {
@@ -1699,11 +1720,10 @@ public:
         LOG_D("TS3StreamReadActor", "RegisterCoro with path " << object.GetPath() << " with pathIndex " << pathIndex);
 
         TActorId actorId;
-        const auto& authInfo = Credentials.GetAuthInfo();
         auto stuff = std::make_shared<TRetryStuff>(
             Gateway,
             Url + object.GetPath(),
-            IHTTPGateway::MakeYcHeaders(requestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
+            Credentials,
             object.GetSize(),
             TxId,
             requestId,

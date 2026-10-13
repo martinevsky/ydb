@@ -300,7 +300,17 @@ public:
     ~TS3Lister() override = default;
 private:
     static void SubmitRequestIntoGateway(TListingContext& ctx) {
-        const auto& authInfo = ctx.ListingRequest.Credentials.GetAuthInfo();
+        ctx.ListingRequest.Credentials.GetAuthInfoAsync().Subscribe([context = ctx](const auto& ready) mutable {
+            try {
+                SubmitAuthorizedRequest(context, ready.GetValue());
+            } catch (const std::exception&) {
+                context.Promise.SetException(std::current_exception());
+                context.NextRequestPromise.SetValue(Nothing());
+            }
+        });
+    }
+
+    static void SubmitAuthorizedRequest(TListingContext& ctx, const TS3Credentials::TAuthInfo& authInfo) {
         IHTTPGateway::THeaders headers = IHTTPGateway::MakeYcHeaders(ctx.RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4());
 
         // We have to sort the cgi parameters for the correct aws signature

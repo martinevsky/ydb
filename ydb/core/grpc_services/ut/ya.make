@@ -8,6 +8,8 @@ ENDIF()
 
 SRCS(
     rpc_calls_ut.cpp
+    rpc_describe_secret_ut.cpp
+    rpc_list_database_iam_delegations_ut.cpp
     rpc_load_rows_ut.cpp
     operation_helpers_ut.cpp
 )

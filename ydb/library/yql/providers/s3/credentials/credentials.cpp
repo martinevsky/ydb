@@ -35,6 +35,14 @@ TS3Credentials::TAuthInfo TS3Credentials::GetAuthInfo() const {
     return AuthInfo;
 }
 
+NThreading::TFuture<TS3Credentials::TAuthInfo> TS3Credentials::GetAuthInfoAsync() const {
+    if (!CredentialsProvider) return NThreading::MakeFuture(AuthInfo);
+    return CredentialsProvider->GetAuthInfoAsync().Apply([provider = CredentialsProvider](const NThreading::TFuture<std::string>& value) {
+        Y_UNUSED(provider); // Keep the provider alive until its asynchronous request completes.
+        return TAuthInfo{.Token = TString(value.GetValue())};
+    });
+}
+
 bool TS3Credentials::operator<(const TS3Credentials& other) const {
     return StructuredTokenJson < other.StructuredTokenJson;
 }

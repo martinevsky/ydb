@@ -1,7 +1,9 @@
 LIBRARY()
 
 SRCS(
+    cloud_resolver.cpp
     iam_actor_base.cpp
+    iam_delegated_token_service.cpp
     iam_delegation_service.cpp
     settings.cpp
 )

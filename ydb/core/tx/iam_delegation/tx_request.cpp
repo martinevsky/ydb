@@ -1,9 +1,11 @@
 #include "tablet.h"
 
 #include <ydb/core/base/path.h>
+#include <ydb/library/actors/core/interconnect.h>
 
 #include <util/generic/map.h>
 #include <util/generic/vector.h>
+#include <util/string/builder.h>
 
 namespace NKikimr::NIamDelegation {
 namespace {
@@ -45,6 +47,31 @@ bool ValidBinding(const TIamBinding& binding) {
         && ValidId(binding.GetReferrerType()) && ValidId(binding.GetServiceId())
         && ValidId(binding.GetMicroserviceId())
         && (binding.GetReferencePolicy() == WITHOUT_REFERENCES || binding.GetReferencePolicy() == WITH_REFERENCES);
+}
+
+bool ValidSchemaCreate(const TStageRequest& request) {
+    if (!request.HasSchemaCreate()) {
+        return true; // older intents have no resumable schema payload
+    }
+    const auto& intent = request.GetSchemaCreate();
+    if (request.GetMode() != CREATE || !ValidPath(intent.GetDatabasePath()) || !ValidId(intent.GetUserSID())
+        || !intent.GetParentPathOwnerId() || !intent.GetParentPathLocalId() || !intent.GetParentPathVersion()
+        || !intent.GetDatabaseDomainOwnerId() || !intent.GetDatabaseDomainLocalId()
+        || !intent.HasInheritPermissions() || intent.GetGroupSIDs().size() > 1024
+        || intent.GetDiffACL().size() > 65536 || intent.ByteSizeLong() > 131072) {
+        return false;
+    }
+    const TString incarnation = TStringBuilder() << intent.GetDatabaseDomainOwnerId()
+        << ':' << intent.GetDatabaseDomainLocalId();
+    if (request.GetDatabaseIncarnation() != incarnation) {
+        return false;
+    }
+    for (const auto& group : intent.GetGroupSIDs()) {
+        if (!ValidId(group)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool SameSecret(const TSecretIdentity& lhs, const TSecretIdentity& rhs) {
@@ -89,10 +116,11 @@ EReadStatus ReadSecret(NIceDb::TNiceDb& db, const TSecretIdentity& identity, TSe
 }
 
 EReadStatus ReadDelegation(NIceDb::TNiceDb& db, const TString& operationId, TDelegation& result,
-    TString* originalStage = nullptr, TString* lastFinish = nullptr)
+    TString* originalStage = nullptr, TString* lastFinish = nullptr, TString* retirePending = nullptr)
 {
     auto row = db.Table<TSchema::Delegations>().Key(operationId)
-        .Select<TSchema::Delegations::Data, TSchema::Delegations::OriginalStage, TSchema::Delegations::LastFinish>();
+        .Select<TSchema::Delegations::Data, TSchema::Delegations::OriginalStage,
+            TSchema::Delegations::LastFinish, TSchema::Delegations::RetirePending>();
     if (!row.IsReady()) {
         return EReadStatus::Retry;
     }
@@ -105,6 +133,9 @@ EReadStatus ReadDelegation(NIceDb::TNiceDb& db, const TString& operationId, TDel
     }
     if (lastFinish) {
         *lastFinish = row.GetValue<TSchema::Delegations::LastFinish>();
+    }
+    if (retirePending) {
+        *retirePending = row.GetValue<TSchema::Delegations::RetirePending>();
     }
     return EReadStatus::Ready;
 }
@@ -134,14 +165,17 @@ void WriteSecret(NIceDb::TNiceDb& db, const TSecretRecord& record) {
         .Update(NIceDb::TUpdate<TSchema::Secrets::Data>(record.SerializeAsString()));
 }
 
-void WriteDelegation(NIceDb::TNiceDb& db, const TDelegation& record, const TDelegation* previous = nullptr) {
+void WriteDelegation(NIceDb::TNiceDb& db, const TDelegation& record, const TDelegation* previous = nullptr,
+    const TSecretRecord* secret = nullptr) {
     if (previous && InQueue(*previous)) {
         db.Table<TSchema::Revocations>().Key(previous->GetDueAtUs(), previous->GetOperationId()).Delete();
     }
     const TString data = record.SerializeAsString();
     db.Table<TSchema::Delegations>().Key(record.GetOperationId())
         .Update(NIceDb::TUpdate<TSchema::Delegations::Data>(data));
-    if (record.GetState() == REVOKED || record.GetState() == CANCELLED) {
+    const bool recoveryMarker = secret && secret->GetState() == SECRET_LIVE
+        && secret->GetCurrentOperationId().empty() && secret->GetCreateOperationId() == record.GetOperationId();
+    if ((record.GetState() == REVOKED || record.GetState() == CANCELLED) && !recoveryMarker) {
         db.Table<TSchema::Inventory>().Key(record.GetDatabaseIncarnation(), record.GetOperationId()).Delete();
     } else {
         db.Table<TSchema::Inventory>().Key(record.GetDatabaseIncarnation(), record.GetOperationId())
@@ -229,10 +263,10 @@ struct TIamDelegationTablet::TTxRequest final
         return EExecution::Complete;
     }
 
-    EExecution Stage(NIceDb::TNiceDb& db, const TStageRequest& request) {
+    EExecution Stage(NIceDb::TNiceDb& db, const TStageRequest& request, ui64 nowUs) {
         if (!ValidId(request.GetOperationId()) || !ValidId(request.GetDatabaseIncarnation())
-            || !ValidPath(request.GetSecretPath()) || !ValidBinding(request.GetBinding())
-            || (request.GetMode() != CREATE && request.GetMode() != ALTER)) {
+            || !ValidPath(request.GetSecretPath()) || !ValidBinding(request.GetBinding()) || request.GetSubjectId().size() > 256
+            || (request.GetMode() != CREATE && request.GetMode() != ALTER) || !ValidSchemaCreate(request)) {
             return Error(INVALID_ARGUMENT, "A complete bounded intent and explicit IAM binding are required");
         }
         TDelegation record;
@@ -259,6 +293,9 @@ struct TIamDelegationTablet::TTxRequest final
             return ReadError(status, "Database incarnation");
         }
         const auto& databasePath = database.GetIdentity().GetPath();
+        if (request.HasSchemaCreate() && request.GetSchemaCreate().GetDatabasePath() != databasePath) {
+            return Error(INVALID_ARGUMENT, "Schema intent must address the registered database path");
+        }
         const auto& secretPath = request.GetSecretPath();
         if (secretPath.size() <= databasePath.size() || !TStringBuf(secretPath).StartsWith(databasePath)
             || secretPath[databasePath.size()] != '/') {
@@ -311,6 +348,11 @@ struct TIamDelegationTablet::TTxRequest final
         record.SetRevision(1);
         record.SetSetupState(SETUP_NOT_STARTED);
         record.SetState(PENDING);
+        record.SetStagedAtUs(nowUs);
+        record.SetSubjectId(request.GetSubjectId());
+        if (request.HasSchemaCreate()) {
+            *record.MutableSchemaCreate() = request.GetSchemaCreate();
+        }
         WriteDelegation(db, record);
         db.Table<TSchema::Delegations>().Key(record.GetOperationId())
             .Update(NIceDb::TUpdate<TSchema::Delegations::OriginalStage>(request.SerializeAsString()));
@@ -452,7 +494,7 @@ struct TIamDelegationTablet::TTxRequest final
                 secret.SetRevision(secret.GetRevision() + 1);
                 WriteSecret(db, secret);
             }
-        } else if (secret.GetState() == SECRET_DROPPED) {
+        } else if (secret.GetState() == SECRET_DROPPED || record.GetState() == WAITING_SETUP) {
             if (request.GetOutcome() == SETUP_SUCCEEDED) {
                 record.SetState(REVOCATION_PENDING);
                 record.SetDueAtUs(nowUs);
@@ -461,7 +503,7 @@ struct TIamDelegationTablet::TTxRequest final
             }
         }
         record.SetRevision(record.GetRevision() + 1);
-        WriteDelegation(db, record, &previous);
+        WriteDelegation(db, record, &previous, &secret);
         WriteDatabase(db, database);
         return Reply(record, &secret, &database);
     }
@@ -492,6 +534,12 @@ struct TIamDelegationTablet::TTxRequest final
                 return ReadError(status, "Current delegation");
             }
         }
+        TDelegation creating;
+        if (secret.GetCurrentOperationId().empty() && secret.GetCreateOperationId() != record.GetOperationId()) {
+            if (const auto status = ReadDelegation(db, secret.GetCreateOperationId(), creating); status != EReadStatus::Ready) {
+                return ReadError(status, "Creating delegation");
+            }
+        }
         TDatabaseRecord database;
         if (const auto status = ReadDatabase(db, record.GetDatabaseIncarnation(), database); status != EReadStatus::Ready) {
             return ReadError(status, "Database");
@@ -500,6 +548,9 @@ struct TIamDelegationTablet::TTxRequest final
             const auto previous = old;
             Retire(old, nowUs);
             WriteDelegation(db, old, &previous);
+        }
+        if (creating.GetState() == CANCELLED || creating.GetState() == REVOKED) {
+            db.Table<TSchema::Inventory>().Key(creating.GetDatabaseIncarnation(), creating.GetOperationId()).Delete();
         }
         secret.SetCurrentOperationId(record.GetOperationId());
         secret.ClearPendingOperationId();
@@ -572,6 +623,13 @@ struct TIamDelegationTablet::TTxRequest final
                 records.push_back(std::move(record));
             }
         }
+        TDelegation creating;
+        if (secret.GetCreateOperationId() != secret.GetCurrentOperationId()
+            && secret.GetCreateOperationId() != secret.GetPendingOperationId()) {
+            if (const auto status = ReadDelegation(db, secret.GetCreateOperationId(), creating); status != EReadStatus::Ready) {
+                return ReadError(status, "Creating delegation");
+            }
+        }
         TDatabaseRecord database;
         if (const auto status = ReadDatabase(db, identity.GetDatabaseIncarnation(), database); status != EReadStatus::Ready) {
             return ReadError(status, "Database");
@@ -585,6 +643,9 @@ struct TIamDelegationTablet::TTxRequest final
             Retire(record, nowUs);
             WriteDelegation(db, record, &previous);
         }
+        if (creating.GetState() == CANCELLED || creating.GetState() == REVOKED) {
+            db.Table<TSchema::Inventory>().Key(creating.GetDatabaseIncarnation(), creating.GetOperationId()).Delete();
+        }
         secret.SetState(SECRET_DROPPED);
         secret.ClearCurrentOperationId();
         secret.ClearPendingOperationId();
@@ -597,6 +658,53 @@ struct TIamDelegationTablet::TTxRequest final
         *Response->Record.MutableSecret() = secret;
         *Response->Record.MutableDatabase() = database;
         return EExecution::Complete;
+    }
+
+    EExecution RetirePending(NIceDb::TNiceDb& db, const TRetirePendingRequest& request, ui64 nowUs) {
+        if (!ValidSecret(request.GetSecret()) || !ValidId(request.GetOperationId())) {
+            return Error(INVALID_ARGUMENT, "A complete immutable secret identity and pending operation are required");
+        }
+        TDelegation record;
+        TString previousRequest;
+        if (const auto status = ReadDelegation(db, request.GetOperationId(), record, nullptr, nullptr,
+            &previousRequest); status != EReadStatus::Ready) {
+            return ReadError(status, "Delegation");
+        }
+        if (!record.HasSecret() || !SameSecret(record.GetSecret(), request.GetSecret())) {
+            return Error(CONFLICT, "Pending operation belongs to another immutable secret");
+        }
+        TSecretRecord secret;
+        if (const auto status = ReadSecret(db, request.GetSecret(), secret); status != EReadStatus::Ready) {
+            return ReadError(status, "Secret");
+        }
+        // Preserve the exact request so a lost reply can be recovered even after
+        // another ALTER, a late setup result, or secret deletion and path reuse.
+        if (!previousRequest.empty()) {
+            if (previousRequest != request.SerializeAsString()) {
+                return Error(CONFLICT, "Pending operation was retired with another request");
+            }
+            return Reply(record, &secret);
+        }
+        if (record.GetRevision() != request.GetExpectedRevision()
+            || secret.GetRevision() != request.GetExpectedSecretRevision()
+            || record.GetState() != PENDING || secret.GetState() != SECRET_LIVE
+            || secret.GetPendingOperationId() != record.GetOperationId()) {
+            return Error(PRECONDITION_FAILED, "Only the current pending operation and secret revisions can be retired");
+        }
+        TDatabaseRecord database;
+        if (const auto status = ReadDatabase(db, record.GetDatabaseIncarnation(), database); status != EReadStatus::Ready) {
+            return ReadError(status, "Database");
+        }
+        const auto previous = record;
+        Retire(record, nowUs);
+        secret.ClearPendingOperationId();
+        secret.SetRevision(secret.GetRevision() + 1);
+        WriteSecret(db, secret);
+        WriteDelegation(db, record, &previous, &secret);
+        db.Table<TSchema::Delegations>().Key(record.GetOperationId())
+            .Update(NIceDb::TUpdate<TSchema::Delegations::RetirePending>(request.SerializeAsString()));
+        WriteDatabase(db, database);
+        return Reply(record, &secret, &database);
     }
 
     EExecution GetSecret(NIceDb::TNiceDb& db, const TGetSecretRequest& request) {
@@ -662,6 +770,33 @@ struct TIamDelegationTablet::TTxRequest final
         return EExecution::Complete;
     }
 
+    EExecution ListDatabases(NIceDb::TNiceDb& db, const TListDatabasesRequest& request) {
+        if (!request.GetPageSize() || request.GetPageSize() > MaxPageSize
+            || request.GetAfterIncarnation().size() > 256) {
+            return Error(INVALID_ARGUMENT, "A bounded page size and database incarnation cursor are required");
+        }
+        auto rows = db.Table<TSchema::Databases>().GreaterOrEqual(request.GetAfterIncarnation())
+            .Select<TSchema::Databases::Incarnation, TSchema::Databases::Data>();
+        if (!rows.IsReady()) {
+            return EExecution::Retry;
+        }
+        while (!rows.EndOfSet()) {
+            const auto incarnation = rows.GetValue<TSchema::Databases::Incarnation>();
+            if (incarnation != request.GetAfterIncarnation()) {
+                if (Response->Record.DatabasesSize() == request.GetPageSize()) {
+                    Response->Record.SetNextAfterIncarnation(
+                        Response->Record.GetDatabases(request.GetPageSize() - 1).GetIdentity().GetIncarnation());
+                    break;
+                }
+                Parse(rows.GetValue<TSchema::Databases::Data>(), *Response->Record.AddDatabases());
+            }
+            if (!rows.Next()) {
+                return EExecution::Retry;
+            }
+        }
+        return EExecution::Complete;
+    }
+
     EExecution ClaimRevocations(NIceDb::TNiceDb& db, const TClaimRevocationsRequest& request, ui64 nowUs) {
         if (!ValidId(request.GetWorkerId()) || !request.GetLimit() || request.GetLimit() > MaxClaimSize
             || request.GetLeaseUs() < MinLeaseUs || request.GetLeaseUs() > MaxLeaseUs) {
@@ -717,7 +852,9 @@ struct TIamDelegationTablet::TTxRequest final
 
     EExecution FinishRevocation(NIceDb::TNiceDb& db, const TFinishRevocationRequest& request, ui64 nowUs) {
         if ((request.GetOutcome() != REVOKE_SUCCEEDED && request.GetOutcome() != REVOKE_RETRY)
-            || request.GetRetryAfterUs() > MaxRetryUs || request.GetRevokeOperationId().size() > 256) {
+            || request.GetRetryAfterUs() > MaxRetryUs || request.GetRevokeOperationId().size() > 256
+            || (request.GetClearRevokeOperationId()
+                && (request.GetOutcome() != REVOKE_RETRY || !request.GetRevokeOperationId().empty()))) {
             return Error(INVALID_ARGUMENT, "A bounded retry or successful revocation outcome is required");
         }
         TDelegation record;
@@ -745,8 +882,16 @@ struct TIamDelegationTablet::TTxRequest final
         if (const auto status = ReadDatabase(db, record.GetDatabaseIncarnation(), database); status != EReadStatus::Ready) {
             return ReadError(status, "Database");
         }
+        TSecretRecord secret;
+        if (record.HasSecret()) {
+            if (const auto status = ReadSecret(db, record.GetSecret(), secret); status != EReadStatus::Ready) {
+                return ReadError(status, "Secret");
+            }
+        }
         const auto previous = record;
-        if (!request.GetRevokeOperationId().empty()) {
+        if (request.GetClearRevokeOperationId()) {
+            record.ClearRevokeOperationId();
+        } else if (!request.GetRevokeOperationId().empty()) {
             record.SetRevokeOperationId(request.GetRevokeOperationId());
         }
         if (request.GetOutcome() == REVOKE_SUCCEEDED) {
@@ -757,7 +902,7 @@ struct TIamDelegationTablet::TTxRequest final
             record.SetDueAtUs(nowUs + request.GetRetryAfterUs());
         }
         record.SetRevision(record.GetRevision() + 1);
-        WriteDelegation(db, record, &previous);
+        WriteDelegation(db, record, &previous, &secret);
         db.Table<TSchema::Delegations>().Key(record.GetOperationId())
             .Update(NIceDb::TUpdate<TSchema::Delegations::LastFinish>(request.SerializeAsString()));
         WriteDatabase(db, database);
@@ -774,7 +919,7 @@ struct TIamDelegationTablet::TTxRequest final
         EExecution result = EExecution::Complete;
         switch (request.Command_case()) {
             case TRequest::kRegisterDatabase: result = RegisterDatabase(db, request.GetRegisterDatabase()); break;
-            case TRequest::kStage: result = Stage(db, request.GetStage()); break;
+            case TRequest::kStage: result = Stage(db, request.GetStage(), nowUs); break;
             case TRequest::kBindSecret: result = BindSecret(db, request.GetBindSecret()); break;
             case TRequest::kStartSetup: result = StartSetup(db, request.GetStartSetup()); break;
             case TRequest::kSetSetupResult: result = SetSetupResult(db, request.GetSetSetupResult(), nowUs); break;
@@ -785,13 +930,19 @@ struct TIamDelegationTablet::TTxRequest final
             case TRequest::kListInventory: result = ListInventory(db, request.GetListInventory()); break;
             case TRequest::kClaimRevocations: result = ClaimRevocations(db, request.GetClaimRevocations(), nowUs); break;
             case TRequest::kFinishRevocation: result = FinishRevocation(db, request.GetFinishRevocation(), nowUs); break;
+            case TRequest::kListDatabases: result = ListDatabases(db, request.GetListDatabases()); break;
+            case TRequest::kRetirePending: result = RetirePending(db, request.GetRetirePending(), nowUs); break;
             case TRequest::COMMAND_NOT_SET: result = Error(INVALID_ARGUMENT, "A tablet command is required"); break;
         }
         return result == EExecution::Complete;
     }
 
     void Complete(const TActorContext& ctx) override {
-        ctx.Send(Event->Sender, Response.Release(), 0, Event->Cookie);
+        auto response = MakeHolder<IEventHandle>(Event->Sender, ctx.SelfID, Response.Release(), 0, Event->Cookie);
+        if (Event->InterconnectSession) {
+            response->Rewrite(TEvInterconnect::EvForward, Event->InterconnectSession);
+        }
+        ctx.Send(response.Release());
     }
 
     TEvIamDelegationTablet::TEvRequest::TPtr Event;

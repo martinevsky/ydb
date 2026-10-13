@@ -42,6 +42,7 @@ RECURSE(
     certificate_check
     external_idp
     iam_delegation
+    iam_delegation_lifecycle
     ldap_auth_provider
     sasl
     util

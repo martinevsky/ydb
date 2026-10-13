@@ -1,10 +1,7 @@
 UNITTEST_FOR(ydb/library/yql/providers/solomon/actors)
 
-IF (SANITIZER_TYPE)
-    SIZE(MEDIUM)
-ELSE()
-    SIZE(SMALL)
-ENDIF()
+# Writer tests include several ten-second waits for absence of errors.
+SIZE(MEDIUM)
 
 INCLUDE(${ARCADIA_ROOT}/ydb/library/yql/tools/solomon_emulator/recipe/recipe.inc)
 
@@ -12,6 +9,7 @@ SRCS(
     dq_solomon_actors_util_ut.cpp
     dq_solomon_metrics_queue_ut.cpp
     dq_solomon_write_actor_ut.cpp
+    dq_solomon_async_credentials_ut.cpp
     ut_helpers.cpp
 )
 

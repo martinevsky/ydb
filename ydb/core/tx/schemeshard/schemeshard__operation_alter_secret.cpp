@@ -143,6 +143,10 @@ public:
         result->SetPathId(secretPath.Base()->PathId.LocalPathId);
 
         TString errStr;
+        if (!context.SS->CheckApplyIf(Transaction, errStr)) {
+            result->SetError(NKikimrScheme::StatusPreconditionFailed, errStr);
+            return result;
+        }
         if (!context.SS->CheckLocks(parentPath.Base()->PathId, Transaction, errStr)) {
             result->SetError(NKikimrScheme::StatusMultipleModifications, errStr);
             return result;
@@ -165,6 +169,30 @@ public:
             result->SetError(NKikimrScheme::StatusInvalidParameter,
                 "Secret value must be set via Value, however ValueParamName was passed");
             return result;
+        }
+
+        if (alterSecretProto.HasIamDelegation()) {
+            result->SetError(NKikimrScheme::StatusInvalidParameter,
+                "IAM delegation parameters must be resolved by the secret coordinator");
+            return result;
+        }
+        const bool external = secretInfo->Description.HasIamDelegation();
+        if ((external && alterSecretProto.HasValue())
+            || (!external && alterSecretProto.HasIamDelegationReference()))
+        {
+            result->SetError(NKikimrScheme::StatusInvalidParameter, "Secret source cannot be changed");
+            return result;
+        }
+        if (alterSecretProto.HasIamDelegationReference()) {
+            const auto& current = secretInfo->Description.GetIamDelegation();
+            const auto& requested = alterSecretProto.GetIamDelegationReference();
+            if (current.GetTabletId() != requested.GetTabletId()
+                || current.GetDatabaseIncarnation() != requested.GetDatabaseIncarnation()
+                || current.GetCreateOperationId() != requested.GetCreateOperationId())
+            {
+                result->SetError(NKikimrScheme::StatusInvalidParameter, "IAM delegation reference cannot be changed");
+                return result;
+            }
         }
 
         context.MemChanges.GrabPath(context.SS, secretPath.Base()->PathId);
@@ -194,7 +222,9 @@ public:
         }
 
         auto alterData = secretInfo->CreateNextVersion();
-        alterData->Description.SetValue(alterSecretProto.GetValue());
+        if (!external) {
+            alterData->Description.SetValue(alterSecretProto.GetValue());
+        }
         alterData->Description.SetVersion(secretInfo->AlterVersion);
 
         Y_ABORT_UNLESS(!context.SS->FindTx(OperationId));

@@ -5,6 +5,7 @@ SRCS(
 )
 
 PEERDIR(
+    ydb/library/yql/providers/common/token_accessor/client
     library/cpp/retry
     library/cpp/testing/unittest
     ydb/library/actors/testlib

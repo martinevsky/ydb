@@ -58,6 +58,7 @@ PEERDIR(
     yql/essentials/minikql
     yql/essentials/parser/pg_wrapper/interface
     yql/essentials/public/issue
+    yql/essentials/providers/common/structured_token
 )
 
 GENERATE_ENUM_SERIALIZATION(kqp_tx_info.h)
