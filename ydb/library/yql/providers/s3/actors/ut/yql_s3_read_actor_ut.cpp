@@ -210,7 +210,7 @@ public:
             NKikimrServices::EServiceKikimr_MAX, NKikimrServices::EServiceKikimr_Name);
         Runtime.SetRegistrationObserverFunc([this](TTestActorRuntimeBase& runtime, const TActorId& parent, const TActorId& actor) {
             TTestActorRuntimeBase::DefaultRegistrationObserver(runtime, parent, actor);
-            if (runtime.FindActorName(actor).Contains("TS3ReadCoroActor")) {
+            if (runtime.FindActorName(actor) == "S3_READ") {
                 DecoderId = actor;
                 ReaderId = parent;
             }
