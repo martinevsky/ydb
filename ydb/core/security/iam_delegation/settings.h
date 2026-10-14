@@ -4,6 +4,7 @@
 
 #include <util/datetime/base.h>
 #include <util/generic/string.h>
+#include <util/generic/utility.h>
 
 namespace NKikimrReplication {
     class TReplicationDefaults;
@@ -29,6 +30,14 @@ struct TIamDelegationSettings {
     static constexpr TDuration MinServedLifetime = TDuration::Minutes(5);
     static constexpr TDuration MaxTokenCacheLifetime = TDuration::Hours(1);
     static constexpr TDuration IdleKeyTtl = TDuration::Minutes(10);
+
+    // Maximum wait for the refresh loop's next result, including its error backoff,
+    // every credential/RPC wait and the maximum retry delays. Consumers must allow
+    // this entire budget; deriving it must not sample randomized backoffs.
+    static TDuration MintAttemptTimeout() {
+        return TDuration::Seconds(75) + (RequestTimeout * 2 + TDuration::Seconds(14))
+            * Max<ui32>(MaxRetries, 1) + TDuration::Seconds(1);
+    }
 
     static TIamDelegationSettings FromConfig(const NKikimrConfig::TIamConfig& iamConfig);
 

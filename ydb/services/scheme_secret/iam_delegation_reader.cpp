@@ -1,6 +1,7 @@
 #include "iam_delegation_reader.h"
 
 #include <ydb/core/base/iam_delegation.h>
+#include <ydb/core/security/iam_delegation/settings.h>
 #include <ydb/core/security/iam_delegation_lifecycle/client.h>
 #include <ydb/core/tx/iam_delegation/public/events.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
@@ -27,7 +28,7 @@ public:
             return;
         }
         Become(&TReader::StateWork);
-        Schedule(TDuration::Seconds(30), new NActors::TEvents::TEvWakeup());
+        SetPhase(EPhase::Secret);
         ReadSecret();
     }
 private:
@@ -35,8 +36,19 @@ private:
         hFunc(TEvTablet::TEvResponse, HandleTablet);
         hFunc(NIamDelegation::TEvIamDelegation::TEvGetTokenResult, HandleToken);
         hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, HandleSchema);
-        cFunc(NActors::TEvents::TEvWakeup::EventType, Timeout);
+        hFunc(NActors::TEvents::TEvWakeup, HandleTimeout);
+        cFunc(NActors::TEvents::TEvPoison::EventType, PassAway);
     )
+
+    void SetPhase(EPhase phase) {
+        Phase = phase;
+        // The token producer may already be backing off. Allow its complete next
+        // attempt and bounded delivery slack, without extending storage/schema waits.
+        const auto timeout = Phase == EPhase::Token
+            ? NIamDelegation::TIamDelegationSettings::MintAttemptTimeout() + TDuration::Seconds(1)
+            : TDuration::Seconds(30);
+        Schedule(timeout, new NActors::TEvents::TEvWakeup(static_cast<ui64>(Phase)));
+    }
 
     void Request(THolder<TEvTablet::TEvRequest> request) {
         Send(Register(NIamDelegation::CreateIamDelegationTabletRequestActor(Reference.TabletId)),
@@ -92,7 +104,7 @@ private:
         }
         if (Phase == EPhase::Secret) {
             Secret = response.GetSecret();
-            Phase = EPhase::Delegation;
+            SetPhase(EPhase::Delegation);
             auto request = MakeHolder<TEvTablet::TEvRequest>();
             request->Record.MutableGetDelegation()->SetOperationId(Secret.GetCurrentOperationId());
             Request(std::move(request));
@@ -107,11 +119,11 @@ private:
             const auto& binding = delegation.GetBinding();
             TokenKey = {binding.GetServiceAccountId(), binding.GetCloudId(), binding.GetServiceId(),
                 binding.GetMicroserviceId(), binding.GetResourceType()};
-            Phase = EPhase::Token;
+            SetPhase(EPhase::Token);
             Send(NIamDelegation::MakeIamDelegatedTokenServiceId(),
                 new NIamDelegation::TEvIamDelegation::TEvGetToken(TokenKey), 0, ++Sequence);
         } else if (Phase == EPhase::Recheck) {
-            Phase = EPhase::Schema;
+            SetPhase(EPhase::Schema);
             auto request = MakeHolder<NSchemeCache::TSchemeCacheNavigate>();
             auto& entry = request->ResultSet.emplace_back();
             entry.Operation = NSchemeCache::TSchemeCacheNavigate::OpPath;
@@ -135,7 +147,7 @@ private:
         }
         Token = result.Token;
         UsableUntil = result.UsableUntil;
-        Phase = EPhase::Recheck;
+        SetPhase(EPhase::Recheck);
         ReadSecret();
     }
 
@@ -170,7 +182,11 @@ private:
         Finish(Ydb::StatusIds::SUCCESS, {});
     }
 
-    void Timeout() { Finish(Ydb::StatusIds::UNAVAILABLE, "Secret delegation read timed out"); }
+    void HandleTimeout(NActors::TEvents::TEvWakeup::TPtr& ev) {
+        if (ev->Get()->Tag == static_cast<ui64>(Phase)) {
+            Finish(Ydb::StatusIds::UNAVAILABLE, "Secret delegation read timed out");
+        }
+    }
     void Finish(Ydb::StatusIds::StatusCode status, const TString& issue, const NYql::TIssues& details = {}) {
         auto result = MakeHolder<TEvIamDelegationSecretReadResult>();
         result->SecretPath = Path;

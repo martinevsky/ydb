@@ -1,6 +1,10 @@
 #include <ydb/services/scheme_secret/iam_delegation_reader.h>
 #include <ydb/services/scheme_secret/service.h>
 #include <ydb/core/base/iam_delegation.h>
+#include <ydb/core/security/iam_delegation/iam_delegated_token_service.h>
+#include <ydb/core/security/token_manager/token_manager.h>
+#include <ydb/library/ycloud/api/iam_token_service.h>
+#include <util/random/random.h>
 #include <ydb/core/tx/iam_delegation/ut/requests.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 
@@ -24,6 +28,9 @@ struct TReadFixture {
     bool HoldMint = false;
     Ydb::StatusIds::StatusCode MintFailureStatus = Ydb::StatusIds::UNAVAILABLE;
     ui32 MintFailuresLeft = 0;
+    THashSet<TActorId> ScheduledActors;
+    TTestActorRuntimeBase::TScheduledEventFilter PreviousScheduledFilter;
+    TTestActorRuntimeBase::TRegistrationObserver PreviousRegistrationObserver;
 
     class TServices : public NActors::TActorBootstrapped<TServices> {
     public:
@@ -83,9 +90,34 @@ struct TReadFixture {
         Reference = {TTestContext::TabletId, "database-incarnation-1", "create-1", 100, 42};
         UsableUntil = Context.GetRuntime().GetCurrentTime() + TDuration::Hours(1);
         auto& runtime = Context.GetRuntime();
+        // Tablet maintenance timers are irrelevant to these reads and would add
+        // thousands of scheduler turns while advancing a multi-minute deadline.
+        // Keep timers for the reader/resolver/producer and all of their children.
+        PreviousRegistrationObserver = runtime.SetRegistrationObserverFunc(
+            [this](auto& rt, const auto& parent, const auto& actor) {
+                PreviousRegistrationObserver(rt, parent, actor);
+                if (ScheduledActors.contains(parent)) {
+                    ScheduledActors.insert(actor);
+                }
+            });
+        PreviousScheduledFilter = runtime.SetScheduledEventFilter(
+            [this](auto&, auto& event, auto, auto&) {
+                return !ScheduledActors.contains(event->GetRecipientRewrite());
+            });
         const auto service = runtime.Register(new TServices(*this));
         runtime.RegisterService(NIamDelegation::MakeIamDelegatedTokenServiceId(), service);
         runtime.RegisterService(MakeSchemeCacheID(), service);
+    }
+
+    ~TReadFixture() {
+        auto& runtime = Context.GetRuntime();
+        runtime.SetScheduledEventFilter(std::move(PreviousScheduledFilter));
+        runtime.SetRegistrationObserverFunc(std::move(PreviousRegistrationObserver));
+    }
+
+    void EnableSchedule(const TActorId& actor) {
+        ScheduledActors.insert(actor);
+        Context.GetRuntime().EnableScheduleForActor(actor);
     }
 
     NIamDelegation::TEvIamDelegation::TEvGetTokenResult* Token(const NIamDelegation::TTokenKey& key) {
@@ -103,30 +135,43 @@ struct TReadFixture {
         return result;
     }
 
-    NKqp::TEvDescribeSecretsResponse::TDescription ReadThroughService(TDescribeSecretSettings settings = {}) {
+    template<class TCondition>
+    void Until(TCondition condition, TDuration timeout = TDuration::Minutes(10)) {
+        if (!condition()) {
+            TDispatchOptions options;
+            options.CustomFinalCondition = condition;
+            options.FinalEvents.emplace_back([](IEventHandle&) { return false; });
+            Context.GetRuntime().DispatchEvents(options, timeout);
+        }
+        UNIT_ASSERT(condition());
+    }
+
+    NThreading::TFuture<NKqp::TEvDescribeSecretsResponse::TDescription> StartThroughService(
+            TDescribeSecretSettings settings = {}) {
         auto& runtime = Context.GetRuntime();
         runtime.GetAppData(0).FeatureFlags.SetEnableIamDelegationSecrets(true);
         const auto service = runtime.Register(new TDescribeSchemaSecretsService());
-        runtime.EnableScheduleForActor(service);
+        EnableSchedule(service);
         auto promise = NThreading::NewPromise<NKqp::TEvDescribeSecretsResponse::TDescription>();
         runtime.Send(new IEventHandle(service, runtime.AllocateEdgeActor(),
             new TDescribeSchemaSecretsService::TEvResolveSecret(
                 MakeIntrusive<NACLib::TUserToken>("reader", TVector<TString>{"readers"}),
                 "/Root/database", {"/Root/database/secret"}, promise, std::move(settings))), 0, true);
-        TDispatchOptions options;
-        options.CustomFinalCondition = [&] { return promise.HasValue(); };
-        options.FinalEvents.emplace_back([](IEventHandle&) { return false; });
-        runtime.DispatchEvents(options, TDuration::Seconds(30));
-        UNIT_ASSERT(promise.HasValue());
-        runtime.Send(new IEventHandle(service, {}, new TEvents::TEvPoison));
-        return promise.GetFuture().GetValue();
+        return promise.GetFuture();
+    }
+
+    NKqp::TEvDescribeSecretsResponse::TDescription ReadThroughService(TDescribeSecretSettings settings = {}) {
+        auto future = StartThroughService(std::move(settings));
+        Until([&] { return future.HasValue(); });
+        return future.GetValue();
     }
 
     TActorId StartRead() {
         auto& runtime = Context.GetRuntime();
         const auto edge = runtime.AllocateEdgeActor();
-        runtime.Register(CreateIamDelegationSecretReaderActor(edge, 123, "/Root/database/secret",
+        const auto reader = runtime.Register(CreateIamDelegationSecretReaderActor(edge, 123, "/Root/database/secret",
             "/Root/database", MakeIntrusive<NACLib::TUserToken>("reader", TVector<TString>{"readers"}), Reference));
+        EnableSchedule(reader);
         return edge;
     }
 
@@ -153,6 +198,174 @@ struct TReadFixture {
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationSecretReader) {
+    Y_UNIT_TEST(DefaultResolverAndConcurrentReaderWaitThroughRealProducerBackoff) {
+        TReadFixture fixture;
+        SetRandomSeed(42);
+        auto& runtime = fixture.Context.GetRuntime();
+        using TCloudToken = NCloud::TEvIamTokenService;
+        TActorId producer;
+        TDuration longBackoff;
+        ui32 subscriptionsSeen = 0;
+        ui32 mintCalls = 0;
+        ui32 getCalls = 0;
+        ui32 readerReplies = 0;
+        bool recover = false;
+        TTestActorRuntimeBase::TScheduledEventFilter previousFilter;
+        previousFilter = runtime.SetScheduledEventFilter([&](auto& rt, auto& event, TDuration delay, auto& deadline) {
+            if (event->Recipient == producer && delay > TDuration::Seconds(65)
+                    && delay <= TDuration::Seconds(75)) {
+                longBackoff = delay;
+            }
+            return previousFilter(rt, event, delay, deadline);
+        });
+        Y_DEFER { runtime.SetScheduledEventFilter(std::move(previousFilter)); };
+        auto subscriptions = runtime.AddObserver<TEvTokenManager::TEvSubscribeUpdateToken>(
+            [&](auto& event) { ++subscriptionsSeen; event.Reset(); });
+        auto mints = runtime.AddObserver<TCloudToken::TEvCreateForServiceRequest>([&](auto& event) {
+            ++mintCalls;
+            UNIT_ASSERT_C(mintCalls < 200, "Producer never reached its maximum backoff");
+            UNIT_ASSERT_VALUES_EQUAL(event->Get()->Request.target_service_account_id(), "service-account-1");
+            auto response = MakeHolder<TCloudToken::TEvCreateForServiceResponse>();
+            response->Status.GRpcStatusCode = recover ? grpc::StatusCode::OK : grpc::StatusCode::UNAVAILABLE;
+            response->Response.set_iam_token("recovered-token");
+            response->Response.mutable_expires_at()->set_seconds(
+                (runtime.GetCurrentTime() + TDuration::Hours(1)).Seconds());
+            runtime.Send(new IEventHandle(event->Sender, event->Recipient, response.Release(), 0, event->Cookie));
+            event.Reset();
+        });
+        auto gets = runtime.AddObserver<NIamDelegation::TEvIamDelegation::TEvGetToken>(
+            [&](auto&) { ++getCalls; });
+        auto replies = runtime.AddObserver<TEvIamDelegationSecretReadResult>([&](auto& event) {
+            ++readerReplies;
+            UNIT_ASSERT_VALUES_EQUAL_C(event->Get()->Status, Ydb::StatusIds::SUCCESS,
+                event->Get()->Issues.ToString());
+        });
+        NIamDelegation::TIamDelegationSettings settings;
+        settings.Config.SetTokenServiceEndpoint("localhost:1");
+        settings.Config.SetSystemTokenName("system-account");
+        settings.Config.SetEnableSsl(false);
+        const auto manager = runtime.AllocateEdgeActor();
+        runtime.RegisterService(MakeTokenManagerID(), manager);
+        producer = runtime.Register(NIamDelegation::CreateIamDelegatedTokenService(settings));
+        runtime.RegisterService(NIamDelegation::MakeIamDelegatedTokenServiceId(), producer);
+        fixture.EnableSchedule(producer);
+        fixture.Until([&] { return subscriptionsSeen == 1; }, TDuration::Seconds(1));
+        runtime.Send(new IEventHandle(producer, manager, new TEvTokenManager::TEvUpdateToken(
+            "system-account", "system-token", {TEvTokenManager::TStatus::ECode::SUCCESS, {}})));
+        runtime.Send(new IEventHandle(producer, runtime.AllocateEdgeActor(),
+            new NIamDelegation::TEvIamDelegation::TEvGetToken(
+                {"service-account-1", "cloud-1", "ydb", "data-plane", "resource-manager.cloud"})));
+        fixture.Until([&] { return longBackoff != TDuration::Zero(); });
+        recover = true;
+        const auto mintsBeforeRead = mintCalls;
+        const auto getsBeforeRead = getCalls;
+        const auto edge = fixture.StartRead();
+        auto resolved = fixture.StartThroughService(); // exercise the default retry policy
+        fixture.Until([&] { return getCalls == getsBeforeRead + 2; }, TDuration::Seconds(1));
+        runtime.SimulateSleep(TDuration::Seconds(61));
+        UNIT_ASSERT_VALUES_EQUAL(readerReplies, 0);
+        UNIT_ASSERT_VALUES_EQUAL(getCalls, getsBeforeRead + 2); // neither reader abandoned the shared next attempt
+        UNIT_ASSERT_VALUES_EQUAL(mintCalls, mintsBeforeRead);
+        UNIT_ASSERT(!resolved.HasValue());
+        fixture.Until([&] { return resolved.HasValue(); });
+        const auto direct = fixture.FinishRead(edge);
+        UNIT_ASSERT_VALUES_EQUAL(direct->Status, Ydb::StatusIds::SUCCESS);
+        UNIT_ASSERT_VALUES_EQUAL(direct->Token, "recovered-token");
+        UNIT_ASSERT_VALUES_EQUAL(resolved.GetValue().Status, Ydb::StatusIds::SUCCESS);
+        UNIT_ASSERT_VALUES_EQUAL(resolved.GetValue().SecretValues.at(0), "recovered-token");
+        UNIT_ASSERT_VALUES_EQUAL(mintCalls, mintsBeforeRead + 1);
+        UNIT_ASSERT_VALUES_EQUAL(getCalls, getsBeforeRead + 2);
+    }
+
+    Y_UNIT_TEST(MissingTokenReplyTimesOutAndLateReplyIsIgnored) {
+        TReadFixture fixture;
+        fixture.HoldMint = true;
+        const auto edge = fixture.StartRead();
+        fixture.WaitForHeldMint();
+        const auto started = fixture.Context.GetRuntime().GetCurrentTime();
+        const auto result = fixture.FinishRead(edge);
+        UNIT_ASSERT_VALUES_EQUAL(result->Status, Ydb::StatusIds::UNAVAILABLE);
+        UNIT_ASSERT_STRING_CONTAINS(result->Issues.ToString(), "timed out");
+        const auto elapsed = fixture.Context.GetRuntime().GetCurrentTime() - started;
+        UNIT_ASSERT_C(elapsed > TDuration::Seconds(246), elapsed);
+        UNIT_ASSERT_C(elapsed < TDuration::Minutes(5), elapsed);
+        ui32 lateReplies = 0;
+        auto replies = fixture.Context.GetRuntime().AddObserver<TEvIamDelegationSecretReadResult>(
+            [&](auto&) { ++lateReplies; });
+        fixture.ReleaseMint();
+        fixture.Context.GetRuntime().SimulateSleep(TDuration::Seconds(1));
+        UNIT_ASSERT_VALUES_EQUAL(lateReplies, 0);
+    }
+
+    Y_UNIT_TEST(StorageWaitRemainsBounded) {
+        TReadFixture fixture;
+        auto& runtime = fixture.Context.GetRuntime();
+        auto responses = runtime.AddObserver<NIamDelegation::TEvIamDelegationTablet::TEvResponse>(
+            [&](auto& event) { event.Reset(); });
+        const auto started = runtime.GetCurrentTime();
+        const auto result = fixture.FinishRead(fixture.StartRead());
+        UNIT_ASSERT_VALUES_EQUAL(result->Status, Ydb::StatusIds::UNAVAILABLE);
+        UNIT_ASSERT_VALUES_EQUAL(runtime.GetCurrentTime() - started, TDuration::Seconds(30));
+        UNIT_ASSERT_VALUES_EQUAL(fixture.MintCalls, 0);
+    }
+
+    Y_UNIT_TEST(StaleTokenTimerDoesNotShortenBoundedSchemaWait) {
+        TReadFixture fixture;
+        fixture.HoldMint = true;
+        auto& runtime = fixture.Context.GetRuntime();
+        const auto edge = fixture.StartRead();
+        fixture.WaitForHeldMint();
+        runtime.SimulateSleep(TDuration::Seconds(240));
+        ui32 schemaRequests = 0;
+        ui32 readerReplies = 0;
+        auto schemas = runtime.AddObserver<TEvTxProxySchemeCache::TEvNavigateKeySet>([&](auto& event) {
+            ++schemaRequests;
+            event.Reset();
+        });
+        auto replies = runtime.AddObserver<TEvIamDelegationSecretReadResult>(
+            [&](auto&) { ++readerReplies; });
+        fixture.ReleaseMint();
+        fixture.Until([&] { return schemaRequests == 1; });
+        const auto schemaStarted = runtime.GetCurrentTime();
+        runtime.SimulateSleep(TDuration::Seconds(8)); // the old token-phase deadline has passed
+        UNIT_ASSERT_VALUES_EQUAL(readerReplies, 0);
+        const auto result = fixture.FinishRead(edge);
+        UNIT_ASSERT_VALUES_EQUAL(result->Status, Ydb::StatusIds::UNAVAILABLE);
+        UNIT_ASSERT_VALUES_EQUAL(runtime.GetCurrentTime() - schemaStarted, TDuration::Seconds(30));
+        UNIT_ASSERT_VALUES_EQUAL(readerReplies, 1);
+    }
+
+    Y_UNIT_TEST(CancelledReaderIgnoresLateMintAndTimer) {
+        TReadFixture fixture;
+        fixture.HoldMint = true;
+        auto& runtime = fixture.Context.GetRuntime();
+        fixture.StartRead();
+        fixture.WaitForHeldMint();
+        ui32 readerReplies = 0;
+        ui32 schemaRequests = 0;
+        auto replies = runtime.AddObserver<TEvIamDelegationSecretReadResult>(
+            [&](auto&) { ++readerReplies; });
+        auto schemas = runtime.AddObserver<TEvTxProxySchemeCache::TEvNavigateKeySet>(
+            [&](auto&) { ++schemaRequests; });
+        runtime.Send(new IEventHandle(fixture.HeldRecipient, {}, new TEvents::TEvPoison));
+        fixture.ReleaseMint();
+        runtime.SimulateSleep(TDuration::Minutes(5));
+        UNIT_ASSERT_VALUES_EQUAL(readerReplies, 0);
+        UNIT_ASSERT_VALUES_EQUAL(schemaRequests, 0);
+    }
+
+    Y_UNIT_TEST(TokenAtUsableDeadlineDuringSchemaCheckIsNotReturned) {
+        TReadFixture fixture;
+        auto& runtime = fixture.Context.GetRuntime();
+        fixture.UsableUntil = runtime.GetCurrentTime() + TDuration::Seconds(1);
+        auto schemas = runtime.AddObserver<TEvTxProxySchemeCache::TEvNavigateKeySetResult>([&](auto&) {
+            runtime.AdvanceCurrentTime(TDuration::Seconds(1));
+        });
+        const auto result = fixture.FinishRead(fixture.StartRead());
+        UNIT_ASSERT_VALUES_EQUAL(result->Status, Ydb::StatusIds::UNAVAILABLE);
+        UNIT_ASSERT_STRING_CONTAINS(result->Issues.ToString(), "expired during authorization");
+    }
+
     Y_UNIT_TEST(SecretServiceRetriesEveryTransientMintStatusWithCallerPolicy) {
         for (const auto status : {Ydb::StatusIds::UNAVAILABLE, Ydb::StatusIds::TIMEOUT,
                 Ydb::StatusIds::OVERLOADED, Ydb::StatusIds::INTERNAL_ERROR}) {

@@ -155,7 +155,7 @@ private:
             // loop sleeps between failed attempts waits out that backoff (1 s growing to 1 min) too: it is
             // answered by the next attempt, not by the failure the loop already knows. This keeps one attempt
             // per backoff period however many requests arrive, at the price of a slower first answer.
-            co_await WithTimeout(MintAttemptTimeout(), &TThis::WaitForNewResult, this, key, entry.Generation + 1);
+            co_await WithTimeout(Settings.MintAttemptTimeout(), &TThis::WaitForNewResult, this, key, entry.Generation + 1);
         }
 
         auto result = MakeHolder<TEvIamDelegation::TEvGetTokenResult>();
@@ -172,13 +172,6 @@ private:
             result->Issues.AddIssue(TStringBuilder() << "timeout while obtaining the IAM token for " << key.ToString());
         }
         Send(replyTo, result.Release(), 0, cookie);
-    }
-
-    // Include an already-running refresh loop's maximum error backoff, every credential/RPC
-    // wait and the maximum retry delay. This bound must not sample randomized backoffs.
-    TDuration MintAttemptTimeout() const {
-        return TDuration::Seconds(75) + (Settings.RequestTimeout * 2 + TDuration::Seconds(14))
-            * Max<ui32>(Settings.MaxRetries, 1) + TDuration::Seconds(1);
     }
 
     void StartRefresh(TTokenKey key) {

@@ -12,6 +12,7 @@ PEERDIR(
     ydb/services/scheme_secret/ut/common
     ydb/core/kqp/ut/common
     ydb/core/tx/iam_delegation
+    ydb/core/security/iam_delegation
     ydb/core/testlib/default
     yql/essentials/sql/pg_dummy
 )

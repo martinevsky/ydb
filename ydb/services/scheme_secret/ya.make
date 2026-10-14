@@ -13,6 +13,7 @@ PEERDIR(
     ydb/core/base
     ydb/core/kqp/common/events
     ydb/core/protos
+    ydb/core/security/iam_delegation
     ydb/core/security/iam_delegation_lifecycle
     ydb/core/tx/iam_delegation/public
     ydb/core/tx/scheme_board
