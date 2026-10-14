@@ -10,7 +10,7 @@ Implement the local capability contracts without expanding this component's auth
 
 ## Decisions
 
-Use the existing component and its real actor/tablet test harness. Keep interface obligations in one capability contract and link to them across component boundaries. Use the shared design for the rationale; do not maintain a second architecture description here.
+Use the existing component and its real actor test harness. TRetryStuff owns TDownloadCancellation: one mutex protects both the cancelled flag and hook publication/consumption. Invoke hooks and release replaced captures after unlocking, including hooks returned after cancellation. Preserve the pre-dispatch guard and captured shared retry-state lifetime. Keep interface obligations in one capability contract and link to them across component boundaries. Use the shared design for the rationale; do not maintain a second architecture description here.
 
 ## Risks / Trade-offs
 

@@ -2,19 +2,17 @@
 
 ## Purpose
 
-Specify test-owned coverage and its reproducible fixture boundaries. The linked feature contracts remain authoritative; these scenarios describe assertions and evidence, not additional runtime requirements.
+Specify test-owned coverage and reproducible fixture boundaries. The linked feature contracts remain authoritative; these scenarios describe assertions and evidence, not additional runtime requirements.
 
 Authoritative contracts: [consumers](../../../../../../../../services/scheme_secret/openspec/changes/external-secrets-iam-delegation/specs/external-secret-consumers/spec.md), [s3](../../../openspec/changes/external-secrets-iam-delegation/specs/external-secret-s3-cancellation/spec.md).
 
 ## Execution and evidence
 
-Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/library/yql/providers/s3/actors/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
+Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/library/yql/providers/s3/actors/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below.
 
-Source baseline: `67a530cc28eb2269e75fe0b83f2bacf73a1cbe2a`, including C1 product commit `8795e8bd1b186fc53051e5dd79126d9347a0e1b3`. Task5 changes paths only; source hashes and new-path results are recorded in the [durable verification record](../../../../../../../../core/security/iam_delegation/docs/external-secrets/verification.md).
+Source revision: `2e7842af118177858824d740015af632ce10a2fb`. Status: **implemented and verified**. The full owning executable ran 50/50 GOOD with exact command exit 0, together with 4/4 credential tests. The focused cancellation/wrapper run passed 14/14. The original streaming regression failed before the synchronization fix with a missed hook (0 instead of 1). Source hashes, exact commands, result counts and dereferenced evidence are recorded in the [durable verification record](../../../../../../../../core/security/iam_delegation/docs/external-secrets/verification.md). Independent task review and final integration are separate gates there.
 
-Status: **implemented; new-path/source-revision execution unverified until the verification record records a successful run**. Historical recovery/C1 runs used pre-relocation paths; names alone do not prove a passing run. Consumer and driver runs are deferred to Task4. Planned scenarios have no executable case and do not contribute to executed counts.
-
-Fixture boundary: TParquetReader uses the real read actor, an asynchronous credential factory and controlled HTTP range gateway. It reads generated Parquet data and counts credentials/ranges. Existing footer tests indirectly exercise TS3Credentials::GetAuthInfoAsync through held and failed acquisition. They do not exercise the read-side TRetryStuff streaming hook publication race or reentrant/repeated cancellation; those are C2 work.
+Fixture boundaries: TParquetReader uses the real read actor, asynchronous credentials and a controlled HTTP gateway on the simulated runtime's single thread. Its pending-credential test keeps the parent alive and cancels only the decoder, ensuring the late continuation actually executes the pre-dispatch guard. The streaming publication regression uses real TFakeCASetup worker threads and independently scheduled mailboxes: malformed CSV triggers decoder cancellation while Download has delivered callbacks but withholds its hook. An independent error recipient and a parent mailbox round trip establish ordering; finite waits and deferred gate release bound cleanup. Primitive tests invoke the actual TDownloadCancellation used by TRetryStuff, including 64 latch-started concurrent publication/cancellation attempts; they do not prove arbitrary interleavings or replace a race-detector run. No live IAM or TSan result is claimed.
 
 ## Requirements
 
@@ -24,15 +22,15 @@ The owning test target SHALL keep each implemented scenario traceable to its exa
 
 #### Scenario: Credential wait before range request
 
-- **GIVEN** a Parquet source with held credential future.
-- **WHEN** the read actor pumps before and after fresh-token release.
+- **GIVEN** a Parquet source with a held credential future.
+- **WHEN** the real read actor pumps before and after fresh-token release.
 - **THEN** no range starts while held, the actor remains pumpable, three rows complete, and credential calls match range calls.
 
-Executable mapping (status: implemented; execution per verification record):
+Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `TS3ParquetFooter::ParquetRangesAwaitCredentialsWithoutBlockingActor` | [yql_s3_read_actor_ut.cpp:268](../../yql_s3_read_actor_ut.cpp#L268) | `ydb/library/yql/providers/s3/actors/ut` |
+| `TS3ParquetFooter::ParquetRangesAwaitCredentialsWithoutBlockingActor` | [yql_s3_read_actor_ut.cpp:443](../../yql_s3_read_actor_ut.cpp#L443) | `ydb/library/yql/providers/s3/actors/ut` |
 
 #### Scenario: Authorization failure before range request
 
@@ -40,40 +38,95 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** credential acquisition fails.
 - **THEN** the read reports an error with zero HTTP range calls.
 
-Executable mapping (status: implemented; execution per verification record):
+Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `TS3ParquetFooter::ParquetAuthorizationFailureNeverStartsHttpRequest` | [yql_s3_read_actor_ut.cpp:284](../../yql_s3_read_actor_ut.cpp#L284) | `ydb/library/yql/providers/s3/actors/ut` |
+| `TS3ParquetFooter::ParquetAuthorizationFailureNeverStartsHttpRequest` | [yql_s3_read_actor_ut.cpp:459](../../yql_s3_read_actor_ut.cpp#L459) | `ydb/library/yql/providers/s3/actors/ut` |
 
 #### Scenario: Cancellation before credentials resolve
 
-- **GIVEN** a read actor waiting for an asynchronous credential future.
-- **WHEN** the read is cancelled before credentials arrive.
-- **THEN** the late continuation starts no download and does not access destroyed reader state.
+- **GIVEN** a streaming decoder waiting for asynchronous credentials, with its parent kept alive.
+- **WHEN** the decoder handles cancellation before credentials arrive and the late continuation is drained.
+- **THEN** no streaming download or cancel hook is dispatched and no error is reported.
 
-Status: **planned C2; no registered executable case exists yet**. Proposed case `S3ExternalSecretCancellation::CancelBeforeCredentialsResolve` belongs to this actor target; exact source and focused command pending Task3.
+Executable mapping (implemented and verified at `2e7842af1181`):
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `S3ExternalSecretCancellation::CancelBeforeCredentialsResolve` | [yql_s3_read_actor_ut.cpp:405](../../yql_s3_read_actor_ut.cpp#L405) | `ydb/library/yql/providers/s3/actors/ut` |
 
 #### Scenario: Streaming decoder cancellation precedes hook publication
 
-- **GIVEN** an AsyncDecoding streaming read whose gateway has delivered callbacks but has not returned its cancellation hook.
-- **WHEN** the decoder cancels before Download returns and TRetryStuff publishes that hook.
-- **THEN** the returned hook is consumed exactly once and the stream is cancelled.
+- **GIVEN** an AsyncDecoding CSV read whose gateway delivered callbacks but has not returned its hook.
+- **WHEN** malformed Int32 data causes cancellation on the decoder mailbox before Download returns.
+- **THEN** after explicit gate release and parent mailbox synchronization, the returned hook is invoked exactly once, with no gate timeout.
 
-Status: **planned C2; no registered executable case exists yet**. Proposed case `S3ExternalSecretCancellation::StreamingCancelBeforeHookPublication` belongs to this actor target; source and focused command pending Task3. The fixture must control the gateway interval deterministically, without sleep-based race frequency.
+Executable mapping (implemented and verified at `2e7842af1181`):
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `S3ExternalSecretCancellation::StreamingCancelBeforeHookPublication` | [yql_s3_read_actor_ut.cpp:366](../../yql_s3_read_actor_ut.cpp#L366) | `ydb/library/yql/providers/s3/actors/ut` |
 
 #### Scenario: Repeated or concurrent cancellation and publication
 
-- **GIVEN** the actual read-side cancellation primitive with hook publication held or completed.
-- **WHEN** cancellation runs before/after publication, concurrently with publication, or repeatedly.
-- **THEN** the dispatched download hook is consumed once without a data race or duplicate invocation.
+- **GIVEN** the actual production cancellation primitive and one dispatched hook.
+- **WHEN** cancellation runs before/after publication, repeatedly, or concurrently with publication.
+- **THEN** the hook is consumed exactly once and the state remains cancelled.
 
-Status: **planned C2; no registered executable case exists yet**. Proposed case `S3ExternalSecretCancellation::RepeatedConcurrentCancellation` belongs to this actor target; source and focused command pending Task3.
+Executable mapping (implemented and verified at `2e7842af1181`):
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `S3DownloadCancellation::CancelBeforePublication` | [download_cancellation_ut.cpp:12](../../download_cancellation_ut.cpp#L12) | `ydb/library/yql/providers/s3/actors/ut` |
+| `S3DownloadCancellation::CancelAfterPublication` | [download_cancellation_ut.cpp:23](../../download_cancellation_ut.cpp#L23) | `ydb/library/yql/providers/s3/actors/ut` |
+| `S3DownloadCancellation::ConcurrentPublicationAndCancellation` | [download_cancellation_ut.cpp:34](../../download_cancellation_ut.cpp#L34) | `ydb/library/yql/providers/s3/actors/ut` |
 
 #### Scenario: Reentrant cancel callback
 
-- **GIVEN** a published download hook that synchronously reenters cancellation.
-- **WHEN** cancellation invokes the hook.
-- **THEN** invocation occurs outside the synchronization lock and finishes without deadlock or invoking itself again.
+- **GIVEN** a hook that synchronously calls IsCancelled and reenters Cancel.
+- **WHEN** cancellation happens before or after hook publication.
+- **THEN** the hook observes cancelled state and finishes with exactly one invocation outside the synchronization lock.
 
-Status: **planned C2; no registered executable case exists yet**. Proposed case `S3ExternalSecretCancellation::ReentrantCancelCallback` belongs to this actor target; source and focused command pending Task3.
+Executable mapping (implemented and verified at `2e7842af1181`):
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `S3DownloadCancellation::ReentrantHookBeforePublication` | [download_cancellation_ut.cpp:68](../../download_cancellation_ut.cpp#L68) | `ydb/library/yql/providers/s3/actors/ut` |
+| `S3DownloadCancellation::ReentrantHookAfterPublication` | [download_cancellation_ut.cpp:56](../../download_cancellation_ut.cpp#L56) | `ydb/library/yql/providers/s3/actors/ut` |
+
+#### Scenario: Retry replaces a completed attempt hook
+
+- **GIVEN** hooks from a completed attempt and the current retry.
+- **WHEN** the current retry publishes its hook and the request is cancelled.
+- **THEN** only the current hook is invoked; the completed attempt hook is not called.
+
+Executable mapping (implemented and verified at `2e7842af1181`):
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `S3DownloadCancellation::RetryReplacesCompletedAttemptHook` | [download_cancellation_ut.cpp:80](../../download_cancellation_ut.cpp#L80) | `ydb/library/yql/providers/s3/actors/ut` |
+
+#### Scenario: Empty hook remains cancellable
+
+- **GIVEN** an empty gateway hook.
+- **WHEN** empty hooks are published before and after cancellation.
+- **THEN** the primitive safely retains cancelled state.
+
+Executable mapping (implemented and verified at `2e7842af1181`):
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `S3DownloadCancellation::EmptyHook` | [download_cancellation_ut.cpp:91](../../download_cancellation_ut.cpp#L91) | `ydb/library/yql/providers/s3/actors/ut` |
+
+#### Scenario: Ordinary streaming read completes
+
+- **GIVEN** valid CSV data with asynchronous decoding and an immediate gateway hook.
+- **WHEN** the real read actor reads to completion.
+- **THEN** it reports no error, finishes, delivers one row and starts one streaming request.
+
+Executable mapping (implemented and verified at `2e7842af1181`):
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `S3ExternalSecretCancellation::StreamingReadStillCompletes` | [yql_s3_read_actor_ut.cpp:427](../../yql_s3_read_actor_ut.cpp#L427) | `ydb/library/yql/providers/s3/actors/ut` |
