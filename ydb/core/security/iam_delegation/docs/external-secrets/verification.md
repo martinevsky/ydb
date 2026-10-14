@@ -2,6 +2,8 @@
 
 Task5 base: `67a530cc28eb2269e75fe0b83f2bacf73a1cbe2a`; C1 source commit: `8795e8bd1b186fc53051e5dd79126d9347a0e1b3`. Task5 relocates three existing libraries and their tests without changing symbols, persistent formats or assertions. Its final commit is recorded by version control history for this file. Historical recovery/C1 results used the former lifecycle and tx/tablet paths and do not validate relocated sources.
 
+Task5 implementation commit: `87f8733958c047bd0429e2b8d627b00404b43c75`. Independent task review approved both specification compliance and code quality with no findings, including verification of archived results, source hashes and scenario mappings. This approval covers the relocation and test specifications; final integration and C2 remain separate gates below.
+
 Run the following exact commands from the repository root, sequentially:
 
 | Command | Exact exit | Result |
