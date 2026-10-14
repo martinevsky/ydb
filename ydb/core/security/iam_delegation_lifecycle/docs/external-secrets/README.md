@@ -20,3 +20,5 @@ openspec validate external-secrets-iam-delegation --strict --json --no-interacti
 ```
 
 Each local change has its own proposal, design links and task list. Update only the owning contract when behavior changes, and use the shared checklist for cross-component verification and delivery. Archive completed local changes through OpenSpec so their contracts become that component's `openspec/specs/` inventory. Do not create a root-level spec copy or a symlink index.
+
+The completed restoration and its baseline validation are recorded in the [recovery plan](2026-10-13-external-secrets-recovery.md). Follow-up fixes are tracked in the [review-fixes plan](2026-10-14-external-secrets-review-fixes.md).
