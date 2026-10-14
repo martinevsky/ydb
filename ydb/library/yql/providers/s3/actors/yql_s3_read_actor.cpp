@@ -1,3 +1,4 @@
+#include "download_cancellation.h"
 #include "yql_arrow_column_converters.h"
 #include "yql_arrow_push_down.h"
 #include "yql_s3_decompressor_actor.h"
@@ -208,7 +209,6 @@ struct TRetryStuff {
       , TxId(txId)
       , RequestId(requestId)
       , RetryPolicy(retryPolicy)
-      , Cancelled(false)
     {}
 
     const IHTTPGateway::TPtr Gateway;
@@ -219,9 +219,8 @@ struct TRetryStuff {
     const TString RequestId;
     IHTTPGateway::TRetryPolicy::IRetryState::TPtr RetryState;
     IHTTPGateway::TRetryPolicy::TPtr RetryPolicy;
-    IHTTPGateway::TCancelHook CancelHook;
+    TDownloadCancellation Cancellation;
     TMaybe<TDuration> NextRetryDelay;
-    std::atomic_bool Cancelled;
 
     const IHTTPGateway::TRetryPolicy::IRetryState::TPtr& GetRetryState() {
         if (!RetryState) {
@@ -231,15 +230,11 @@ struct TRetryStuff {
     }
 
     void Cancel() {
-        Cancelled.store(true);
-        if (const auto cancelHook = std::move(CancelHook)) {
-            CancelHook = {};
-            cancelHook(TIssue("Request cancelled."));
-        }
+        Cancellation.Cancel();
     }
 
     bool IsCancelled() {
-        return Cancelled.load();
+        return Cancellation.IsCancelled();
     }
 };
 
@@ -263,14 +258,14 @@ void DownloadStart(const TRetryStuff::TPtr& retryStuff, TActorSystem* actorSyste
                     if (retryStuff->IsCancelled()) return;
                     try {
                         const auto& authInfo = result.GetValue();
-                        retryStuff->CancelHook = retryStuff->Gateway->Download(
+                        retryStuff->Cancellation.Publish(retryStuff->Gateway->Download(
                             retryStuff->Url,
                             IHTTPGateway::MakeYcHeaders(retryStuff->RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
                             retryStuff->Offset, retryStuff->SizeLimit,
                             std::bind(&OnDownloadStart, actorSystem, self, parent, std::placeholders::_1, std::placeholders::_2),
                             std::bind(&OnNewData, actorSystem, self, parent, std::placeholders::_1),
                             std::bind(&OnDownloadFinished, actorSystem, self, parent, pathIndex, std::placeholders::_1, std::placeholders::_2),
-                            inflightCounter, std::move(context));
+                            inflightCounter, std::move(context)));
                     } catch (const std::exception&) {
                         OnDownloadFinished(actorSystem, self, parent, pathIndex, CURLE_LOGIN_DENIED,
                             {TIssue("Cannot acquire S3 credentials")});

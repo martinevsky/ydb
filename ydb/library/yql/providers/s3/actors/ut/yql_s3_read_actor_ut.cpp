@@ -5,6 +5,7 @@
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor.h>
 #include <ydb/library/yql/providers/common/ut_helpers/dq_fake_ca.h>
 #include <ydb/library/services/services.pb.h>
+#include <ydb/library/yql/udfs/common/clickhouse/client/src/Formats/registerFormats.h>
 
 #include <contrib/libs/apache/arrow/cpp/src/arrow/api.h>
 #include <contrib/libs/apache/arrow/cpp/src/arrow/io/memory.h>
@@ -14,6 +15,7 @@
 
 #include <library/cpp/testing/unittest/registar.h>
 #include <util/generic/size_literals.h>
+#include <util/generic/scope.h>
 #include <util/stream/str.h>
 
 #include <algorithm>
@@ -75,6 +77,64 @@ public:
     }
 };
 
+struct TDecoderError {
+    NDqProto::StatusIds::StatusCode Code;
+    TString Issues;
+};
+
+// Separate mailbox: the parent and fake compute mailbox are blocked in Download.
+class TDecoderErrorRecipient : public TActor<TDecoderErrorRecipient> {
+public:
+    explicit TDecoderErrorRecipient(NThreading::TPromise<TDecoderError> error)
+        : TActor(&TDecoderErrorRecipient::StateFunc)
+        , Error(std::move(error))
+    {}
+
+private:
+    STRICT_STFUNC(StateFunc,
+        hFunc(IDqComputeActorAsyncInput::TEvAsyncInputError, Handle);
+        IgnoreFunc(IDqComputeActorAsyncInput::TEvNewAsyncInputDataArrived);
+    )
+
+    void Handle(IDqComputeActorAsyncInput::TEvAsyncInputError::TPtr& ev) {
+        Error.TrySetValue({ev->Get()->FatalCode, ev->Get()->Issues.ToOneLineString()});
+    }
+
+    NThreading::TPromise<TDecoderError> Error;
+};
+
+class TStreamingGateway : public TParquetGateway {
+public:
+    bool HoldHook = true;
+    NThreading::TPromise<void> ReleaseHook = NThreading::NewPromise();
+    std::atomic<ui32> StreamCalls{0};
+    std::atomic<ui32> CancelCalls{0};
+    std::atomic<bool> ReleaseTimedOut{false};
+
+    TCancelHook Download(TString, THeaders, size_t, size_t, TOnDownloadStart onStart,
+        TOnNewDataPart onData, TOnDownloadFinish onFinish,
+        const ::NMonitoring::TDynamicCounters::TCounterPtr& inflightCounter, IHttpRequestContext::TPtr) override {
+        ++StreamCalls;
+        onStart(CURLE_OK, 200);
+        onData(TCountedContent(TString(Body), std::make_shared<std::atomic_size_t>(0), inflightCounter, {}, 0));
+        onFinish(CURLE_OK, {});
+        // The test releases this only after a decoder error proves Cancel() ran.
+        if (HoldHook) {
+            ReleaseTimedOut.store(!ReleaseHook.GetFuture().Wait(TDuration::Seconds(10)));
+        }
+        return [this](const TIssue&) { ++CancelCalls; };
+    }
+};
+
+NS3::TSource CsvSource() {
+    NS3::TSource source;
+    source.SetUrl("http://fake/");
+    source.SetFormat("csv_with_names");
+    source.SetRowType(R"(["StructType";[["value";["DataType";"Int32"]]]])");
+    source.SetAsyncDecoding(true);
+    return source;
+}
+
 NS3::TSource ParquetSource(ui64 parallelRowGroups = 0, bool selectColumn = true) {
     NS3::TSource source;
     source.SetUrl("http://fake/");
@@ -131,6 +191,7 @@ TString MakeParquetWithCompressedSizes(const std::vector<i64>& sizes) {
 struct TReadResult {
     bool Finished = false;
     ui64 Rows = 0;
+    ui64 DeliveredRows = 0;
     std::vector<i64> Values;
     std::vector<NDqProto::StatusIds::StatusCode> Errors;
     TString Issues;
@@ -147,7 +208,20 @@ public:
         Runtime.Initialize();
         Runtime.GetLogSettings(0)->Append(NKikimrServices::EServiceKikimr_MIN,
             NKikimrServices::EServiceKikimr_MAX, NKikimrServices::EServiceKikimr_Name);
+        Runtime.SetRegistrationObserverFunc([this](TTestActorRuntimeBase& runtime, const TActorId& parent, const TActorId& actor) {
+            TTestActorRuntimeBase::DefaultRegistrationObserver(runtime, parent, actor);
+            if (runtime.FindActorName(actor).Contains("TS3ReadCoroActor")) {
+                DecoderId = actor;
+                ReaderId = parent;
+            }
+        });
         Runtime.SetObserverFunc([this](TAutoPtr<IEventHandle>& ev) {
+            if (ev->GetTypeRewrite() == TEvS3Provider::TEvFileFinished::EventType && ev->Sender == DecoderId) {
+                DecoderFinished = true;
+            }
+            if (ev->GetTypeRewrite() == TEvS3Provider::TEvRetryEventFunc::EventType) {
+                ++CredentialContinuations;
+            }
             if (ev->GetTypeRewrite() == IDqComputeActorAsyncInput::TEvAsyncInputError::EventType) {
                 auto* error = ev->Get<IDqComputeActorAsyncInput::TEvAsyncInputError>();
                 Result.Errors.push_back(error->FatalCode);
@@ -197,7 +271,27 @@ public:
             TMaybe<TInstant> watermark;
             TUnboxedValueBatch buffer;
             actor.DqAsyncInput->GetAsyncInputData(buffer, watermark, Result.Finished, 1_MB);
+            Result.DeliveredRows += buffer.RowCount();
         });
+    }
+
+    void CancelDecoder() {
+        UNIT_ASSERT_C(DecoderId, "streaming decoder was not registered");
+        UNIT_ASSERT_VALUES_EQUAL(CredentialContinuations, 0);
+        Runtime.Send(new IEventHandle(DecoderId, FakeActorId, new TEvents::TEvPoison()));
+        TDispatchOptions options;
+        options.CustomFinalCondition = [&] { return DecoderFinished; };
+        Runtime.DispatchEvents(options, TDuration::Seconds(10));
+        UNIT_ASSERT_C(DecoderFinished, "decoder did not handle cancellation");
+        UNIT_ASSERT_C(Runtime.FindActor(ReaderId), "reader must remain alive for the late credential continuation");
+    }
+
+    void DrainCredentialContinuation() {
+        TDispatchOptions options;
+        options.CustomFinalCondition = [&] { return CredentialContinuations > 0; };
+        Runtime.DispatchEvents(options, TDuration::Seconds(10));
+        UNIT_ASSERT_C(CredentialContinuations > 0, "late credential continuation was not delivered");
+        Execute([](TFakeActor&) {});
     }
 
     void ReadToEnd() {
@@ -223,6 +317,10 @@ private:
 
     TTestActorRuntimeBase Runtime{1};
     const TActorId FakeActorId{0, "FakeActor"};
+    TActorId DecoderId;
+    TActorId ReaderId;
+    bool DecoderFinished = false;
+    ui32 CredentialContinuations = 0;
 };
 
 TReadResult ReadFooter(const std::vector<i64>& sizes, ui64 parallelRowGroups = 0, bool selectColumn = true) {
@@ -263,6 +361,83 @@ void CheckReaderCount(ui64 parallelRowGroups, ui64 expectedCount, ui64 dataInfli
 }
 
 } // namespace
+
+Y_UNIT_TEST_SUITE(S3ExternalSecretCancellation) {
+    Y_UNIT_TEST(StreamingCancelBeforeHookPublication) {
+        NDB::registerFormats();
+        auto gateway = std::make_shared<TStreamingGateway>();
+        gateway->Body = "value\ninvalid-integer\n";
+        auto error = NThreading::NewPromise<TDecoderError>();
+        TFakeCASetup setup;
+        // Release before setup teardown even when an assertion fails.
+        Y_DEFER { gateway->ReleaseHook.TrySetValue(); };
+        auto recipient = setup.Runtime->Register(new TDecoderErrorRecipient(error));
+        setup.Execute([&](TFakeActor& actor) {
+            auto source = CsvSource();
+            NS3::TRange range;
+            auto* path = range.AddPaths();
+            path->SetName("file.csv");
+            path->SetSize(gateway->Body.size());
+            path->SetRead(true);
+            TStringStream encodedRange;
+            range.Save(&encodedRange);
+            auto [input, inputActor] = CreateS3ReadActor(actor.TypeEnv, actor.HolderFactory,
+                std::shared_ptr<TScopedAlloc>(&actor.Alloc, [](TScopedAlloc*) {}), gateway, std::move(source),
+                0, TCollectStatsLevel::None, TTxId{}, {}, {}, {encodedRange.Str()}, recipient,
+                CreateStructuredTokenCredentialsFactory(), GetHTTPDefaultRetryPolicy(), {}, nullptr, nullptr,
+                std::make_shared<TGuaranteeQuotaManager>(200_MB, 200_MB), false);
+            actor.InitAsyncInput(input, inputActor);
+        });
+        UNIT_ASSERT_C(error.GetFuture().Wait(TDuration::Seconds(10)), "decoder did not report a parse error");
+        const auto& result = error.GetFuture().GetValue();
+        UNIT_ASSERT_C(result.Code == NDqProto::StatusIds::BAD_REQUEST, result.Issues);
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues, "invalid-in");
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues, "Int32");
+        UNIT_ASSERT_VALUES_EQUAL(gateway->CancelCalls.load(), 0);
+        gateway->ReleaseHook.TrySetValue();
+        // A round trip through the parent's mailbox occurs after Download returned
+        // and the production continuation published its hook.
+        setup.Execute([](TFakeActor&) {});
+        UNIT_ASSERT_C(!gateway->ReleaseTimedOut.load(), "gateway release timed out: invalid race fixture");
+        UNIT_ASSERT_VALUES_EQUAL_C(gateway->CancelCalls.load(), 1, "decoder cancellation missed the returned download hook");
+    }
+
+    Y_UNIT_TEST(CancelBeforeCredentialsResolve) {
+        NDB::registerFormats();
+        TParquetReader reader;
+        auto gateway = std::make_shared<TStreamingGateway>();
+        gateway->Body = "value\n42\n";
+        gateway->HoldHook = false;
+        auto credentials = std::make_shared<NTests::TAsyncCredentialsFactory>();
+        auto source = CsvSource();
+        source.SetToken("test-credentials");
+        reader.Start(gateway, std::move(source), 200_MB, credentials);
+        reader.Pump();
+        UNIT_ASSERT_VALUES_EQUAL(credentials->State->Calls, 1);
+        UNIT_ASSERT_VALUES_EQUAL(credentials->State->Pending.size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(gateway->StreamCalls.load(), 0);
+        reader.CancelDecoder();
+        credentials->Release("late-token");
+        reader.DrainCredentialContinuation();
+        UNIT_ASSERT_VALUES_EQUAL(gateway->StreamCalls.load(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(gateway->CancelCalls.load(), 0);
+        UNIT_ASSERT(reader.Result.Errors.empty());
+    }
+
+    Y_UNIT_TEST(StreamingReadStillCompletes) {
+        NDB::registerFormats();
+        TParquetReader reader;
+        auto gateway = std::make_shared<TStreamingGateway>();
+        gateway->Body = "value\n42\n";
+        gateway->HoldHook = false;
+        reader.Start(gateway, CsvSource());
+        reader.ReadToEnd();
+        UNIT_ASSERT_C(reader.Result.Errors.empty(), reader.Result.Issues);
+        UNIT_ASSERT(reader.Result.Finished);
+        UNIT_ASSERT_VALUES_EQUAL(reader.Result.DeliveredRows, 1);
+        UNIT_ASSERT_VALUES_EQUAL(gateway->StreamCalls.load(), 1);
+    }
+}
 
 Y_UNIT_TEST_SUITE(TS3ParquetFooter) {
     Y_UNIT_TEST(ParquetRangesAwaitCredentialsWithoutBlockingActor) {
