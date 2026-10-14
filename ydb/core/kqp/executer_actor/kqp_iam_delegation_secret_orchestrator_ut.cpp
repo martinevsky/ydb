@@ -173,12 +173,33 @@ public:
         return future.GetValue();
     }
 
-    NKikimrScheme::TEvDescribeSchemeResult Describe(const TString& name = "secret") {
+    void SetAccess(const TString& name, const TString& sid, ui32 allow, ui32 deny = 0) {
+        const auto result = Scheme([&](auto& scheme) {
+            scheme.SetWorkingDir(name == "Root" ? "/" : "/Root");
+            scheme.SetOperationType(NKikimrSchemeOp::ESchemeOpModifyACL);
+            NACLib::TDiffACL acl;
+            if (allow) {
+                acl.AddAccess(NACLib::EAccessType::Allow, allow, sid);
+            }
+            if (deny) {
+                acl.AddAccess(NACLib::EAccessType::Deny, deny, sid);
+            }
+            scheme.MutableModifyACL()->SetName(name);
+            scheme.MutableModifyACL()->SetDiffACL(acl.SerializeAsString());
+        });
+        UNIT_ASSERT_C(result.Success(), result.Issues().ToString());
+    }
+
+    NKikimrScheme::TEvDescribeSchemeResult Describe(const TString& name = "secret",
+        TIntrusiveConstPtr<NACLib::TUserToken> token = {}, bool returnValue = true) {
         const auto edge = Runtime.AllocateEdgeActor();
         auto request = MakeHolder<TEvTxUserProxy::TEvNavigate>();
         request->Record.SetDatabaseName("/Root");
+        if (token) {
+            request->Record.SetUserToken(token->SerializeAsString());
+        }
         request->Record.MutableDescribePath()->SetPath("/Root/" + name);
-        request->Record.MutableDescribePath()->MutableOptions()->SetReturnSecretValue(true);
+        request->Record.MutableDescribePath()->MutableOptions()->SetReturnSecretValue(returnValue);
         Runtime.Send(new IEventHandle(MakeTxProxyID(), edge, request.Release()));
         return Runtime.GrabEdgeEvent<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult>(edge)->Get()->GetRecord();
     }
@@ -211,7 +232,7 @@ public:
     {
         auto request = MakeHolder<TEvTxUserProxy::TEvProposeTransaction>();
         request->Record.SetDatabaseName("/Root");
-        request->Record.SetUserToken(Bob->GetSerializedToken());
+        request->Record.SetUserToken(Bob->SerializeAsString());
         auto* scheme = request->Record.MutableTransaction()->MutableModifyScheme();
         scheme->SetWorkingDir("/Root");
         scheme->SetOperationType(alter ? NKikimrSchemeOp::ESchemeOpAlterSecret : NKikimrSchemeOp::ESchemeOpCreateSecret);
@@ -398,6 +419,207 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
         UNIT_ASSERT_VALUES_EQUAL(f.Delegation(alterId).GetSecret().GetState(), P::SECRET_DROPPED);
         UNIT_ASSERT_VALUES_EQUAL(f.RevokeBindings.size(), 2);
         UNIT_ASSERT_VALUES_EQUAL(f.RevokeBindings[0].ServiceId, "saved-ydb-service");
+    }
+
+    Y_UNIT_TEST(AlterNeedsAlterSchemaWithoutDescribeOrValueAccess) {
+        TOrchestratorFixture f;
+        const auto createId = f.Create();
+        const auto previous = f.Delegation(createId).GetSecret().GetCurrentOperationId();
+        const auto editor = MakeIntrusiveConst<NACLib::TUserToken>(
+            "editor@" BUILTIN_ACL_DOMAIN, TVector<NACLib::TSID>{});
+        UNIT_ASSERT_VALUES_UNEQUAL(f.Describe().GetPathDescription().GetSelf().GetOwner(), editor->GetUserSID());
+        UNIT_ASSERT(f.Scheme([&](auto& scheme) {
+            scheme.SetWorkingDir("/Root");
+            scheme.SetOperationType(NKikimrSchemeOp::ESchemeOpModifyACL);
+            NACLib::TDiffACL acl;
+            acl.AddAccess(NACLib::EAccessType::Allow, NACLib::AlterSchema, editor->GetUserSID());
+            acl.AddAccess(NACLib::EAccessType::Deny, NACLib::DescribeSchema | NACLib::SelectRow, editor->GetUserSID());
+            scheme.MutableModifyACL()->SetName("secret");
+            scheme.MutableModifyACL()->SetDiffACL(acl.SerializeAsString());
+        }).Success());
+        f.Bob = editor;
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe("secret", editor).GetStatus(), NKikimrScheme::StatusAccessDenied);
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe("secret", editor, false).GetStatus(), NKikimrScheme::StatusAccessDenied);
+        f.AutoReply = true;
+        const auto result = f.Finish(f.Start(f.Operation(true, "account-2"), true));
+        UNIT_ASSERT_C(result.Success(), result.Issues().ToString());
+        const auto secret = f.Delegation(createId).GetSecret();
+        UNIT_ASSERT_VALUES_UNEQUAL(secret.GetCurrentOperationId(), previous);
+        UNIT_ASSERT_VALUES_EQUAL(f.Delegation(secret.GetCurrentOperationId()).GetDelegation().GetBinding().GetServiceAccountId(), "account-2");
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe("secret", editor).GetStatus(), NKikimrScheme::StatusAccessDenied);
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe("secret", editor, false).GetStatus(), NKikimrScheme::StatusAccessDenied);
+    }
+
+    Y_UNIT_TEST(DescribeSchemaAndHiddenPathsDoNotAuthorizeAlter) {
+        TOrchestratorFixture f;
+        const auto createId = f.Create();
+        const auto previous = f.Delegation(createId).GetSecret().SerializeAsString();
+        struct TCase { TString Sid; ui32 Allow; ui32 Deny; };
+        for (const auto& entry : TVector<TCase>{
+            {"viewer@" BUILTIN_ACL_DOMAIN, NACLib::DescribeSchema, NACLib::AlterSchema},
+            {"hidden@" BUILTIN_ACL_DOMAIN, 0, NACLib::AlterSchema | NACLib::DescribeSchema},
+            {"unlisted@" BUILTIN_ACL_DOMAIN, 0, 0}})
+        {
+            const auto user = MakeIntrusiveConst<NACLib::TUserToken>(entry.Sid, TVector<NACLib::TSID>{});
+            if (entry.Allow || entry.Deny) {
+                f.SetAccess("secret", user->GetUserSID(), entry.Allow, entry.Deny);
+            }
+            f.Bob = user;
+            f.Commands.clear();
+            auto op = f.Operation(true, "account-2");
+            op.SuccessOnNotExist = true; // a hidden denial must not look like a missing IF EXISTS target
+            const auto result = f.Finish(f.Start(std::move(op), true));
+            UNIT_ASSERT(!result.Success());
+            UNIT_ASSERT_C(result.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::UNAUTHORIZED), result.Issues().ToString());
+            UNIT_ASSERT(f.Commands.empty());
+            UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
+            UNIT_ASSERT(f.RevokeBindings.empty());
+            UNIT_ASSERT_VALUES_EQUAL(f.Delegation(createId).GetSecret().SerializeAsString(), previous);
+        }
+    }
+
+    Y_UNIT_TEST(AlterRechecksRevokedAclBeforeLifecycleMutation) {
+        TOrchestratorFixture f;
+        const auto createId = f.Create();
+        const auto previous = f.Delegation(createId).GetSecret().SerializeAsString();
+        const auto editor = MakeIntrusiveConst<NACLib::TUserToken>(
+            "editor@" BUILTIN_ACL_DOMAIN, TVector<NACLib::TSID>{});
+        f.SetAccess("secret", editor->GetUserSID(), NACLib::AlterSchema | NACLib::DescribeSchema);
+        f.Bob = editor;
+        TAutoPtr<IEventHandle> held;
+        f.Intercept = [&](auto& event) {
+            if (event->GetTypeRewrite() == TEvTxUserProxy::TEvProposeTransaction::EventType
+                && event->template Get<TEvTxUserProxy::TEvProposeTransaction>()->Record
+                    .GetTransaction().GetModifyScheme().GetOperationType() == NKikimrSchemeOp::ESchemeOpAlterSecret) {
+                UNIT_ASSERT(!held);
+                held.Reset(event.Release());
+                return EAction::DROP;
+            }
+            return EAction::PROCESS;
+        };
+        const auto altering = f.Start(f.Operation(true, "account-2"), true);
+        f.Until([&] { return bool(held); });
+        UNIT_ASSERT_VALUES_UNEQUAL(held->Get<TEvTxUserProxy::TEvProposeTransaction>()->Record.GetUserToken(), "");
+        f.SetAccess("secret", editor->GetUserSID(), 0, NACLib::AlterSchema);
+        f.Intercept = {};
+        f.Runtime.Send(held.Release());
+        const auto result = f.Finish(altering);
+        UNIT_ASSERT_C(result.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::UNAUTHORIZED), result.Issues().ToString());
+        UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
+        UNIT_ASSERT(f.RevokeBindings.empty());
+        UNIT_ASSERT_VALUES_EQUAL(f.Delegation(createId).GetSecret().SerializeAsString(), previous);
+    }
+
+    Y_UNIT_TEST(AlterCannotTouchRecreatedSecretDuringResolution) {
+        TOrchestratorFixture f;
+        const auto createId = f.Create();
+        const auto previous = f.Delegation(createId).GetSecret().SerializeAsString();
+        TActorId orchestrator;
+        TAutoPtr<IEventHandle> held;
+        f.Intercept = [&](auto& event) {
+            if (event->GetTypeRewrite() == TEvTxProxySchemeCache::TEvNavigateKeySetResult::EventType
+                && event->GetRecipientRewrite() == orchestrator && !held) {
+                held.Reset(event.Release());
+                return EAction::DROP;
+            }
+            return EAction::PROCESS;
+        };
+        const auto altering = f.Start(f.Operation(true, "account-2"), true);
+        orchestrator = altering.Actor;
+        f.Until([&] { return bool(held); });
+        f.Drop();
+        UNIT_ASSERT(f.Scheme([](auto& scheme) {
+            scheme.SetWorkingDir("/Root");
+            scheme.SetOperationType(NKikimrSchemeOp::ESchemeOpCreateSecret);
+            scheme.MutableCreateSecret()->SetName("secret");
+            scheme.MutableCreateSecret()->SetValue("recreated-during-resolution");
+        }).Success());
+        f.Intercept = {};
+        f.Runtime.Send(held.Release());
+        UNIT_ASSERT(!f.Finish(altering).Success());
+        UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
+        UNIT_ASSERT(f.RevokeBindings.empty());
+        UNIT_ASSERT_VALUES_EQUAL(f.Delegation(createId).GetSecret().SerializeAsString(), previous);
+        const auto schema = f.Describe();
+        UNIT_ASSERT(!schema.GetPathDescription().GetSecretDescription().HasIamDelegation());
+        UNIT_ASSERT_VALUES_EQUAL(schema.GetPathDescription().GetSecretDescription().GetValue(), "recreated-during-resolution");
+    }
+
+    Y_UNIT_TEST(CreateOrReplaceRequiresParentCreateAndTargetAlterWithoutDescribe) {
+        TOrchestratorFixture f;
+        const TVector<TString> principals = {"parent-only@" BUILTIN_ACL_DOMAIN,
+            "object-only@" BUILTIN_ACL_DOMAIN, "editor@" BUILTIN_ACL_DOMAIN};
+        // Exercise one completed ACL configuration for every principal.
+        for (const auto& sid : principals) {
+            if (!sid.StartsWith("object-only")) {
+                f.SetAccess("Root", sid, NACLib::CreateTable);
+            }
+        }
+        const auto createId = f.Create();
+        const auto previous = f.Delegation(createId).GetSecret().SerializeAsString();
+        for (const auto& sid : principals) {
+            f.SetAccess("secret", sid, sid.StartsWith("parent-only") ? 0 : NACLib::AlterSchema,
+                NACLib::DescribeSchema | NACLib::SelectRow | (sid.StartsWith("parent-only") ? NACLib::AlterSchema : 0));
+        }
+        for (const auto& sid : principals) {
+            f.Bob = MakeIntrusiveConst<NACLib::TUserToken>(sid, TVector<NACLib::TSID>{});
+            const auto self = f.Describe().GetPathDescription().GetSelf();
+            NACLib::TSecurityObject target(self.GetOwner(), false);
+            UNIT_ASSERT(target.MutableACL()->ParseFromString(self.GetEffectiveACL()));
+            UNIT_ASSERT_VALUES_EQUAL_C(target.CheckAccess(NACLib::AlterSchema, *f.Bob),
+                !sid.StartsWith("parent-only"), target.ToString());
+            UNIT_ASSERT(!target.CheckAccess(NACLib::DescribeSchema, *f.Bob));
+            UNIT_ASSERT(!target.CheckAccess(NACLib::SelectRow, *f.Bob));
+            const auto parent = f.Describe("").GetPathDescription().GetSelf();
+            NACLib::TSecurityObject directory(parent.GetOwner(), true);
+            UNIT_ASSERT(directory.MutableACL()->ParseFromString(parent.GetEffectiveACL()));
+            UNIT_ASSERT_VALUES_EQUAL_C(directory.CheckAccess(NACLib::CreateTable, *f.Bob),
+                !sid.StartsWith("object-only"), directory.ToString());
+            f.Commands.clear();
+            auto op = f.Operation(false, "account-2");
+            op.Request->Record.MutableTransaction()->MutableModifyScheme()->SetReplaceIfExists(true);
+            f.AutoReply = true;
+            const auto result = f.Finish(f.Start(std::move(op)));
+            if (sid.StartsWith("editor")) {
+                UNIT_ASSERT_C(result.Success(), result.Issues().ToString());
+                const auto secret = f.Delegation(createId).GetSecret();
+                UNIT_ASSERT_VALUES_EQUAL(f.Delegation(secret.GetCurrentOperationId()).GetDelegation().GetBinding().GetServiceAccountId(), "account-2");
+                UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 2);
+            } else {
+                UNIT_ASSERT_C(result.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::UNAUTHORIZED), result.Issues().ToString());
+                for (const auto& command : f.Commands) {
+                    UNIT_ASSERT(command.HasGetSecret() || command.HasGetDelegation());
+                }
+                UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
+                UNIT_ASSERT_VALUES_EQUAL(f.Delegation(createId).GetSecret().SerializeAsString(), previous);
+            }
+            UNIT_ASSERT(f.RevokeBindings.empty());
+        }
+    }
+
+    Y_UNIT_TEST(CreateOrReplaceMissingPathRequiresParentCreatePermission) {
+        TOrchestratorFixture f;
+        const auto creator = f.Bob;
+        const auto viewer = MakeIntrusiveConst<NACLib::TUserToken>(
+            "viewer@" BUILTIN_ACL_DOMAIN, TVector<NACLib::TSID>{});
+        f.SetAccess("Root", viewer->GetUserSID(), NACLib::DescribeSchema, NACLib::CreateTable);
+        f.Bob = viewer;
+        f.Commands.clear();
+        auto op = f.Operation();
+        op.Request->Record.MutableTransaction()->MutableModifyScheme()->SetReplaceIfExists(true);
+        const auto denied = f.Finish(f.Start(std::move(op)));
+        UNIT_ASSERT_C(denied.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::UNAUTHORIZED), denied.Issues().ToString());
+        UNIT_ASSERT(f.Commands.empty());
+        UNIT_ASSERT(f.SetupBindings.empty());
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe().GetStatus(), NKikimrScheme::StatusPathDoesNotExist);
+        f.Bob = creator;
+        f.AutoReply = true;
+        op = f.Operation();
+        op.Request->Record.MutableTransaction()->MutableModifyScheme()->SetReplaceIfExists(true);
+        const auto created = f.Finish(f.Start(std::move(op)));
+        UNIT_ASSERT_C(created.Success(), created.Issues().ToString());
+        UNIT_ASSERT_VALUES_EQUAL(f.Read()->Token, "token-for-account-1");
+        UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
     }
 
     Y_UNIT_TEST(FailedCreateReleasesSchemaAndNameReservation) {
@@ -927,7 +1149,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
         TOrchestratorFixture f;
         auto denied = f.Operation();
         denied.UserToken = MakeIntrusiveConst<NACLib::TUserToken>("eve@" BUILTIN_ACL_DOMAIN, TVector<NACLib::TSID>{});
-        denied.Request->Record.SetUserToken(denied.UserToken->GetSerializedToken());
+        denied.Request->Record.SetUserToken(denied.UserToken->SerializeAsString());
         UNIT_ASSERT(!f.Finish(f.Start(std::move(denied))).Success());
         const auto missingCloud = f.Finish(f.Start(f.Operation(false, "account-1", {})));
         UNIT_ASSERT(!missingCloud.Success());

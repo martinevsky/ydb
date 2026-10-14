@@ -223,13 +223,14 @@ protected:
         return *subjectId;
     }
 
-    async<TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr> NavigateRequest(TString path) {
+    async<TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr> NavigateRequest(TString path, ui32 access) {
         auto request = MakeHolder<NSchemeCache::TSchemeCacheNavigate>();
         request->DatabaseName = Op.Database;
         request->UserToken = Op.UserToken;
         auto& entry = request->ResultSet.emplace_back();
         entry.Path = SplitPath(path);
         entry.Operation = NSchemeCache::TSchemeCacheNavigate::OpPath;
+        entry.Access = access;
         entry.RequestType = NSchemeCache::TSchemeCacheNavigate::TEntry::ERequestType::ByPath;
         entry.RedirectRequired = false;
         entry.SyncVersion = true;
@@ -237,8 +238,8 @@ protected:
             MakeSchemeCacheID(), new TEvTxProxySchemeCache::TEvNavigateKeySet(request.Release()));
     }
 
-    async<NSchemeCache::TSchemeCacheNavigate::TEntry> Navigate(TString path) {
-        auto ev = co_await WithTimeout(Op.Timeouts.Navigate, &TDelegationSecretActorBase::NavigateRequest, this, path);
+    async<NSchemeCache::TSchemeCacheNavigate::TEntry> Navigate(TString path, ui32 access = NACLib::DescribeSchema) {
+        auto ev = co_await WithTimeout(Op.Timeouts.Navigate, &TDelegationSecretActorBase::NavigateRequest, this, path, access);
         if (!ev) {
             throw TOrchestrationError(Ydb::StatusIds::UNAVAILABLE) << "timeout while resolving " << path;
         }
@@ -276,8 +277,78 @@ protected:
         co_return result;
     }
 
+    // Internal existence check only: the reply's metadata must never authorize
+    // an operation or be used for a lifecycle identity.
+    async<TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr> ProbeSecretExistenceRequest(TString path) {
+        auto request = MakeHolder<NSchemeCache::TSchemeCacheNavigate>();
+        request->DatabaseName = Op.Database;
+        auto& entry = request->ResultSet.emplace_back();
+        entry.Path = SplitPath(path);
+        entry.Operation = NSchemeCache::TSchemeCacheNavigate::OpPath;
+        entry.Access = NACLib::NoAccess;
+        entry.RedirectRequired = false;
+        entry.SyncVersion = true;
+        co_return co_await ActorRequest<TEvTxProxySchemeCache::TEvNavigateKeySetResult>(
+            MakeSchemeCacheID(), new TEvTxProxySchemeCache::TEvNavigateKeySet(request.Release()));
+    }
+
+    async<bool> SecretExists(TString path) {
+        const auto reply = co_await WithTimeout(Op.Timeouts.Navigate,
+            &TDelegationSecretActorBase::ProbeSecretExistenceRequest, this, path);
+        if (!reply) {
+            throw TOrchestrationError(Ydb::StatusIds::UNAVAILABLE) << "timeout while resolving " << path;
+        }
+        const auto& entries = (*reply)->Get()->Request->ResultSet;
+        AFL_ENSURE(entries.size() == 1)("path", path)("entries", entries.size());
+        using EStatus = NSchemeCache::TSchemeCacheNavigate::EStatus;
+        if (entries.front().Status == EStatus::PathErrorUnknown) {
+            co_return false;
+        }
+        if (entries.front().Status != EStatus::Ok) {
+            throw TOrchestrationError(Ydb::StatusIds::UNAVAILABLE) << "Cannot resolve " << path << ": " << entries.front().Status;
+        }
+        co_return true;
+    }
+
+    // DDL metadata is authorized by the operation's permission, not by public
+    // DescribeSchema. Identity and description come from the same synchronized
+    // cache entry; the authenticated schema statement rechecks ACL and version.
+    async<TExistingSecret> NavigateSecretForAlter(TString path) {
+        if (!Op.UserToken) {
+            throw TOrchestrationError(Ydb::StatusIds::UNAUTHORIZED) << "Access denied to " << path;
+        }
+        const auto entry = co_await Navigate(path, NACLib::AlterSchema);
+        using EStatus = NSchemeCache::TSchemeCacheNavigate::EStatus;
+        if (entry.Status == EStatus::PathErrorUnknown) {
+            // The cache also hides an ACL denial as a missing path when the
+            // caller lacks DescribeSchema. An internal existence-only probe
+            // distinguishes absence from denial; no metadata leaves that probe.
+            if (co_await SecretExists(path)) {
+                throw TOrchestrationError(Ydb::StatusIds::UNAUTHORIZED) << "Access denied to " << path;
+            }
+            co_return TExistingSecret{};
+        }
+        if (entry.Status == EStatus::AccessDenied) {
+            throw TOrchestrationError(Ydb::StatusIds::UNAUTHORIZED) << "Access denied to " << path;
+        }
+        if (entry.Status != EStatus::Ok || !entry.Self) {
+            throw TOrchestrationError(Ydb::StatusIds::UNAVAILABLE) << "Cannot resolve " << path << ": " << entry.Status;
+        }
+        TExistingSecret result;
+        result.Exists = true;
+        result.Self = entry.Self->Info;
+        result.IsSecret = entry.Kind == NSchemeCache::TSchemeCacheNavigate::KindSecret;
+        if (result.IsSecret) {
+            if (!entry.SecretInfo) {
+                throw TOrchestrationError(Ydb::StatusIds::UNAVAILABLE) << "Cannot resolve secret metadata for " << path;
+            }
+            result.Description = entry.SecretInfo->Description;
+        }
+        co_return result;
+    }
+
     async<void> Authorize(TString path, ui32 access) {
-        const auto entry = co_await Navigate(path);
+        const auto entry = co_await Navigate(path, access);
         if (entry.Status != NSchemeCache::TSchemeCacheNavigate::EStatus::Ok || !Op.UserToken
             || !entry.SecurityObject || !entry.SecurityObject->CheckAccess(access, *Op.UserToken)) {
             throw TOrchestrationError(Ydb::StatusIds::UNAUTHORIZED) << "Access denied to " << path;
@@ -581,7 +652,8 @@ protected:
         auto& op = *ModifyScheme().MutableCreateSecret();
         const TString name = op.GetName();
         const TString path = SecretPath(name);
-        const auto existing = co_await NavigateSecret(path);
+        const auto existing = co_await (ModifyScheme().GetReplaceIfExists()
+            ? NavigateSecretForAlter(path) : NavigateSecret(path));
         if (existing.Exists) {
             if (ModifyScheme().GetReplaceIfExists()) {
                 co_return co_await Replace(path, existing, op);
@@ -727,7 +799,7 @@ protected:
     async<TGenericResult> RunAlter() {
         auto& op = *ModifyScheme().MutableAlterSecret();
         const TString path = SecretPath(op.GetName());
-        const auto existing = co_await NavigateSecret(path);
+        const auto existing = co_await NavigateSecretForAlter(path);
         if (!existing.Exists && Op.SuccessOnNotExist) {
             co_return MakeSuccess();
         }
