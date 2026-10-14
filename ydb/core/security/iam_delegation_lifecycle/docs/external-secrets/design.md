@@ -2,9 +2,9 @@
 
 ## Context
 
-See [proposal.md](proposal.md) for the motivation and the six capability contracts in `specs/`. This is a brownfield specification of the restored branch, followed by three review fixes. The restored baseline is `c68a9f3b2cafbdee3c6a3f870cb002166dda3dd7`; the selective-ALTER fix is `d1f1add797ecee712354057208f225dc68e92c11`. Token-wait and S3 cancellation fixes are still tracked as pending until their implementation and regression evidence are complete.
+See [proposal.md](proposal.md) for the motivation and the component-local contracts linked from [README.md](README.md). This is a brownfield specification of the restored branch, followed by three review fixes. The restored baseline is `c68a9f3b2cafbdee3c6a3f870cb002166dda3dd7`; the selective-ALTER fix is `d1f1add797ecee712354057208f225dc68e92c11`. Token-wait and S3 cancellation fixes are still tracked as pending until their implementation and regression evidence are complete.
 
-The RFC's SQL surface remains the input contract. Its older SchemeShard-owned lifecycle description is superseded by the user's direction and the independent-tablet draft stack. The current component contracts are documented in [the tablet README](../../../ydb/core/tx/iam_delegation/README.md) and [the coordination/recovery README](../../../ydb/core/security/iam_delegation_lifecycle/README.md).
+The RFC's SQL surface remains the input contract. Its older SchemeShard-owned lifecycle description is superseded by the user's direction and the independent-tablet draft stack. The current component contracts are documented in [the tablet README](../../../../tx/iam_delegation/README.md) and [the coordination/recovery README](../../README.md).
 
 ## Goals / Non-Goals
 
@@ -107,7 +107,7 @@ The deterministic regression uses real asynchronous decoding and separate mailbo
 | Recovery orchestration | `ydb/core/security/iam_delegation_lifecycle/ut`, plus real-tablet/SchemeShard coordinator tests |
 | Token validity, backoff and phase timers | `ydb/core/security/iam_delegation/ut` and `ydb/services/scheme_secret/ut/fast`; remaining timeout fix requires real-producer RED/GREEN evidence |
 | Cancellation and credentials | S3 actor/credential suites; remaining race fix requires controlled cross-mailbox RED/GREEN evidence |
-| Integration | Affected suites and the production driver library on the final source; review against all six capability specs |
+| Integration | Affected suites and the production driver library on the final source; review against all seven capability specs |
 
 The restored baseline had 411 passing selected tests across 13 suites and 357 recovery executions (119 cases repeated three times). Those results describe `c68a9f3b2ca`, not an untested later tree. Per-fix commands, counts and exits are recorded in the implementation ledger; final verification must name its source revision. Archive test-result symlinks by dereferencing them, since live YA result links can later point to another run.
 

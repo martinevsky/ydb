@@ -26,7 +26,8 @@ This change records both the restored feature and its remaining hardening work. 
 - `iam-delegation-revocation`: durable cleanup, atomic claims and exact lease/acknowledgement semantics.
 - `iam-delegation-inventory`: surviving administrative inventory and bounded, consistent pagination.
 - `iam-delegated-token-acquisition`: automatic minting, refresh, caching, bounded waits and token validity.
-- `external-secret-consumers`: per-secret authorization, refreshable credentials and cancellation of asynchronous external requests.
+- `external-secret-consumers`: per-secret authorization and refreshable credentials.
+- `external-secret-s3-cancellation`: cancellation across asynchronous credentials and download-hook publication.
 
 ### Modified Capabilities
 
