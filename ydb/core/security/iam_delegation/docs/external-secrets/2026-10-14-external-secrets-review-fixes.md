@@ -93,4 +93,4 @@ Task5 complete: commit `87f8733958c047bd0429e2b8d627b00404b43c75`, service57/lif
 - [x] Run the affected coordinator, secret reader/service, IAM service/lifecycle/tablet and S3 suites together; build the production driver if shared headers or wiring require it. Repeat only deterministic concurrency/timing regressions when their scheduling warrants it.
 - [x] Obtain one independent whole-fixes review; fix supported findings and rerun affected checks.
 - [x] Record actual red/green commands, test counts, limitations and final source hashes in the evidence directory. Update this plan's checkboxes.
-- [ ] Push `restore/external-secrets-integration` to `git@github.com:martinevsky/ydb.git` without force and verify the remote SHA. Do not alter upstream draft PRs.
+- [x] Push `restore/external-secrets-integration` to `git@github.com:martinevsky/ydb.git` without force and verify the remote SHA. Do not alter upstream draft PRs.
