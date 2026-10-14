@@ -18,13 +18,15 @@ Fixture boundary: TOrchestratorFixture runs real SchemeShard, SchemeCache, indep
 
 ### Requirement: Traceable scenario coverage
 
-The owning test target SHALL keep each implemented scenario traceable to its exact executable case, source assertion and fixture boundary, and SHALL distinguish planned or unverified coverage from recorded execution.
+The owning test target SHALL keep each implemented scenario traceable to its exact executable case, source assertion and fixture boundary, and SHALL distinguish planned or unverified coverage from recorded execution. Each scenario SHALL name the contract requirement and scenario it covers. Planned scenarios have no executable case and do not contribute to executed counts.
 
 #### Scenario: Authenticated ALTER rights
 
 - **GIVEN** an identity with target AlterSchema but no DescribeSchema/SelectRow.
 - **WHEN** ALTER or CREATE OR REPLACE is executed with the required parent rights.
 - **THEN** the operation succeeds without granting value/describe access; DescribeSchema-only or hidden-path identities remain unauthorized.
+
+Contract coverage: external-secret-schema / "Operation-specific DDL authorization" — scenarios "Authorized alteration without visibility or value access", "Hidden existing object", "Selective replacement rights".
 
 Executable mapping (status: implemented; execution per verification record):
 
@@ -41,6 +43,8 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** ACL is revoked or the path is dropped and recreated.
 - **THEN** lifecycle mutation cannot touch the replacement object or rely on obsolete access.
 
+Contract coverage: external-secret-schema / "Authorization and identity remain current" — scenarios "Permission revoked after lookup", "Path recreated during resolution".
+
 Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
@@ -54,6 +58,8 @@ Executable mapping (status: implemented; execution per verification record):
 - **GIVEN** a staged CREATE or schema shell.
 - **WHEN** the coordinator disappears before submission, after schema creation, or after an accepted IAM operation.
 - **THEN** the worker resumes persisted intent/subject/schema identity and polls the saved operation after restart.
+
+Contract coverage: iam-delegation-lifecycle / "Intent precedes remote setup" — scenario "Coordinator fails before schema submission".
 
 Executable mapping (status: implemented; execution per verification record):
 
@@ -69,6 +75,8 @@ Executable mapping (status: implemented; execution per verification record):
 - **GIVEN** original CREATE and worker replay are delayed.
 - **WHEN** DROP, sibling mutation or parent/database name reuse consumes the saved fence.
 - **THEN** all delayed copies use one schema identity or fail without creating a replacement shell.
+
+Contract coverage: iam-delegation-lifecycle / "Missing schema alone does not prove safe abandonment" — scenario "Delayed original CREATE arrives after cleanup"; "Immutable identities and idempotent mutations" — scenario "Database and secret paths are reused".
 
 Executable mapping (status: implemented; execution per verification record):
 
@@ -86,6 +94,8 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** noops, EXPLAIN or SQL CREATE/ALTER/DROP run.
 - **THEN** noops and EXPLAIN avoid lifecycle/IAM writes; real SQL reaches the tablet and reader.
 
+Contract coverage: external-secret-schema / "Stored-secret compatibility" — scenarios "No-op statement dispatches nothing", "Existing stored value", "Missing ALTER IF EXISTS" (NoopsNeedNoIamConfigurationOrLifecycleMutation); "Metadata is independent of token health" — scenario "IAM is unavailable during metadata access" (no-dispatch half: EXPLAIN and noops need no IAM configuration); "Delegation source syntax" — scenario "Create a delegation secret" (happy-path half via SqlCreateAlterAndDrop).
+
 Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
@@ -93,3 +103,43 @@ Executable mapping (status: implemented; execution per verification record):
 | `KqpIamDelegationSecretOrchestrator::NoopsNeedNoIamConfigurationOrLifecycleMutation` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:1043](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L1043) | `ydb/core/kqp/executer_actor/ut` |
 | `KqpIamDelegationSecretOrchestrator::ExplainCompilesWithoutLifecycleWritesOrIamConfiguration` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:1161](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L1161) | `ydb/core/kqp/executer_actor/ut` |
 | `KqpIamDelegationSecretOrchestrator::SqlCreateAlterAndDropReachTabletAndReader` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:1182](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L1182) | `ydb/core/kqp/executer_actor/ut` |
+
+#### Scenario: Setup subject and cloud authorization
+
+- **GIVEN** a CREATE or ALTER with a delegation source.
+- **WHEN** the caller is a builtin identity, IAM denies the initiating subject permission to delegate the account, or the account is not delegable in the recorded cloud.
+- **THEN** the builtin identity is rejected before any IAM dispatch; the two IAM-denial cases fail with the IAM error after dispatch, and no binding is activated in any case.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: external-secret-schema / "Delegation uses the initiating cloud subject" — scenarios "Builtin identity attempts setup", "Caller cannot delegate the account"; "Setup fails for an account not delegable in its cloud" — scenario "Account not delegable in the recorded cloud".
+
+#### Scenario: Cloud resolution and retention
+
+- **GIVEN** cloud discovery unavailable, indeterminate, or a previously recorded cloud.
+- **WHEN** setup resolves the cloud or ALTER omits it.
+- **THEN** the configured database fallback applies, an indeterminate cloud fails the setup, and ALTER retains the recorded cloud.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: external-secret-schema / "Resource resolution is explicit or authorized" — scenarios "Discovery unavailable with database fallback", "No cloud can be determined", "ALTER retains the recorded cloud".
+
+#### Scenario: DROP commits during an IAM outage
+
+- **GIVEN** an active delegated secret while IAM is unavailable.
+- **WHEN** DROP is executed.
+- **THEN** the DROP commits, subsequent acquisitions fail, and the confirmed delegation remains durable cleanup work until revocation succeeds.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-revocation / "DROP ends schema access independently of IAM" — scenario "DROP while IAM is unavailable".
+
+#### Scenario: Admission lifecycle
+
+- **GIVEN** an intent admitted while admission was enabled.
+- **WHEN** admission is disabled before that intent completes.
+- **THEN** the in-flight intent completes or retires unaffected, while new setup is gated.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: external-secret-schema / "Admission and cleanup have separate lifetimes" — scenario "Disable feature after creation".

@@ -37,7 +37,7 @@ A worker claim SHALL accept a limit from 1 through 100 and a lease from 1 throug
 - **THEN** the request is rejected without mutating cleanup state.
 
 ### Requirement: Exact lease boundary fences new acknowledgements
-A new acknowledgement SHALL be accepted only for the current claim, while the record is being revoked, and strictly before its deadline. Claim identity MUST bind generation, attempt, worker and deadline. At the deadline a record SHALL be eligible for takeover and its prior unfinished claim MUST be stale.
+A new acknowledgement — completion or retry-report — SHALL be accepted only for the current claim and strictly before its deadline, unless it exactly replays an acknowledgement already committed for the same claim (see Completed acknowledgement replay is exact). Claim identity MUST bind generation, attempt, worker and deadline. At the deadline a record SHALL be eligible for takeover and its prior unfinished claim MUST be stale.
 
 #### Scenario: One microsecond before expiry
 - **WHEN** the current worker acknowledges a live claim one microsecond before its deadline
@@ -60,11 +60,19 @@ An exact replay of an already committed acknowledgement SHALL return its recorde
 - **THEN** it observes the recorded retry without postponing the due time again.
 
 ### Requirement: Only authoritative revocation completion removes work
-Workers SHALL report successful cleanup only after the IAM revoke operation completes or IAM authoritatively confirms absence. Retryable failures MUST preserve durable work with a bounded retry delay. Merely dispatching a revoke or losing its reply MUST NOT mark the binding revoked.
+Workers SHALL report successful cleanup only after the IAM revoke operation completes or IAM authoritatively confirms absence. Retryable failures MUST preserve durable work with a retry delay that grows with the record's consecutive failures up to a bounded maximum. Claim-driven remote calls SHALL be dispersed so that draining a large backlog does not synchronize them. Merely dispatching a revoke or losing its reply MUST NOT mark the binding revoked.
 
 #### Scenario: IAM revoke operation remains pending
 - **WHEN** IAM accepts a revoke but has not completed its operation
 - **THEN** cleanup remains outstanding and recovery retains the operation identifier when available.
+
+#### Scenario: Retry delay grows with failures
+- **WHEN** a record's revocation fails retryably twice
+- **THEN** its second due time is later than its first, within the bounded maximum.
+
+#### Scenario: Backlog drains without synchronized calls
+- **WHEN** many records become due together
+- **THEN** their revoke dispatches are dispersed rather than simultaneous.
 
 ### Requirement: Uncertain setup is excluded from cleanup claims
 An unresolved setup that could still grant access SHALL remain outside the revocation claim queue. Retirement or lease expiry MUST NOT convert uncertainty into a definitive setup result.
@@ -73,3 +81,10 @@ An unresolved setup that could still grant access SHALL remain outside the revoc
 - **WHEN** an uncertain retired setup later succeeds
 - **THEN** its saved binding enters cleanup without altering the active or pending replacement
 - **AND** it was not claimed for revocation before that success became authoritative.
+
+### Requirement: Outstanding cleanup is operator-visible
+Cleanup work outstanding beyond a deployment-set age and records with repeated retryable failures SHALL be exposed through operator-observable state, with thresholds left to configuration.
+
+#### Scenario: Revocation repeatedly fails
+- **WHEN** a record's revocation keeps failing retryably past the configured age
+- **THEN** operator-observable state distinguishes it from healthy backlog without removing its durable work.

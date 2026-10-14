@@ -18,13 +18,15 @@ Fixture boundary: TReadFixture uses the real delegation tablet and reader actor 
 
 ### Requirement: Traceable scenario coverage
 
-The owning test target SHALL keep each implemented scenario traceable to its exact executable case, source assertion and fixture boundary, and SHALL distinguish planned or unverified coverage from recorded execution.
+The owning test target SHALL keep each implemented scenario traceable to its exact executable case, source assertion and fixture boundary, and SHALL distinguish planned or unverified coverage from recorded execution. Each scenario SHALL name the contract requirement and scenario it covers. Planned scenarios have no executable case and do not contribute to executed counts.
 
 #### Scenario: Concurrent wait through producer backoff
 
 - **GIVEN** the real producer has reached a 65–75 second next-attempt delay.
 - **WHEN** a direct reader and default resolver join it and IAM then recovers.
 - **THEN** neither returns or remints after 61 seconds; both receive recovered-token from one new mint.
+
+Contract coverage: iam-delegated-token-acquisition / "A reader permits one complete bounded mint attempt" — scenario "Backoff longer than sixty seconds"; "Concurrent demand shares one producer" — scenario "Several callers arrive during backoff".
 
 Executable mapping (status: implemented; execution per verification record):
 
@@ -37,6 +39,8 @@ Executable mapping (status: implemented; execution per verification record):
 - **GIVEN** missing/held token, storage or schema reply.
 - **WHEN** phase-specific timers fire, cancellation occurs or a late mint arrives.
 - **THEN** missing replies time out; stale token timers cannot truncate schema wait and cancelled readers ignore late mint/timer.
+
+Contract coverage: iam-delegated-token-acquisition / "Every wait remains finite and phase-specific" — scenarios "Token service never replies", "Earlier phase timeout arrives late"; "Caller policy and cancellation remain effective" — scenario "One concurrent caller cancels" (cancelled-caller half; the shared-result half is planned below).
 
 Executable mapping (status: implemented; execution per verification record):
 
@@ -52,6 +56,8 @@ Executable mapping (status: implemented; execution per verification record):
 - **GIVEN** a token is held across promotion, schema DROP, reuse or ACL revoke.
 - **WHEN** the reader revalidates before replying, including usable-deadline equality.
 - **THEN** no obsolete/expired value crosses those boundaries and invalid creating identity never mints.
+
+Contract coverage: external-secret-consumers / "Mint completion is followed by revalidation" — scenarios "DROP while minting", "Replacement promoted during minting", "Token crosses its usable deadline during minting"; iam-delegation-revocation / "DROP ends schema access independently of IAM" (reader half: access ends before the binding is retired).
 
 Executable mapping (status: implemented; execution per verification record):
 
@@ -71,6 +77,8 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** default or caller retry policy handles the result.
 - **THEN** transient statuses honor policy/budget and final status; definitive failures do not retry.
 
+Contract coverage: iam-delegated-token-acquisition / "Transient failures preserve usable cached tokens" — scenario "Retryable failure with an empty cache"; "Caller policy and cancellation remain effective"; external-secret-schema / "Metadata is independent of token health" — scenario "IAM is unavailable during metadata access" (value-acquisition half: a later acquisition reports the token error).
+
 Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
@@ -86,6 +94,8 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** one read succeeds and a later use follows a changed value.
 - **THEN** concurrent calls share one read, next use reads again, and bearer wrapping remains asynchronous.
 
+Contract coverage: external-secret-consumers / "Credentials are acquired for new external requests".
+
 Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
@@ -99,9 +109,41 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** a later read is denied/expired or metadata is persisted.
 - **THEN** previous value is never returned; metadata retains identity/user SID without the original bearer.
 
+Contract coverage: external-secret-consumers / "Credentials are acquired for new external requests" — scenario "Authorization is lost after an earlier successful request"; iam-delegated-token-acquisition / "Minting uses platform credentials and the saved binding" (no bearer persisted).
+
 Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
 | `RefreshingSecretCredentials::FailedOrExpiredReadNeverServesPreviousValue` | [secret_credentials_ut.cpp:96](../../secret_credentials_ut.cpp#L96) | `ydb/services/scheme_secret/ut/fast` |
 | `RefreshingSecretCredentials::StructuredMetadataContainsIdentityButNoOriginalBearer` | [secret_credentials_ut.cpp:113](../../secret_credentials_ut.cpp#L113) | `ydb/services/scheme_secret/ut/fast` |
+
+#### Scenario: Shared callers survive one cancellation
+
+- **GIVEN** several concurrent callers sharing one in-flight mint.
+- **WHEN** one caller cancels.
+- **THEN** the cancelled caller's wait ends immediately while the remaining callers still receive the shared result.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegated-token-acquisition / "Caller policy and cancellation remain effective" — scenario "One concurrent caller cancels" (shared-result half).
+
+#### Scenario: Per-caller authorization on shared resolution
+
+- **GIVEN** a shared in-flight resolution for one secret identity.
+- **WHEN** a caller without value permission attaches to it, or callers with different permissions share a mint.
+- **THEN** each caller's authorization is enforced on its own result; sharing never grants access.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: external-secret-consumers / "Shared resolution enforces per-caller authorization" — scenario "Unauthorized caller attaches to a shared resolution"; iam-delegated-token-acquisition / "Concurrent demand shares one producer" — scenario "Callers with different permissions share a mint".
+
+#### Scenario: Value-read permission separation
+
+- **GIVEN** callers holding only SelectRow or only DescribeSchema on the secret.
+- **WHEN** they request the value or the metadata respectively.
+- **THEN** the SelectRow-only caller can read the value cold, and the metadata-only caller cannot obtain the value.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: external-secret-consumers / "Value reads use their own permission" — scenarios "SelectRow-only cold read", "Metadata-only caller".

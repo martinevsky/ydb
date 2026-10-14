@@ -13,6 +13,13 @@ Delegation intent, original binding, setup outcome and outstanding cleanup respo
 - **WHEN** a database and its schema service disappear while delegation work remains
 - **THEN** the original delegation identities and cleanup responsibilities remain available to recovery and administrative inventory.
 
+### Requirement: Lifecycle state is owned independently of the schema service
+All delegation lifecycle, setup-outcome and cleanup-queue state SHALL be owned by the independent delegation tablet, never by the tenant's schema service. The schema service SHALL retain only ordinary schema responsibilities: object identity, ACLs, immutable references and fences. IAM calls MUST NOT execute inside schema or storage transactions.
+
+#### Scenario: Schema service holds no cleanup queue
+- **WHEN** a tenant's schema service is unavailable, replaced or deleted
+- **THEN** no delegation intent, setup outcome or cleanup obligation is lost or needs reconstruction from schema state.
+
 ### Requirement: Immutable identities and idempotent mutations
 Each database incarnation and bound secret SHALL use immutable identities rather than path names alone. An operation SHALL retain its original IAM binding and unique referrer. Replaying the same operation MUST preserve its identity; changed replays and stale revisions MUST be rejected without partial mutation.
 
@@ -30,7 +37,8 @@ CREATE SHALL durably record its complete binding and schema intent before schema
 
 #### Scenario: Coordinator fails before schema submission
 - **WHEN** a CREATE intent commits but its coordinator disappears before submitting the schema operation
-- **THEN** recovery can use the saved transaction and authorization context to complete or safely retire that intent.
+- **THEN** recovery can use the saved transaction and the recorded initiating-subject context to complete or safely retire that intent
+- **AND** completing setup re-requests delegation on the recorded subject's behalf and is authorized by IAM at dispatch time, never by a stored credential or the platform's own delegation authority.
 
 #### Scenario: Competing workers attempt setup
 - **WHEN** multiple workers try to start setup for the same verified intent
@@ -57,7 +65,11 @@ A setup whose outcome is uncertain SHALL remain visible and ineligible for revoc
 - **THEN** recovery polls that operation and records its definitive result before promotion or cleanup.
 
 ### Requirement: Retiring pending work preserves responsibility
-An unresolved pending replacement SHALL block another replacement for the ten-minute pending guard. Once retirement is permitted, detaching it MUST preserve its cleanup responsibility and the active binding. A late outcome MUST affect only the retired operation and MUST NOT clear or promote a newer pending replacement.
+An unresolved pending replacement SHALL block another replacement strictly before the ten-minute pending guard elapses, measured from its durable staging timestamp and surviving tablet restart; at the guard boundary retirement is permitted. Once retirement is permitted, detaching it MUST preserve its cleanup responsibility and the active binding. A late outcome MUST affect only the retired operation and MUST NOT clear or promote a newer pending replacement.
+
+#### Scenario: Replacement attempted during the pending guard
+- **WHEN** an ALTER targets a secret whose pending replacement is unresolved and younger than the ten-minute guard
+- **THEN** the ALTER is rejected without touching the active binding, the pending slot or cleanup state.
 
 #### Scenario: Late success after pending replacement is retired
 - **WHEN** an older uncertain setup succeeds after its pending slot was released and a newer operation was staged
@@ -80,3 +92,10 @@ Committed lifecycle state SHALL survive tablet restart and reopening the same on
 #### Scenario: Seeded crash and delivery schedule
 - **WHEN** deterministic failure schedules combine commit/reply loss, restarts, identity reuse and out-of-order IAM outcomes
 - **THEN** recovered active, pending and cleanup identities agree with an independent state model and no unresolved responsibility is lost.
+
+### Requirement: Stuck lifecycle work is operator-visible
+Unresolved setups and pending replacements persisting beyond a deployment-set age SHALL be exposed through operator-observable state. Thresholds MUST be configurable rather than fixed by this contract.
+
+#### Scenario: Unknown setup ages past its threshold
+- **WHEN** an intent remains unresolved longer than the configured age threshold
+- **THEN** operator-observable state reports it without resolving or retiring the intent.

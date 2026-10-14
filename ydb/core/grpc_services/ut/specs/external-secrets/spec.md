@@ -10,7 +10,7 @@ Authoritative contracts: [schema](../../../../kqp/executer_actor/openspec/change
 
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/core/grpc_services/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
 
-Source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Status: **implemented and verified**, 20/20 GOOD in the feature-filtered cases, with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../security/iam_delegation/docs/external-secrets/verification.md). Historical results remain distinguished from this final run.
+Source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Status: **implemented and verified**, 20/20 GOOD in the feature-filtered cases (`-F 'DescribeSecretIamDelegation::*' -F 'ListDatabaseIamDelegations::*'`), with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../security/iam_delegation/docs/external-secrets/verification.md). Historical results remain distinguished from this final run.
 
 Fixture boundary: Direct RPC actor fixtures intercept schema and typed tablet replies, authentication and continuation tokens. They check whether a tablet request was made. These tests cover handler protocol decisions; tablet durability belongs to the tablet suite.
 
@@ -18,13 +18,15 @@ Fixture boundary: Direct RPC actor fixtures intercept schema and typed tablet re
 
 ### Requirement: Traceable scenario coverage
 
-The owning test target SHALL keep each implemented scenario traceable to its exact executable case, source assertion and fixture boundary, and SHALL distinguish planned or unverified coverage from recorded execution.
+The owning test target SHALL keep each implemented scenario traceable to its exact executable case, source assertion and fixture boundary, and SHALL distinguish planned or unverified coverage from recorded execution. Each scenario SHALL name the contract requirement and scenario it covers. Planned scenarios have no executable case and do not contribute to executed counts.
 
 #### Scenario: Authorization before metadata
 
 - **GIVEN** plain secret or unauthorized RPC caller.
 - **WHEN** DescribeSecret or administrative inventory runs.
-- **THEN** plain/denied describes and unauthorized/invalid inventory input never read the tablet.
+- **THEN** plain/denied describes and unauthorized inventory requests never read the tablet.
+
+Contract coverage: external-secret-schema / "Metadata is independent of token health"; "Stored-secret compatibility" — scenario "Existing stored value" (PlainSecretDoesNotReadTablet); iam-delegation-inventory / "Administrative export is authorized" — scenario "Caller lacks administrative permission".
 
 Executable mapping (status: implemented; execution per verification record):
 
@@ -32,12 +34,15 @@ Executable mapping (status: implemented; execution per verification record):
 | --- | --- | --- |
 | `DescribeSecretIamDelegation::PlainSecretDoesNotReadTablet` | [rpc_describe_secret_ut.cpp:174](../../../rpc_describe_secret_ut.cpp#L174) | `ydb/core/grpc_services/ut` |
 | `DescribeSecretIamDelegation::AccessDeniedDoesNotReadTablet` | [rpc_describe_secret_ut.cpp:184](../../../rpc_describe_secret_ut.cpp#L184) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::UnauthorizedNeverReadsTablet` | [rpc_list_database_iam_delegations_ut.cpp:133](../../../rpc_list_database_iam_delegations_ut.cpp#L133) | `ydb/core/grpc_services/ut` |
 
 #### Scenario: Coherent description revision
 
 - **GIVEN** active and pending bindings or uncertain CREATE.
 - **WHEN** the handler sees a changed revision or repeated concurrent changes.
 - **THEN** description comes from one revision; stale binding data is discarded and retries are bounded.
+
+Contract coverage: external-secret-schema / "Metadata is independent of token health" (description without minting, coherent revision).
 
 Executable mapping (status: implemented; execution per verification record):
 
@@ -54,6 +59,8 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** the description is resolved.
 - **THEN** no mismatched binding is exposed and tablet unavailability fails the call.
 
+Contract coverage: iam-delegation-lifecycle / "Immutable identities and idempotent mutations" — scenario "Database and secret paths are reused" (description side).
+
 Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
@@ -67,6 +74,8 @@ Executable mapping (status: implemented; execution per verification record):
 - **GIVEN** retained full binding and possibly reused database path.
 - **WHEN** an explicit incarnation is requested or a path must be resolved.
 - **THEN** all retained fields are exported; path reuse requires explicit identity and known empty differs from unknown.
+
+Contract coverage: iam-delegation-inventory / "Inventory is authoritative beyond schema lifetime"; "Database incarnations are explicit" — scenario "Reused database path".
 
 Executable mapping (status: implemented; execution per verification record):
 
@@ -82,13 +91,64 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** page parameters change, snapshot expires or registry scan is required.
 - **THEN** token binding is enforced, expiry requires restart, malformed input never reads the tablet, and registry work is bounded.
 
+Contract coverage: iam-delegation-inventory / "Inventory pagination is revision-bound and bounded" — scenarios "Mutation between pages", "Unsupported page size"; "Administrative export is authorized" — scenario "Continuation is used for another incarnation"; "Database discovery tolerates concurrent registration" (bounded registry scan).
+
 Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `ListDatabaseIamDelegations::UnauthorizedNeverReadsTablet` | [rpc_list_database_iam_delegations_ut.cpp:133](../../../rpc_list_database_iam_delegations_ut.cpp#L133) | `ydb/core/grpc_services/ut` |
 | `ListDatabaseIamDelegations::ContinuationCarriesRevisionAndCursor` | [rpc_list_database_iam_delegations_ut.cpp:201](../../../rpc_list_database_iam_delegations_ut.cpp#L201) | `ydb/core/grpc_services/ut` |
 | `ListDatabaseIamDelegations::ContinuationCannotChangePathOrIncarnation` | [rpc_list_database_iam_delegations_ut.cpp:218](../../../rpc_list_database_iam_delegations_ut.cpp#L218) | `ydb/core/grpc_services/ut` |
 | `ListDatabaseIamDelegations::ExpiredSnapshotRequiresCallerToRestart` | [rpc_list_database_iam_delegations_ut.cpp:231](../../../rpc_list_database_iam_delegations_ut.cpp#L231) | `ydb/core/grpc_services/ut` |
 | `ListDatabaseIamDelegations::InvalidPageSizeAndTokenDoNotReadTablet` | [rpc_list_database_iam_delegations_ut.cpp:242](../../../rpc_list_database_iam_delegations_ut.cpp#L242) | `ydb/core/grpc_services/ut` |
 | `ListDatabaseIamDelegations::RegistryScanHasBoundedWork` | [rpc_list_database_iam_delegations_ut.cpp:277](../../../rpc_list_database_iam_delegations_ut.cpp#L277) | `ydb/core/grpc_services/ut` |
+
+#### Scenario: Metadata describes during an IAM outage
+
+- **GIVEN** an active delegated secret while IAM is unavailable.
+- **WHEN** DescribeSecret runs.
+- **THEN** the description succeeds from durable schema and tablet state without contacting IAM.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: external-secret-schema / "Metadata is independent of token health" — scenario "IAM is unavailable during metadata access" (describe half).
+
+#### Scenario: Authorization revoked between pages
+
+- **GIVEN** an administrator whose authorization is revoked after the first inventory page.
+- **WHEN** a continuation request arrives with an otherwise valid token.
+- **THEN** the continuation is rejected and no further records are disclosed.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-inventory / "Administrative export is authorized" — scenario "Authorization is revoked between pages".
+
+#### Scenario: Exactly-once enumeration
+
+- **GIVEN** an unchanged inventory enumerated over several pages.
+- **WHEN** the caller stops at the first short page.
+- **THEN** the caller has received every record exactly once.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-inventory / "Inventory pagination is revision-bound and bounded" — scenario "Consumer stops on a short page".
+
+#### Scenario: No dedup by account
+
+- **GIVEN** several delegations of one incarnation referring to the same service account.
+- **WHEN** the inventory is exported.
+- **THEN** each distinct referrer and its complete binding appears separately.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-inventory / "Inventory is authoritative beyond schema lifetime" — scenario "Multiple delegations use one account".
+
+#### Scenario: Deletion export and handoff protocol
+
+- **GIVEN** a settled incarnation whose export includes an uncertain setup with a saved operation identifier.
+- **WHEN** the control plane exports, records durably and requests the handoff, or an unauthorized caller attempts settling or handoff, or setup races an export.
+- **THEN** the uncertain record travels with its identifier and unsafe-revocation label, the handoff request confirms durable receipt, unauthorized settling/handoff is rejected, and a pre-settlement export makes no completeness claim.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-inventory / "Deletion handoff exports the durable outbox" — scenario "Control plane takes over cleanup"; "Uncertain exports carry their resolution constraint" — scenario "Uncertain setup is handed off"; "Handoff requires durable receipt and equal authorization" — scenarios "Handoff without administrative authorization", "Control plane loses an unpersisted export"; "Settling is authorized and reversible before handoff" — scenario "Settling requested without administrative authorization"; "Listing is observational" — scenario "Concurrent setup during export".

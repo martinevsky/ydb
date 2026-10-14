@@ -10,7 +10,7 @@ Authoritative contracts: [consumers](../../../../../../../../services/scheme_sec
 
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/library/yql/providers/s3/actors/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below.
 
-Source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Status: **implemented and verified**, 50/50 GOOD in the full owning executable, with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../../../../../core/security/iam_delegation/docs/external-secrets/verification.md). Historical results remain distinguished from this final run.
+Source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Status: **implemented and verified**, 50/50 GOOD in the full owning executable, with exact command exit 0. Per-case mappings cite the first verification at `2e7842af1181` (the fixture-correction revision); the final integration run at `66189ce6` re-executed the full owning executable at the current paths, 50/50 GOOD with the archived trace hash recorded in the verification record. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../../../../../core/security/iam_delegation/docs/external-secrets/verification.md). Historical results remain distinguished from this final run.
 
 Fixture boundaries: TParquetReader uses the real read actor, asynchronous credentials and a controlled HTTP gateway on the simulated runtime's single thread. Its pending-credential test keeps the parent alive and cancels only the decoder, ensuring the late continuation actually executes the pre-dispatch guard. The streaming publication regression uses real TFakeCASetup worker threads and independently scheduled mailboxes: malformed CSV triggers decoder cancellation while Download has delivered callbacks but withholds its hook. An independent error recipient and a parent mailbox round trip establish ordering; finite waits and deferred gate release bound cleanup. Primitive tests invoke the actual TDownloadCancellation used by TRetryStuff, including 64 latch-started concurrent publication/cancellation attempts; they do not prove arbitrary interleavings or replace a race-detector run. No live IAM or TSan result is claimed.
 
@@ -18,13 +18,15 @@ Fixture boundaries: TParquetReader uses the real read actor, asynchronous creden
 
 ### Requirement: Traceable scenario coverage
 
-The owning test target SHALL keep each implemented scenario traceable to its exact executable case, source assertion and fixture boundary, and SHALL distinguish planned or unverified coverage from recorded execution.
+The owning test target SHALL keep each implemented scenario traceable to its exact executable case, source assertion and fixture boundary, and SHALL distinguish planned or unverified coverage from recorded execution. Each scenario SHALL name the contract requirement and scenario it covers. Planned scenarios have no executable case and do not contribute to executed counts.
 
 #### Scenario: Credential wait before range request
 
 - **GIVEN** a Parquet source with a held credential future.
 - **WHEN** the real read actor pumps before and after fresh-token release.
 - **THEN** no range starts while held, the actor remains pumpable, three rows complete, and credential calls match range calls.
+
+Contract coverage: external-secret-consumers / "Credentials are acquired for new external requests" (asynchronous acquisition without blocking the actor).
 
 Executable mapping (implemented and verified at `2e7842af1181`):
 
@@ -38,6 +40,8 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 - **WHEN** credential acquisition fails.
 - **THEN** the read reports an error with zero HTTP range calls.
 
+Contract coverage: external-secret-consumers / "Credentials are acquired for new external requests" — scenario "Authorization is lost after an earlier successful request" (consumer-side failure without a request).
+
 Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
@@ -49,6 +53,8 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 - **GIVEN** a streaming decoder waiting for asynchronous credentials, with its parent kept alive.
 - **WHEN** the decoder handles cancellation before credentials arrive and the late continuation is drained.
 - **THEN** no streaming download or cancel hook is dispatched and no error is reported.
+
+Contract coverage: external-secret-s3-cancellation / "Cancellation before dispatch prevents a new download" — scenario "Cancellation precedes credential resolution".
 
 Executable mapping (implemented and verified at `2e7842af1181`):
 
@@ -62,6 +68,8 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 - **WHEN** malformed Int32 data causes cancellation on the decoder mailbox before Download returns.
 - **THEN** after explicit gate release and parent mailbox synchronization, the returned hook is invoked exactly once, with no gate timeout.
 
+Contract coverage: external-secret-s3-cancellation / "Cancellation and download publication are synchronized" — scenario "Decoder cancels before the gateway returns".
+
 Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
@@ -73,6 +81,8 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 - **GIVEN** the actual production cancellation primitive and one dispatched hook.
 - **WHEN** cancellation runs before/after publication, repeatedly, or concurrently with publication.
 - **THEN** the hook is consumed exactly once and the state remains cancelled.
+
+Contract coverage: external-secret-s3-cancellation / "Cancellation and download publication are synchronized" — scenario "Repeated or concurrent cancellation".
 
 Executable mapping (implemented and verified at `2e7842af1181`):
 
@@ -88,6 +98,8 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 - **WHEN** cancellation happens before or after hook publication.
 - **THEN** the hook observes cancelled state and finishes with exactly one invocation outside the synchronization lock.
 
+Contract coverage: external-secret-s3-cancellation / "Cancellation and download publication are synchronized" — scenario "Hook calls back into cancellation".
+
 Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
@@ -101,6 +113,8 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 - **WHEN** the current retry publishes its hook and the request is cancelled.
 - **THEN** only the current hook is invoked; the completed attempt hook is not called.
 
+Contract coverage: external-secret-s3-cancellation / "Cancellation and download publication are synchronized" (hook-once semantics across retries).
+
 Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
@@ -113,6 +127,8 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 - **WHEN** empty hooks are published before and after cancellation.
 - **THEN** the primitive safely retains cancelled state.
 
+Contract coverage: external-secret-s3-cancellation / "Cancellation and download publication are synchronized" (empty-hook edge).
+
 Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
@@ -124,6 +140,8 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 - **GIVEN** valid CSV data with asynchronous decoding and an immediate gateway hook.
 - **WHEN** the real read actor reads to completion.
 - **THEN** it reports no error, finishes, delivers one row and starts one streaming request.
+
+Contract coverage: regression guard for external-secret-s3-cancellation; no dedicated contract scenario.
 
 Executable mapping (implemented and verified at `2e7842af1181`):
 

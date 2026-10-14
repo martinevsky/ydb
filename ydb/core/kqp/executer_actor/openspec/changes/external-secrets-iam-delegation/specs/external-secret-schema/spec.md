@@ -18,7 +18,7 @@ The system SHALL accept `YC_IAM_DELEGATION` as a secret source, require `SERVICE
 - **THEN** the request fails and the existing secret remains unchanged.
 
 ### Requirement: Stored-secret compatibility
-A secret created without SOURCE SHALL retain its existing stored-value behavior. Existing secret-reference syntax and the normal IF NOT EXISTS, OR REPLACE and IF EXISTS semantics SHALL remain available, subject to authorization and source compatibility.
+A secret created without SOURCE SHALL retain its existing stored-value behavior. Existing secret-reference syntax and the normal IF NOT EXISTS, OR REPLACE and IF EXISTS semantics SHALL remain available, subject to authorization and source compatibility. A satisfied IF NOT EXISTS or an ALTER that changes nothing SHALL remain a plain schema operation and MUST NOT dispatch IAM setup.
 
 #### Scenario: Existing stored value
 - **WHEN** an authorized consumer reads a secret created without SOURCE
@@ -27,6 +27,10 @@ A secret created without SOURCE SHALL retain its existing stored-value behavior.
 #### Scenario: Missing ALTER IF EXISTS
 - **WHEN** ALTER IF EXISTS targets a genuinely absent secret
 - **THEN** it completes without creating a secret or an IAM delegation.
+
+#### Scenario: No-op statement dispatches nothing
+- **WHEN** CREATE IF NOT EXISTS finds an existing secret, or ALTER changes no delegation attribute
+- **THEN** the statement completes without any IAM setup dispatch or lifecycle mutation.
 
 ### Requirement: Operation-specific DDL authorization
 ALTER of a delegation secret SHALL require AlterSchema and any rights needed for requested attributes, without adding DescribeSchema or SelectRow as prerequisites. CREATE OR REPLACE of an existing secret SHALL enforce both parent creation rights and target alteration rights. Authorization failure MUST precede lifecycle mutation or IAM setup.
@@ -63,12 +67,31 @@ CREATE and ALTER requiring IAM setup SHALL identify an authenticated cloud subje
 - **WHEN** IAM denies the initiating subject permission to delegate the account
 - **THEN** the operation returns the denial and does not activate the requested binding.
 
+#### Scenario: Builtin identity attempts setup
+- **WHEN** a local or builtin database identity issues CREATE or ALTER with the delegation source
+- **THEN** the request is rejected before any IAM setup dispatch.
+
 ### Requirement: Resource resolution is explicit or authorized
-An explicit RESOURCE SHALL select the delegation cloud. When it is omitted, the system SHALL attempt account-cloud discovery with the caller's credentials, then use the database cloud attribute with a warning if necessary. Failure to determine a cloud MUST return an actionable error.
+An explicit RESOURCE SHALL select the delegation cloud. When it is omitted, the system SHALL attempt account-cloud discovery with the caller's credentials, then use the database cloud attribute if necessary; any fallback use MUST be returned as a distinct warning issue and the chosen cloud MUST be recorded in the secret's public metadata. ALTER that omits RESOURCE SHALL retain the existing binding's cloud without re-derivation. Failure to determine a cloud MUST return an actionable error.
 
 #### Scenario: Discovery unavailable with database fallback
 - **WHEN** RESOURCE is omitted, account lookup fails, and the database has a cloud identifier
 - **THEN** setup uses that identifier and reports that the fallback was used.
+
+#### Scenario: No cloud can be determined
+- **WHEN** RESOURCE is omitted, account-cloud discovery fails and the database has no cloud identifier
+- **THEN** setup fails with an actionable error and no binding is activated.
+
+#### Scenario: ALTER retains the recorded cloud
+- **WHEN** ALTER changes the account but omits RESOURCE
+- **THEN** the replacement binding keeps the existing binding's recorded cloud without re-derivation.
+
+### Requirement: Setup fails for an account not delegable in its cloud
+Setup MUST fail with the IAM error when the account is not delegable in the binding's chosen or recorded cloud, and MUST NOT activate such a binding.
+
+#### Scenario: Account not delegable in the recorded cloud
+- **WHEN** ALTER retains the existing binding's cloud and IAM denies delegation because the new account is not delegable there
+- **THEN** setup fails and the current active binding is preserved.
 
 ### Requirement: Metadata is independent of token health
 Public secret description SHALL expose the source and non-secret delegation metadata without returning a minted IAM token. Referencing an existing secret during object creation or query planning MUST NOT require successful minting. Compilation and explanation MUST NOT dispatch IAM setup.
@@ -79,7 +102,7 @@ Public secret description SHALL expose the source and non-secret delegation meta
 - **AND** a later value acquisition reports the relevant token error.
 
 ### Requirement: Admission and cleanup have separate lifetimes
-New delegation secrets SHALL require the feature's admission flag and configured delegation services. Disabling admission MUST NOT erase durable state, prevent ordinary DROP, or disable cleanup of previously admitted work.
+New delegation secrets SHALL require the feature's admission flag and configured delegation services. Admission SHALL gate setup for intents created while admission is disabled, including replacements on existing secrets; completing or retiring an intent admitted while admission was enabled SHALL NOT depend on the current admission state. Disabling admission MUST NOT erase durable state, prevent ordinary DROP, or disable cleanup of previously admitted work.
 
 #### Scenario: Disable feature after creation
 - **WHEN** admission is disabled after a delegation secret exists

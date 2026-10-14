@@ -18,13 +18,15 @@ Fixture boundary: TWorkerFixture uses the real independent tablet and real worke
 
 ### Requirement: Traceable scenario coverage
 
-The owning test target SHALL keep each implemented scenario traceable to its exact executable case, source assertion and fixture boundary, and SHALL distinguish planned or unverified coverage from recorded execution.
+The owning test target SHALL keep each implemented scenario traceable to its exact executable case, source assertion and fixture boundary, and SHALL distinguish planned or unverified coverage from recorded execution. Each scenario SHALL name the contract requirement and scenario it covers. Planned scenarios have no executable case and do not contribute to executed counts.
 
 #### Scenario: Durable transport and uncertain reply
 
 - **GIVEN** a client request with a cookie.
 - **WHEN** the durable response succeeds, the tablet reboots, or the committed reply is dropped.
 - **THEN** the cookie is forwarded, new reads resolve the rebooted tablet, and a lost reply reports uncertainty without replaying the mutation.
+
+Contract coverage: iam-delegation-lifecycle / "Recovery preserves committed state under storage failures" (client transport half).
 
 Executable mapping (status: implemented; execution per verification record):
 
@@ -40,6 +42,8 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** submit or known-operation poll is attempted.
 - **THEN** undispatched submit is Failed while the known operation is Unknown; both carry UNAVAILABLE.
 
+Contract coverage: iam-delegation-lifecycle / "Unknown setup is not a failed setup" (no blind replay of undispatched work).
+
 Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
@@ -52,6 +56,8 @@ Executable mapping (status: implemented; execution per verification record):
 - **GIVEN** a revoke accepted with a persisted operation ID.
 - **WHEN** worker and tablet restart, or the saved operation definitively fails.
 - **THEN** restart polls the saved ID without duplicate submit; terminal failure clears it before a new submit.
+
+Contract coverage: iam-delegation-lifecycle / "Unknown setup is not a failed setup" — scenario "Known operation survives restart"; iam-delegation-revocation / "Only authoritative revocation completion removes work" — scenario "IAM revoke operation remains pending".
 
 Executable mapping (status: implemented; execution per verification record):
 
@@ -66,18 +72,23 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** many days pass without an operation ID, or a known setup is polled.
 - **THEN** unknown setup remains WAITING_SETUP with zero submits/polls; a known successful setup is resolved before revoke.
 
+Contract coverage: iam-delegation-revocation / "Uncertain setup is excluded from cleanup claims" — scenario "Setup completes after retirement"; iam-delegation-lifecycle / "Unknown setup is not a failed setup" — scenario "First setup reply is lost"; iam-delegation-lifecycle / "Intent precedes remote setup" — scenario "Competing workers attempt setup" (SetupStartRaceAndUnknownOutcomeNeverResubmit).
+
 Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
 | `IamDelegationRecoveryWorker::UnknownSetupWithoutOperationIsNeverRevoked` | [worker_ut.cpp:256](../../worker_ut.cpp#L256) | `ydb/core/security/iam_delegation/lifecycle/ut` |
 | `IamDelegationRecoveryWorker::KnownSetupAfterDropIsPolledBeforeRevocation` | [worker_ut.cpp:269](../../worker_ut.cpp#L269) | `ydb/core/security/iam_delegation/lifecycle/ut` |
+| `IamDelegationRecoveryWorker::SetupStartRaceAndUnknownOutcomeNeverResubmit` | [worker_ut.cpp:349](../../worker_ut.cpp#L349) | `ydb/core/security/iam_delegation/lifecycle/ut` |
 
 #### Scenario: Persisted identity and stale claim fences
 
 - **GIVEN** a full saved binding or an older claim.
 - **WHEN** node settings are absent or a late reply follows tablet reboot/worker takeover.
 - **THEN** revoke carries every saved field and stale replies cannot complete a newer claim.
+
+Contract coverage: iam-delegation-revocation / "Cleanup uses the saved binding" — scenario "Configuration changes before cleanup"; "Exact lease boundary fences new acknowledgements" — scenario "Delayed worker after restart or takeover".
 
 Executable mapping (status: implemented; execution per verification record):
 
@@ -93,11 +104,95 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** schema identity changes or schema reads fail.
 - **THEN** replacement identities retire only old work; schema errors or unbound absence never prove deletion.
 
+Contract coverage: iam-delegation-lifecycle / "Missing schema alone does not prove safe abandonment".
+
 Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
 | `IamDelegationRecoveryWorker::ReusedPathAndChangedCreatingReferenceRetireOldBinding` | [worker_ut.cpp:472](../../worker_ut.cpp#L472) | `ydb/core/security/iam_delegation/lifecycle/ut` |
 | `IamDelegationRecoveryWorker::SchemaErrorsAndUnboundAbsenceNeverProveDeletion` | [worker_ut.cpp:496](../../worker_ut.cpp#L496) | `ydb/core/security/iam_delegation/lifecycle/ut` |
+
+#### Scenario: Intent recovery with durable subject
+
+- **GIVEN** a verified intent shell whose schema submission state is uncertain.
+- **WHEN** the worker recovers it or restarts mid-setup.
+- **THEN** setup resumes with the durable initiating subject and polls the saved operation after restart instead of resubmitting.
+
+Contract coverage: iam-delegation-lifecycle / "Intent precedes remote setup" — scenario "Coordinator fails before schema submission"; iam-delegation-inventory / "Inventory is authoritative beyond schema lifetime" — scenario "Unactivated CREATE shell remains recoverable".
+
+Executable mapping (status: implemented; execution per verification record):
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
 | `IamDelegationRecoveryWorker::VerifiedShellResumesSetupWithDurableSubjectAndPollsAfterRestart` | [worker_ut.cpp:314](../../worker_ut.cpp#L314) | `ydb/core/security/iam_delegation/lifecycle/ut` |
-| `IamDelegationRecoveryWorker::SetupStartRaceAndUnknownOutcomeNeverResubmit` | [worker_ut.cpp:349](../../worker_ut.cpp#L349) | `ydb/core/security/iam_delegation/lifecycle/ut` |
+
+#### Scenario: Pending guard blocks replacement
+
+- **GIVEN** a binding with pending lifecycle work inside its ten-minute guard.
+- **WHEN** a replacement arrives, including after a restart still inside the window.
+- **THEN** the replacement is blocked until the guard elapses.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-lifecycle / "Retiring pending work preserves responsibility" — scenario "Replacement attempted during the pending guard".
+
+#### Scenario: Stuck lifecycle work is visible
+
+- **GIVEN** a setup that stays in its uncertain state past the configured threshold.
+- **WHEN** the threshold elapses.
+- **THEN** operator-observable state reports the stuck work without changing its recovery behavior.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-lifecycle / "Stuck lifecycle work is operator-visible" — scenario "Unknown setup ages past its threshold".
+
+#### Scenario: Outstanding cleanup is visible
+
+- **GIVEN** cleanup work whose IAM revocation repeatedly fails.
+- **WHEN** the configured failure threshold elapses.
+- **THEN** operator-observable state reports the outstanding cleanup while retries continue.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-revocation / "Outstanding cleanup is operator-visible" — scenario "Revocation repeatedly fails".
+
+#### Scenario: Revoke retries grow and disperse
+
+- **GIVEN** several bindings whose revocation retries fail together.
+- **WHEN** subsequent attempts are scheduled.
+- **THEN** per-binding delay grows with failures and the backlog drains without synchronized IAM calls.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-revocation / "Only authoritative revocation completion removes work" — scenarios "Retry delay grows with failures", "Backlog drains without synchronized calls".
+
+#### Scenario: Discovery behind cursor and paced rescans
+
+- **GIVEN** a database registered behind a worker's current discovery cursor.
+- **WHEN** scans repeat.
+- **THEN** a later complete scan discovers it, and consecutive full scans are paced by the minimum interval.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-inventory / "Database discovery tolerates concurrent registration" — scenarios "Registration appears behind the cursor", "Rescans are paced".
+
+#### Scenario: No cleanup state in the schema service
+
+- **GIVEN** lifecycle and cleanup work recorded for an incarnation.
+- **WHEN** the work is created, claimed, retried and acknowledged.
+- **THEN** no cleanup queue or lifecycle state is written to or required from the schema service; all state lives in the delegation tablet.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-lifecycle / "Lifecycle state is owned independently of the schema service" — scenario "Schema service holds no cleanup queue".
+
+#### Scenario: Recovery dispatch denied by IAM
+
+- **GIVEN** a recovered intent whose initiating subject lost IAM permission before setup dispatch.
+- **WHEN** the worker reaches the dispatch decision.
+- **THEN** the setup is not dispatched and the intent remains for later resolution.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-lifecycle / "Intent precedes remote setup" (dispatch-time authorization clause).

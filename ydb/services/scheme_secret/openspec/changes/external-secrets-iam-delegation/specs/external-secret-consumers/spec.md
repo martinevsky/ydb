@@ -31,12 +31,16 @@ Before returning a minted token, acquisition SHALL revalidate the active delegat
 - **WHEN** IAM responds after the secret was dropped or its path reused
 - **THEN** acquisition does not return the token under the earlier secret identity.
 
+#### Scenario: Token crosses its usable deadline during minting
+- **WHEN** a minted token crosses its usable deadline while acquisition was in flight
+- **THEN** it is treated as absent and not returned as the secret's value.
+
 #### Scenario: Replacement promoted during minting
 - **WHEN** a replacement changes the active binding while a token for its predecessor is being minted
 - **THEN** the acquisition re-resolves or fails without returning the predecessor as the current secret value.
 
 ### Requirement: Credentials are acquired for new external requests
-Credential providers SHALL retain a secret reference and verified caller identity, and resolve current credentials for each new external request. Concurrent acquisitions can share one in-flight resolution. A failed resolution MUST NOT fall back to an earlier token. Retries of an already authorized transport request can retain that request's token.
+Credential providers SHALL retain a secret reference and verified caller identity, and resolve current credentials for each new external request. A failed resolution MUST NOT fall back to an earlier token. Retries of an already authorized transport request can retain that request's token.
 
 #### Scenario: Account changes without restarting a query
 - **WHEN** ALTER promotes another account while a long-running query remains active
@@ -45,3 +49,10 @@ Credential providers SHALL retain a secret reference and verified caller identit
 #### Scenario: Authorization is lost after an earlier successful request
 - **WHEN** a subsequent acquisition fails because the secret was dropped or read access was revoked
 - **THEN** the new external request fails instead of using a previously cached provider result.
+
+### Requirement: Shared resolution enforces per-caller authorization
+Concurrent acquisitions can share one in-flight resolution, but sharing MUST NOT bypass per-caller authorization. Credentials SHALL be returned to a caller only after that caller's verified identity is validated against the current secret identity and ACL.
+
+#### Scenario: Unauthorized caller attaches to a shared resolution
+- **WHEN** a caller without read permission shares an in-flight resolution started by an authorized caller
+- **THEN** the unauthorized caller is rejected against the current ACL and does not receive the shared result.

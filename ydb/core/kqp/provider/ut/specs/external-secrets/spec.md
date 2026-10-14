@@ -10,9 +10,9 @@ Authoritative contracts: [schema](../../../../executer_actor/openspec/changes/ex
 
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/core/kqp/provider/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
 
-Source baseline: `67a530cc28eb2269e75fe0b83f2bacf73a1cbe2a`, including C1 product commit `8795e8bd1b186fc53051e5dd79126d9347a0e1b3`. Task5 changes paths only; source hashes and new-path results are recorded in the [durable verification record](../../../../../security/iam_delegation/docs/external-secrets/verification.md).
+Source baseline: `67a530cc28eb2269e75fe0b83f2bacf73a1cbe2a`, including C1 product commit `8795e8bd1b186fc53051e5dd79126d9347a0e1b3`. A later change moved these files to their current paths without changing their content; source hashes and the post-relocation results are recorded in the [durable verification record](../../../../../security/iam_delegation/docs/external-secrets/verification.md).
 
-Status: **implemented; new-path/source-revision execution unverified until the verification record records a successful run**. Historical recovery/C1 runs used pre-relocation paths; names alone do not prove a passing run. This target received coverage documentation only in Task5; existing execution evidence is historical and no additional Task4 rerun is required. Planned scenarios have no executable case and do not contribute to executed counts.
+Status: **implemented and verified at the post-relocation run**: the three relocated targets completed 166/166 GOOD with exact exits 0 at the new paths, with a source-equivalence check recorded in the verification record. They were not re-executed at the final-integration revision `66189ce6`; the record documents them as not additional required reruns. Planned scenarios have no executable case and do not contribute to executed counts.
 
 Fixture boundary: SecretSettings constructs real expression nodes and parser issue contexts. KikimrIcGateway uses TKikimrRunner and the public query client with schema/delegation flags but without IAM configuration; its EXPLAIN probes do not dispatch IAM.
 
@@ -20,13 +20,15 @@ Fixture boundary: SecretSettings constructs real expression nodes and parser iss
 
 ### Requirement: Traceable scenario coverage
 
-The owning test target SHALL keep each implemented scenario traceable to its exact executable case, source assertion and fixture boundary, and SHALL distinguish planned or unverified coverage from recorded execution.
+The owning test target SHALL keep each implemented scenario traceable to its exact executable case, source assertion and fixture boundary, and SHALL distinguish planned or unverified coverage from recorded execution. Each scenario SHALL name the contract requirement and scenario it covers. Planned scenarios have no executable case and do not contribute to executed counts.
 
 #### Scenario: Delegation source parsing
 
 - **GIVEN** CREATE/ALTER expression settings.
 - **WHEN** source parameters are parsed.
 - **THEN** CREATE carries only account/cloud/source fields and ALTER infers delegation from RESOURCE without a stored value.
+
+Contract coverage: external-secret-schema / "Delegation source syntax" — scenario "Create a delegation secret"; the ALTER-side inference has no dedicated contract scenario.
 
 Executable mapping (status: implemented; execution per verification record):
 
@@ -41,6 +43,8 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** the parser validates settings.
 - **THEN** each input is rejected with an error and issues.
 
+Contract coverage: external-secret-schema / "Delegation source syntax" — scenario "Source conversion is rejected"; "Stored-secret compatibility".
+
 Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
@@ -53,6 +57,8 @@ Executable mapping (status: implemented; execution per verification record):
 - **GIVEN** a runner with feature flags and no configured IAM services.
 - **WHEN** CREATE, IF NOT EXISTS, OR REPLACE and ALTER variants execute in Explain mode.
 - **THEN** all explanations succeed and DescribePath confirms the secret was not created.
+
+Contract coverage: external-secret-schema / "Metadata is independent of token health" — scenario "IAM is unavailable during metadata access" (EXPLAIN half: no lifecycle or IAM dispatch during compilation).
 
 Executable mapping (status: implemented; execution per verification record):
 
