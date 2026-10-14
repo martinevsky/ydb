@@ -2,7 +2,7 @@
 
 Task5 base: `67a530cc28eb2269e75fe0b83f2bacf73a1cbe2a`; C1 source commit: `8795e8bd1b186fc53051e5dd79126d9347a0e1b3`. Task5 relocates three existing libraries and their tests without changing symbols, persistent formats or assertions. Its final commit is recorded by version control history for this file. Historical recovery/C1 results used the former lifecycle and tx/tablet paths and do not validate relocated sources.
 
-Task5 implementation commit: `87f8733958c047bd0429e2b8d627b00404b43c75`. Independent task review approved both specification compliance and code quality with no findings, including verification of archived results, source hashes and scenario mappings. This approval covers the relocation and test specifications; final integration and the C2 task review remain separate gates below.
+Task5 implementation commit: `87f8733958c047bd0429e2b8d627b00404b43c75`. Independent task review approved both specification compliance and code quality with no findings, including verification of archived results, source hashes and scenario mappings. This approval covers the relocation and test specifications; final integration remains a separate gate below.
 
 Run the following exact commands from the repository root, sequentially:
 
@@ -16,7 +16,7 @@ The external evidence collection is `external-secrets-recovery/review-fixes-2026
 
 All seven authoritative feature contracts retain 43 requirements and 67 scenarios byte-for-byte. The twelve [test-owned specifications](README.md#test-owned-scenarios) map existing coverage intent separately from run results. They do not assert that unrelated consumer targets passed on this revision.
 
-Pending gates: Task3/C2 independent task review; Task4 relocated service/lifecycle/tablet, KQP executer, scheme_secret fast, S3 actors/credentials, changed gRPC/finalizer UT consumers and production-driver integration; and independent whole-fixes review. C2 and both direct wrapper regressions are implemented and locally verified below. The wrapper has no cancellation API; late request suppression remains owned by read actors.
+Pending gates: Task4 relocated service/lifecycle/tablet, KQP executer, scheme_secret fast, S3 actors/credentials, changed gRPC/finalizer UT consumers and production-driver integration; and independent whole-fixes review. C2 and both direct wrapper regressions are implemented and locally verified below. The wrapper has no cancellation API; late request suppression remains owned by read actors.
 
 Provider, SchemeShard and Solomon received coverage documentation only in Task5. Their current executable mappings describe source coverage; existing run evidence is historical and they are not additional required Task4 reruns.
 
@@ -43,3 +43,5 @@ External artifacts live in `external-secrets-recovery/review-fixes-2026-10-14`: 
 | `task3-green-full-test-results/credentials/unittest/ytest.report.trace` | `363d89b354e8e90804a3752b816f9e3eae675206f4caa0abfb81122e82681da9` | 4 GOOD |
 
 Earlier RED1–3 failed fixture/build setup, and focused GREEN1 passed 13/14 with an actor-name fixture failure; those are archived diagnostic attempts, not the valid RED or final GREEN. The real streaming regression fixes callback/cancellation ordering without sleeps; primitive coverage tests before/after/repeated/concurrent/reentrant cancellation, completed-attempt hook replacement and empty hooks. The pending-credentials actor test keeps its parent alive to exercise the late continuation guard; a valid streaming control delivers a row. Direct wrapper success/error tests verify provider retention and future propagation after wrapper destruction, covering existing behavior without adding a cancellation API. No live IAM or race-detector run is claimed. Successful output includes actor diagnostics for deliberately invalid inputs; one focused run also disabled an unreachable remote cache and completed successfully.
+
+Task3 independent review approved specification compliance and code quality at `96de6630f11800e7b081706274535be20bf72ff6`, with no correctness findings. The reviewer recomputed archived trace/log hashes, confirmed zero symlinks, matched all 35 current source inputs and verified the cancellation/error/mailbox ordering. The only non-blocking finding concerns expected negative-test diagnostics and unavailable-cache output; no rerun was required. Final combined integration remains pending.

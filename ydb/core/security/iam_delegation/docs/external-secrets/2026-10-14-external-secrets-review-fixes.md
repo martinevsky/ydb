@@ -68,7 +68,7 @@
 - [x] Add `TCredentials::AsyncFailureAfterWrapperDestruction`: a future retained after wrapper destruction propagates the controlled provider exception without successful token fallback or synchronous acquisition. These two wrapper tests cover existing behavior, not a claimed pre-fix failure. The wrapper has no cancellation API; cancellation remains a read-actor responsibility. No multipart-output change is part of C2.
 - [x] Run the S3 actor suite and relevant credentials tests. Commit only task files after green.
 - [x] Update the owning test specifications with exact executable mappings, current source anchors and actual results. Record exact RED/GREEN exits, counts, source hashes and dereferenced evidence in the durable verification record; do not link pushed documentation to ignored SDD files. Validate the changed standalone specs and native component project.
-- [ ] Independent task review; resolve concrete findings before continuing.
+- [x] Independent task review; resolve concrete findings before continuing.
 
 ### Task 5: Consolidate IAM ownership in security and specify test scenarios
 
