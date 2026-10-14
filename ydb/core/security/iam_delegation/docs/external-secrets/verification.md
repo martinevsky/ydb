@@ -2,7 +2,7 @@
 
 Task5 base: `67a530cc28eb2269e75fe0b83f2bacf73a1cbe2a`; C1 source commit: `8795e8bd1b186fc53051e5dd79126d9347a0e1b3`. Task5 relocates three existing libraries and their tests without changing symbols, persistent formats or assertions. Its final commit is recorded by version control history for this file. Historical recovery/C1 results used the former lifecycle and tx/tablet paths and do not validate relocated sources.
 
-Task5 implementation commit: `87f8733958c047bd0429e2b8d627b00404b43c75`. Independent task review approved both specification compliance and code quality with no findings, including verification of archived results, source hashes and scenario mappings. This approval covers the relocation and test specifications; final integration remains a separate gate below.
+Task5 implementation commit: `87f8733958c047bd0429e2b8d627b00404b43c75`. Independent task review approved both specification compliance and code quality with no findings, including verification of archived results, source hashes and scenario mappings. This approval covers the relocation and test specifications; final integration results are recorded below.
 
 Run the following exact commands from the repository root, sequentially:
 
@@ -16,7 +16,7 @@ The external evidence collection is `external-secrets-recovery/review-fixes-2026
 
 All seven authoritative feature contracts retain 43 requirements and 67 scenarios byte-for-byte. The twelve [test-owned specifications](README.md#test-owned-scenarios) map existing coverage intent separately from run results. They do not assert that unrelated consumer targets passed on this revision.
 
-Pending gates: Task4 relocated service/lifecycle/tablet, KQP executer, scheme_secret fast, S3 actors/credentials, changed gRPC/finalizer UT consumers and production-driver integration; and independent whole-fixes review. C2 and both direct wrapper regressions are implemented and locally verified below. The wrapper has no cancellation API; late request suppression remains owned by read actors.
+All Task4 integration targets passed below. C2 and both direct wrapper regressions are implemented and verified. Independent whole-fixes review approved the committed/runtime changes; final delivery is recorded by branch history. The wrapper has no cancellation API; late request suppression remains owned by read actors.
 
 Provider, SchemeShard and Solomon received coverage documentation only in Task5. Their current executable mappings describe source coverage; existing run evidence is historical and they are not additional required Task4 reruns.
 
@@ -44,4 +44,37 @@ External artifacts live in `external-secrets-recovery/review-fixes-2026-10-14`: 
 
 Earlier RED1–3 failed fixture/build setup, and focused GREEN1 passed 13/14 with an actor-name fixture failure; those are archived diagnostic attempts, not the valid RED or final GREEN. The real streaming regression fixes callback/cancellation ordering without sleeps; primitive coverage tests before/after/repeated/concurrent/reentrant cancellation, completed-attempt hook replacement and empty hooks. The pending-credentials actor test keeps its parent alive to exercise the late continuation guard; a valid streaming control delivers a row. Direct wrapper success/error tests verify provider retention and future propagation after wrapper destruction, covering existing behavior without adding a cancellation API. No live IAM or race-detector run is claimed. Successful output includes actor diagnostics for deliberately invalid inputs; one focused run also disabled an unreachable remote cache and completed successfully.
 
-Task3 independent review approved specification compliance and code quality at `96de6630f11800e7b081706274535be20bf72ff6`, with no correctness findings. The reviewer recomputed archived trace/log hashes, confirmed zero symlinks, matched all 35 current source inputs and verified the cancellation/error/mailbox ordering. The only non-blocking finding concerns expected negative-test diagnostics and unavailable-cache output; no rerun was required. Final combined integration remains pending.
+Task3 independent review approved specification compliance and code quality at `96de6630f11800e7b081706274535be20bf72ff6`, with no correctness findings. The reviewer recomputed archived trace/log hashes, confirmed zero symlinks, matched all 35 current source inputs and verified the cancellation/error/mailbox ordering. The only non-blocking finding concerns expected negative-test diagnostics and unavailable-cache output; no rerun was required. Final combined integration passed below.
+
+## Final integration (Task4)
+
+Tested source commit: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Runtime/product/build inputs are frozen across both stages and still match all 69 entries in `final-integration-source.json` (SHA-256 `17901c36f91a795748e248d62fb22f71ab2eb1832ac06160681b6cc4548adf49`). Later controller delivery changes are status/evidence documentation only. Six feature-spec Markdown files were concurrently edited in the shared worktree during the main run; they do not affect any checked compiled input. The result manifests retain that doc-only Git status, and a `concurrent-spec-edits` snapshot preserves those external edits. They are kept separate from this delivery and its reviewed contracts.
+
+Exact commands from the repository root:
+
+| Command | Exact exit | Result |
+| --- | --- | --- |
+| `./ya make --build relwithdebinfo -tA --keep-going --ignore-recurses --link-threads=1 --test-threads=4 ydb/core/security/iam_delegation/ut ydb/core/security/iam_delegation/lifecycle/ut ydb/core/security/iam_delegation/tablet/ut ydb/core/kqp/executer_actor/ut ydb/services/scheme_secret/ut/fast ydb/library/yql/providers/s3/actors/ut ydb/library/yql/providers/s3/credentials/ut ydb/core/driver_lib/run` | 0 | 381/381 GOOD in 7 suites; production driver library built |
+| `./ya make --build relwithdebinfo -tA --keep-going --ignore-recurses --link-threads=1 --test-threads=4 ydb/core/grpc_services/ut ydb/core/kqp/finalize_script_service/ut -F '*Iam*' -F '*Secret*'` | 0 | 26/26 GOOD in 2 suites; feature-filtered API/finalizer checks |
+
+Total: **407/407 GOOD across 9 owning executables**. Both outer commands were collected by the controller. The second command filters the IAM/secret cases; it is not a claim that every unrelated API test ran. Detailed per-target trace counts and hashes:
+
+| Target | GOOD | Archived trace SHA-256 |
+| --- | --- | --- |
+| `ydb/core/security/iam_delegation/ut` | 57 | `6554e7f72cb845b6800ed6dd8139c46e3347681d63170121223214b54a56cb1e` |
+| `ydb/core/security/iam_delegation/lifecycle/ut` | 22 | `dd6b44611e6f6dcd0a34ce486cd7acfebe673c26778dc4782ae86c5e50812db7` |
+| `ydb/core/security/iam_delegation/tablet/ut` | 87 | `a1fadcd73b38262bc7acb99507e2a6dd28a953bd17f6274af2ec835a96ab7cf7` |
+| `ydb/core/kqp/executer_actor/ut` | 119 | `852da9a9cb45830fa132a3a7aa914311a74cd245b0411f644ee55cc7ea262d49` |
+| `ydb/services/scheme_secret/ut/fast` | 42 | `50afad43b24aeb44384b7625fba9ec31f3b041baa53481948d4b5d41950ab6e5` |
+| `ydb/library/yql/providers/s3/actors/ut` | 50 | `3a03507f60774dd01ebc98bf2d52c8f5d5bb065461d91f4dd7036841a0923b0a` |
+| `ydb/library/yql/providers/s3/credentials/ut` | 4 | `3ccec46c095481c1ff0e490df6101953b41828ed85fe2e5c79883a6fec99c6c2` |
+| `ydb/core/grpc_services/ut` | 20 | `e31f44a54f46791263f9a0dfdae56e98c0091bffdb244f43e62e64f72b021eeb` |
+| `ydb/core/kqp/finalize_script_service/ut` | 6 | `009d1f0990a52f09b92ca4ac30d1ec3c6d3d812d9002611960b0a5b726ba94f2` |
+
+Evidence collection: `external-secrets-recovery/review-fixes-2026-10-14/final-integration.log/.exit/-source.json/-results/manifest.json` and corresponding `final-api-integration` files. All copied result trees are dereferenced, with zero symlinks. The final tablet run includes seeded chaos schedules 1, 330 and 20261013, on-disk reopening, commit/reply crash boundaries and atomic revocation/exact lease cases. The DDL, shared-producer backoff/phase-timer and actual S3 publication regressions pass together with final wiring.
+
+Test output retains expected injected failures, denial diagnostics, virtual-disk warnings and an unreachable optional remote-cache message; all commands and finalized traces pass. No live-IAM, rollout or TSan result is claimed. Runtime deployment still requires the documented service-owned delegation tablet and IAM control-plane configuration.
+
+Final whole-fixes review approved the committed/runtime range through `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`, with no blocking correctness findings. The reviewer independently verified all 407 archived GOOD results, nine trace hashes, both full-log hashes, zero symlinks and all 69 source-input matches. The minor stale design-status rows were corrected during this documentation reconciliation. Concurrent uncommitted specification revisions are outside that approval and remain preserved separately.
+
+Final delivery specification validation uses the staged Git tree, excluding the six concurrent edits: all 12 test specifications and all five native OpenSpec projects pass strict validation, all 275 relative document links resolve in that tree, and its seven reviewed feature contracts remain byte-identical (43 requirements, 67 scenarios). Evidence: `final-delivery-spec-validation-inputs.json`, `final-delivery-standalone-validation.json` and five `final-delivery-native-*.json` records.
