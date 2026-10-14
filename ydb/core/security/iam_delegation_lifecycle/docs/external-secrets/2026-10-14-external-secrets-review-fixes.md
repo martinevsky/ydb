@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
-**Goal:** Fix review findings B1, C1 and C2, demonstrate each regression before its fix, and push the verified branch to the user's fork.
+**Goal:** Fix review findings B1, C1 and C2, consolidate IAM service/lifecycle ownership, specify executable test scenarios beside their suites, and push the verified branch to the user's fork.
 
 **Architecture:** Keep durable delegation state in the existing independent tablet. Correct DDL authorization in the coordinator, align reader lifetime with the token producer's next-attempt contract, and synchronize S3 cancellation with asynchronous download publication.
 
@@ -47,12 +47,12 @@
 
 **Interfaces:** Consume `TEvGetToken`/result and its producer's bounded next-attempt lifetime. Preserve resolver default/caller retry policy and response status/issues. No durable schema change.
 
-- [ ] Add a deterministic regression composing the real token producer and reader/resolver with controlled IAM failures and recovery. Reach a supported producer backoff longer than sixty seconds; a new default-policy acquisition must remain pending through the old two-reader failure point and succeed after the next mint. The shared producer must receive concurrent demand without duplicate loops.
-- [ ] Run before production changes and retain the expected premature UNAVAILABLE failure.
-- [ ] Replace the unconditional reader-wide thirty-second timeout with bounded handling that permits the producer's complete next-attempt budget. Derive any producer bound from one shared definition; keep tablet/schema waits bounded and ignore timers from earlier phases.
-- [ ] Cover missing token-service reply, late replies/stale timers, terminal IAM status propagation, and unchanged exact usable-token boundaries. Keep externally imposed cancellation effective.
-- [ ] Run affected secret service and token service suites. Commit only task files after green.
-- [ ] Independent task review; resolve concrete findings before continuing.
+- [x] Add a deterministic regression composing the real token producer and reader/resolver with controlled IAM failures and recovery. Reach a supported producer backoff longer than sixty seconds; a new default-policy acquisition must remain pending through the old two-reader failure point and succeed after the next mint. The shared producer must receive concurrent demand without duplicate loops.
+- [x] Run before production changes and retain the expected premature UNAVAILABLE failure.
+- [x] Replace the unconditional reader-wide thirty-second timeout with bounded handling that permits the producer's complete next-attempt budget. Derive any producer bound from one shared definition; keep tablet/schema waits bounded and ignore timers from earlier phases.
+- [x] Cover missing token-service reply, late replies/stale timers, terminal IAM status propagation, and unchanged exact usable-token boundaries. Keep externally imposed cancellation effective.
+- [x] Run affected secret service and token service suites. Commit only task files after green.
+- [x] Independent task review; resolve concrete findings before continuing.
 
 ### Task 3: Synchronize S3 cancel-hook publication
 
@@ -67,10 +67,25 @@
 - [ ] Run the S3 actor suite and relevant credentials tests. Commit only task files after green.
 - [ ] Independent task review; resolve concrete findings before continuing.
 
+### Task 5: Consolidate IAM ownership in security and specify test scenarios
+
+Added by the user's directory/coverage request. Execute after Task 2's review and before Task 3; Task 4 remains the final gate. This is a layout change with preserved behavior, not another runtime redesign.
+
+**Files:** Keep current IAM/token service sources at `ydb/core/security/iam_delegation`. Move `ydb/core/security/iam_delegation_lifecycle` to `ydb/core/security/iam_delegation/lifecycle`, preserving its source names and separate library/UT target. Move `ydb/core/tx/iam_delegation` to `ydb/core/security/iam_delegation/tablet`, including its `protos`, `public`, `ut`, README and local OpenSpec project. Put the shared `docs/external-secrets` and ignored `.superpowers/sdd` workspace directly under the common `iam_delegation` root. Update all live includes, protobuf import/generated-header paths, PEERDIR/RECURSE/UNITTEST_FOR declarations and documentation links; affected consumers include security, KQP, gRPC, driver, finalizer, testlib and scheme_secret. Add a short common README linking the subcomponents and specs.
+
+**Interfaces:** All C++ symbols, protobuf package/field numbers, actor IDs, tablet type IDs, messages and persistent formats remain unchanged. Service, lifecycle and durable tablet remain distinct sublibraries, now under one security component. All feature files stay inside changed components; neither old component directory remains as a compatibility stub.
+
+- [ ] Wait until all current builds finish. Inventory old/new files and preserve task reports/evidence; do not move generated test outputs into sources. Confirm all dependencies are updated without broadening library dependencies or creating a cycle.
+- [ ] Move the lifecycle and tablet subcomponents, update every live include/build/protobuf reference, and remove old security/tx recursion entries. Preserve test names and assertions. New build targets are `ydb/core/security/iam_delegation/ut`, `ydb/core/security/iam_delegation/lifecycle/ut` and `ydb/core/security/iam_delegation/tablet/ut`.
+- [ ] Move shared documents/plan/workspace to the common component root, preserving workspace file hashes before updating context and plan-path. Tell the controller the new absolute paths. Preserve historical external evidence; update reproduction commands to current paths and note the original paths used by prior runs. Compute relative links from their new owners, including the moved tablet OpenSpec root; no global projects or symlinks.
+- [ ] Write test-owned scenario specifications as `specs/external-secrets/spec.md` under each owning test directory: IAM `ut`, lifecycle `ut`, tablet `ut`, KQP executer `ut`, KQP provider `ut`, script finalizer `ut`, gRPC `ut`, SchemeShard `ut_secret`, secret reader `ut/fast`, S3 actors `ut`, S3 credentials `ut`, and Solomon actors `ut`. Use OpenSpec Purpose/Requirements/Requirement/Scenario structure, GIVEN/WHEN/THEN steps, exact executable suite/test names, source links, fixture boundaries and reproducible commands. Link to authoritative feature contracts instead of duplicating them. Cover crash/commit/reply boundaries, disk reopening, seeded chaos, atomic revocation/lease equality, IAM operation recovery, ACL/path reuse, token backoff/expiry/cancellation, consumer refresh and pending S3 publication races. Mark planned cases and unverified source revisions explicitly.
+- [ ] Link test specs from component-local OpenSpec designs and the common overview. Validate standalone test specs with the installed OpenSpec strict `Validator.validateSpec(filePath)`, all five native component projects with CLI strict validation, all relative links, source/test-name mappings, and absence of old live references. Existing test case names are evidence of coverage intent, not of a passing run. No generated root skills/configuration.
+- [ ] Run all three security IAM test targets sequentially with `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 TARGET`; expected existing coverage is service57, lifecycle22 and tablet87, plus any separately committed additions. Keep exact counts/source hashes and dereferenced artifacts. Consumer/driver builds may be deferred explicitly to Task 4 to avoid duplicate links. Do not invent RED tests for a behavior-preserving move. Commit this task's changes and obtain independent task review.
+
 ### Task 4: Integration verification and delivery
 
 - [ ] Inspect the complete fixes diff against the starting head and reconcile every accepted finding with tests and commits.
-- [ ] Run the affected coordinator, secret reader/service, token-service and S3 suites together; build the production driver if shared headers or wiring require it. Repeat only deterministic concurrency/timing regressions when their scheduling warrants it.
+- [ ] Run the affected coordinator, secret reader/service, IAM service/lifecycle/tablet and S3 suites together; build the production driver if shared headers or wiring require it. Repeat only deterministic concurrency/timing regressions when their scheduling warrants it.
 - [ ] Obtain one independent whole-fixes review; fix supported findings and rerun affected checks.
 - [ ] Record actual red/green commands, test counts, limitations and final source hashes in the evidence directory. Update this plan's checkboxes.
 - [ ] Push `restore/external-secrets-integration` to `git@github.com:martinevsky/ydb.git` without force and verify the remote SHA. Do not alter upstream draft PRs.

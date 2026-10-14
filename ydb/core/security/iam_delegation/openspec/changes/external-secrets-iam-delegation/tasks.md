@@ -1,14 +1,14 @@
 # Tasks
 
-Restored baseline: `c68a9f3b2cafbdee3c6a3f870cb002166dda3dd7`. The complete-attempt timing contract is a pending fix until GREEN evidence and review are recorded.
+Restored baseline: `c68a9f3b2cafbdee3c6a3f870cb002166dda3dd7`. The complete-attempt timing fix is verified in `8795e8bd1b186fc53051e5dd79126d9347a0e1b3`: focused reader 17/17, complete secret service 44/44 and IAM 57/57 passed; independent task review approved.
 
 ## 1. Minting and caching
 
 - [x] 1.1 Restore platform-authenticated shared minting and proactive refresh; verify baseline IAM tests cover concurrent waiters, transient retention, terminal invalidation and strict expiry-minus-five-minutes boundaries.
 - [x] 1.2 Reproduce the integration timeout through the real producer, tablet and default resolver after backoff exceeds sixty seconds; verify the pre-fix run exits 10 with the expected premature reader timeout and bounded-wait failures.
-- [ ] 1.3 Expose the producer's existing complete next-attempt budget as one shared definition consumed by the reader; verify the producer behavior remains unchanged and the real-composition regression receives the next result without replacement readers.
-- [ ] 1.4 Run the affected IAM suite and review the shared timing contract; verify terminal statuses, token usability and waiter lifetime remain correct and record the tested source revision.
-- [ ] 1.5 Reconcile the token spec/shared design with implementation and evidence; verify the task review has no unresolved correctness issue.
+- [x] 1.3 Expose the producer's existing complete next-attempt budget as one shared definition consumed by the reader; verify the producer behavior remains unchanged and the real-composition regression receives the next result without replacement readers.
+- [x] 1.4 Run the affected IAM suite and review the shared timing contract; verify terminal statuses, token usability and waiter lifetime remain correct and record the tested source revision.
+- [x] 1.5 Reconcile the token spec/shared design with implementation and evidence; verify the task review has no unresolved correctness issue.
 
 ## 2. Specification placement
 

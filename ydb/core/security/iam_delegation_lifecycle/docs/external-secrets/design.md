@@ -2,7 +2,7 @@
 
 ## Context
 
-See [proposal.md](proposal.md) for the motivation and the component-local contracts linked from [README.md](README.md). This is a brownfield specification of the restored branch, followed by three review fixes. The restored baseline is `c68a9f3b2cafbdee3c6a3f870cb002166dda3dd7`; the selective-ALTER fix is `d1f1add797ecee712354057208f225dc68e92c11`. Token-wait and S3 cancellation fixes are still tracked as pending until their implementation and regression evidence are complete.
+See [proposal.md](proposal.md) for the motivation and the component-local contracts linked from [README.md](README.md). This is a brownfield specification of the restored branch, followed by three review fixes. The restored baseline is `c68a9f3b2cafbdee3c6a3f870cb002166dda3dd7`; the selective-ALTER fix is `d1f1add797ecee712354057208f225dc68e92c11`. The token-wait fix is `8795e8bd1b186fc53051e5dd79126d9347a0e1b3`, verified by 44 secret-service and 57 IAM tests and an independent task review. S3 cancellation remains pending until its implementation and regression evidence are complete. The requested security-subtree consolidation and test-owned scenario specifications are tracked by Task 5 of the review-fixes plan.
 
 The RFC's SQL surface remains the input contract. Its older SchemeShard-owned lifecycle description is superseded by the user's direction and the independent-tablet draft stack. The current component contracts are documented in [the tablet README](../../../../tx/iam_delegation/README.md) and [the coordination/recovery README](../../README.md).
 
@@ -85,7 +85,7 @@ Continuing to use public Describe as a prerequisite was rejected because an auth
 
 The node cache key contains account, cloud and saved service/microservice/resource-type identity. One refresh loop serves concurrent demand. Successful tokens are usable only before `expiry - 5 minutes`; refresh is normally scheduled at half-life, capped by one hour and the usable deadline, with minimum pacing for near-boundary tokens. Idle entries expire after ten minutes when no waiter needs the next result. Transient failures preserve a still-usable token; authoritative permission-denied/not-found invalidates it.
 
-The producer already bounds a next-attempt wait using maximum backoff plus credential/RPC retries. The current calculation is `75s + (2 * 10s + 14s) * 5 + 1s = 246s`. The pending fix shares this definition with the reader and adds bounded delivery allowance. Thirty-second storage/schema deadlines remain phase-specific, so stale phase timers cannot cut short a legitimate token wait. Caller retry policy and terminal status propagation remain unchanged.
+The producer already bounds a next-attempt wait using maximum backoff plus credential/RPC retries. The current calculation is `75s + (2 * 10s + 14s) * 5 + 1s = 246s`. The reader shares this definition and adds one second of delivery allowance, for a 247-second token phase. Thirty-second storage/schema deadlines remain phase-specific, so stale phase timers cannot cut short a legitimate token wait. Caller retry policy and terminal status propagation remain unchanged.
 
 Increasing one untagged whole-reader timeout was rejected because it would also prolong unrelated storage waits and would not identify stale timers. Reimplementing the producer's random backoff in a test was rejected; the regression drives actual IAM transport failures through the real producer and advances simulated time.
 
