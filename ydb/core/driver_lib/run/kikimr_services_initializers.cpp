@@ -174,7 +174,7 @@
 #include <ydb/core/tx/coordinator/coordinator.h>
 #include <ydb/core/tx/columnshard/blob_cache.h>
 #include <ydb/core/tx/datashard/datashard.h>
-#include <ydb/core/tx/iam_delegation/iam_delegation.h>
+#include <ydb/core/security/iam_delegation/tablet/iam_delegation.h>
 #include <ydb/core/tx/columnshard/columnshard.h>
 #include <ydb/core/tx/columnshard/overload_manager/overload_manager_service.h>
 #include <ydb/core/tx/columnshard/flow_control_manager/flow_control_manager_service.h>

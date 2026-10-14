@@ -33,7 +33,7 @@
 #include <ydb/core/protos/auth.pb.h>
 #include <ydb/core/security/iam_delegation/iam_delegation_service.h>
 #include <ydb/core/security/iam_delegation/iam_delegated_token_service.h>
-#include <ydb/core/security/iam_delegation_lifecycle/worker.h>
+#include <ydb/core/security/iam_delegation/lifecycle/worker.h>
 #include <ydb/core/security/iam_delegation/settings.h>
 #include <ydb/core/kqp/finalize_script_service/kqp_finalize_script_service.h>
 #include <ydb/core/kqp/gateway/behaviour/streaming_query/behaviour.h>

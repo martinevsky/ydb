@@ -1,7 +1,7 @@
 #include <ydb/core/kqp/common/kqp_external_effect_secrets.h>
 #include <ydb/core/kqp/finalize_script_service/kqp_script_secrets.h>
 #include <ydb/core/base/iam_delegation.h>
-#include <ydb/core/tx/iam_delegation/ut/requests.h>
+#include <ydb/core/security/iam_delegation/tablet/ut/requests.h>
 #include <ydb/services/scheme_secret/service.h>
 
 namespace NKikimr::NKqp {

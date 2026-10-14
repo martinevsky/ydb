@@ -17,8 +17,8 @@ SRCS(
 PEERDIR(
     ydb/core/kqp/common
     ydb/core/kqp/ut/common
-    ydb/core/tx/iam_delegation
-    ydb/core/security/iam_delegation_lifecycle
+    ydb/core/security/iam_delegation/tablet
+    ydb/core/security/iam_delegation/lifecycle
     ydb/services/scheme_secret
     yql/essentials/sql/pg_dummy
 )

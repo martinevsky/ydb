@@ -1,6 +1,6 @@
 #include <ydb/services/scheme_secret/secret_credentials.h>
 #include <ydb/services/scheme_secret/service.h>
-#include <ydb/core/tx/iam_delegation/ut/requests.h>
+#include <ydb/core/security/iam_delegation/tablet/ut/requests.h>
 #include <yql/essentials/providers/common/structured_token/yql_structured_token.h>
 
 namespace NKikimr::NSecret {

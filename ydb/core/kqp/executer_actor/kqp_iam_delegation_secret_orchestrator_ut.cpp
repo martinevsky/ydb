@@ -3,9 +3,9 @@
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
 #include <ydb/core/base/iam_delegation.h>
 #include <ydb/core/protos/schemeshard/operations.pb.h>
-#include <ydb/core/security/iam_delegation_lifecycle/worker.h>
-#include <ydb/core/tx/iam_delegation/iam_delegation.h>
-#include <ydb/core/tx/iam_delegation/public/events.h>
+#include <ydb/core/security/iam_delegation/lifecycle/worker.h>
+#include <ydb/core/security/iam_delegation/tablet/iam_delegation.h>
+#include <ydb/core/security/iam_delegation/tablet/public/events.h>
 #include <ydb/core/testlib/tablet_helpers.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>

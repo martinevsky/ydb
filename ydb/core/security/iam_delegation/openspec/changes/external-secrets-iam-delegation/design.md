@@ -2,7 +2,7 @@
 
 ## Context
 
-Own shared platform-authenticated minting, refresh, strict token usability and the producer budget that secret readers must honor. The [shared architecture](../../../../iam_delegation_lifecycle/docs/external-secrets/design.md) records component boundaries, decisions, recovery limits, rollout and validation.
+Own shared platform-authenticated minting, refresh, strict token usability and the producer budget that secret readers must honor. The [shared architecture](../../../docs/external-secrets/design.md) records component boundaries, decisions, recovery limits, rollout and validation.
 
 ## Goals / Non-Goals
 
@@ -18,4 +18,11 @@ Cross-component changes must preserve the shared authorization, identity, timing
 
 ## Validation
 
-Local checks and their evidence are listed in `tasks.md`. Combined validation and fork delivery are tracked in the [integration checklist](../../../../iam_delegation_lifecycle/docs/external-secrets/tasks.md).
+Local checks and their evidence are listed in `tasks.md`. Combined validation and fork delivery are tracked in the [integration checklist](../../../docs/external-secrets/tasks.md).
+
+## Test-owned scenario specifications
+
+- [ydb/core/security/iam_delegation/ut](../../../ut/specs/external-secrets/spec.md)
+- [ydb/core/security/iam_delegation/lifecycle/ut](../../../lifecycle/ut/specs/external-secrets/spec.md)
+
+These coverage documents map real fixtures and executable cases; pending scenarios and unverified revisions are explicitly labelled. Feature requirements remain in the capability contracts.

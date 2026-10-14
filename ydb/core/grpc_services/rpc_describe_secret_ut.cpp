@@ -5,7 +5,7 @@
 #include <ydb/core/grpc_services/local_rpc/local_rpc.h>
 #include <ydb/core/testlib/basics/appdata.h>
 #include <ydb/core/testlib/basics/runtime.h>
-#include <ydb/core/tx/iam_delegation/public/events.h>
+#include <ydb/core/security/iam_delegation/tablet/public/events.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include <ydb/public/api/protos/ydb_secret.pb.h>

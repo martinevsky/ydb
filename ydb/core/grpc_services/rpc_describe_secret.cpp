@@ -4,7 +4,7 @@
 #include <ydb/core/grpc_services/base/base.h>
 #include <ydb/core/protos/flat_scheme_op.pb.h>
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
-#include <ydb/core/security/iam_delegation_lifecycle/client.h>
+#include <ydb/core/security/iam_delegation/lifecycle/client.h>
 #include <ydb/core/ydb_convert/ydb_convert.h>
 #include <ydb/public/api/protos/ydb_secret.pb.h>
 

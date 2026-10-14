@@ -8,7 +8,7 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/core/tx/iam_delegation
+    ydb/core/security/iam_delegation/tablet
     ydb/core/testlib/default
     ydb/services/scheme_secret
     yql/essentials/sql/pg_dummy

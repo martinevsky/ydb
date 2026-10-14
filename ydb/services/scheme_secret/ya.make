@@ -14,8 +14,8 @@ PEERDIR(
     ydb/core/kqp/common/events
     ydb/core/protos
     ydb/core/security/iam_delegation
-    ydb/core/security/iam_delegation_lifecycle
-    ydb/core/tx/iam_delegation/public
+    ydb/core/security/iam_delegation/lifecycle
+    ydb/core/security/iam_delegation/tablet/public
     ydb/core/tx/scheme_board
     ydb/core/tx/scheme_cache
     ydb/core/tx/schemeshard

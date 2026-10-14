@@ -2,7 +2,7 @@
 
 ## Context
 
-Preserve cancellation across asynchronous credential resolution, decoder mailboxes and download-hook publication. The [shared architecture](../../../../../../../../core/security/iam_delegation_lifecycle/docs/external-secrets/design.md) records component boundaries, decisions, recovery limits, rollout and validation.
+Preserve cancellation across asynchronous credential resolution, decoder mailboxes and download-hook publication. The [shared architecture](../../../../../../../../core/security/iam_delegation/docs/external-secrets/design.md) records component boundaries, decisions, recovery limits, rollout and validation.
 
 ## Goals / Non-Goals
 
@@ -18,4 +18,12 @@ Cross-component changes must preserve the shared authorization, identity, timing
 
 ## Validation
 
-Local checks and their evidence are listed in `tasks.md`. Combined validation and fork delivery are tracked in the [integration checklist](../../../../../../../../core/security/iam_delegation_lifecycle/docs/external-secrets/tasks.md).
+Local checks and their evidence are listed in `tasks.md`. Combined validation and fork delivery are tracked in the [integration checklist](../../../../../../../../core/security/iam_delegation/docs/external-secrets/tasks.md).
+
+## Test-owned scenario specifications
+
+- [ydb/library/yql/providers/s3/actors/ut](../../../ut/specs/external-secrets/spec.md)
+- [ydb/library/yql/providers/s3/credentials/ut](../../../../credentials/ut/specs/external-secrets/spec.md)
+- [ydb/library/yql/providers/solomon/actors/ut](../../../../../solomon/actors/ut/specs/external-secrets/spec.md)
+
+These coverage documents map real fixtures and executable cases; pending scenarios and unverified revisions are explicitly labelled. Feature requirements remain in the capability contracts.

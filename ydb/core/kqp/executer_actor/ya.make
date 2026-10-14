@@ -44,7 +44,7 @@ PEERDIR(
     ydb/core/kqp/tracing
     ydb/core/protos
     ydb/core/security/iam_delegation
-    ydb/core/security/iam_delegation_lifecycle
+    ydb/core/security/iam_delegation/lifecycle
     ydb/library/actors/async
     ydb/core/sys_view/common
     ydb/core/tx/long_tx_service/public

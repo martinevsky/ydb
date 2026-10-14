@@ -5,7 +5,7 @@
 #include <ydb/core/security/token_manager/token_manager.h>
 #include <ydb/library/ycloud/api/iam_token_service.h>
 #include <util/random/random.h>
-#include <ydb/core/tx/iam_delegation/ut/requests.h>
+#include <ydb/core/security/iam_delegation/tablet/ut/requests.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 
 namespace NKikimr::NSecret {

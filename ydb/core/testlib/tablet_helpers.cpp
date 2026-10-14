@@ -16,7 +16,7 @@
 #include <ydb/core/mind/local.h>
 #include <ydb/core/scheme/tablet_scheme.h>
 #include <ydb/core/tx/datashard/datashard.h>
-#include <ydb/core/tx/iam_delegation/iam_delegation.h>
+#include <ydb/core/security/iam_delegation/tablet/iam_delegation.h>
 #include <ydb/core/tx/columnshard/columnshard.h>
 #include <ydb/core/tx/tx_allocator/txallocator.h>
 #include <ydb/core/tx/coordinator/coordinator.h>

@@ -4,7 +4,7 @@
 #include <ydb/core/grpc_services/local_rpc/local_rpc.h>
 #include <ydb/core/testlib/basics/appdata.h>
 #include <ydb/core/testlib/basics/runtime.h>
-#include <ydb/core/tx/iam_delegation/public/events.h>
+#include <ydb/core/security/iam_delegation/tablet/public/events.h>
 
 #include <library/cpp/testing/unittest/registar.h>
 

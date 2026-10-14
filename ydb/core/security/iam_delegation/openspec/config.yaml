@@ -3,7 +3,7 @@ schema: spec-driven
 context: |
   Own shared platform-authenticated minting, refresh, strict token usability and the producer budget that secret readers must honor.
   This is a component-local part of the external-secrets IAM delegation feature.
-  Read ../iam_delegation_lifecycle/docs/external-secrets/README.md for the shared scope, design and integration tasks.
+  Read docs/external-secrets/README.md for the shared scope, design and integration tasks.
   Requirements are acceptance contracts; pending fixes stay unchecked until tested.
   Keep specs, changes and configuration inside this component.
   Use C++20 or earlier; follow the repository build and actor instructions.

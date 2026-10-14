@@ -22,4 +22,4 @@ None. This is the initial OpenSpec contract for this component.
 
 ## Impact
 
-Own shared platform-authenticated minting, refresh, strict token usability and the producer budget that secret readers must honor. See the [shared feature proposal](../../../../iam_delegation_lifecycle/docs/external-secrets/proposal.md) for RFC/draft provenance and exclusions, and the [shared design](../../../../iam_delegation_lifecycle/docs/external-secrets/design.md) for interactions with other components.
+Own shared platform-authenticated minting, refresh, strict token usability and the producer budget that secret readers must honor. See the [shared feature proposal](../../../docs/external-secrets/proposal.md) for RFC/draft provenance and exclusions, and the [shared design](../../../docs/external-secrets/design.md) for interactions with other components.

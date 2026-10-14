@@ -228,7 +228,7 @@ PEERDIR(
     ydb/core/util
     ydb/core/ydb_convert
     ydb/core/security
-    ydb/core/security/iam_delegation_lifecycle
+    ydb/core/security/iam_delegation/lifecycle
     ydb/core/security/ldap_auth_provider
     ydb/core/security/sasl
     ydb/library/aclib

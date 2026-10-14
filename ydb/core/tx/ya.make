@@ -29,7 +29,6 @@ RECURSE(
     coordinator
     datashard
     general_cache
-    iam_delegation
     limiter
     locks
     long_tx_service

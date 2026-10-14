@@ -22,4 +22,4 @@ None. This is the initial OpenSpec contract for this component.
 
 ## Impact
 
-Coordinate authenticated secret DDL, source compatibility, setup and immutable schema fences without adding DescribeSchema to ALTER authorization. See the [shared feature proposal](../../../../../security/iam_delegation_lifecycle/docs/external-secrets/proposal.md) for RFC/draft provenance and exclusions, and the [shared design](../../../../../security/iam_delegation_lifecycle/docs/external-secrets/design.md) for interactions with other components.
+Coordinate authenticated secret DDL, source compatibility, setup and immutable schema fences without adding DescribeSchema to ALTER authorization. See the [shared feature proposal](../../../../../security/iam_delegation/docs/external-secrets/proposal.md) for RFC/draft provenance and exclusions, and the [shared design](../../../../../security/iam_delegation/docs/external-secrets/design.md) for interactions with other components.

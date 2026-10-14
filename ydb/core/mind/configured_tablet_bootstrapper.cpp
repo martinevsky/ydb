@@ -16,7 +16,7 @@
 #include <ydb/core/tx/mediator/mediator.h>
 #include <ydb/core/tx/tx_allocator/txallocator.h>
 #include <ydb/core/tx/datashard/datashard.h>
-#include <ydb/core/tx/iam_delegation/iam_delegation.h>
+#include <ydb/core/security/iam_delegation/tablet/iam_delegation.h>
 #include <ydb/core/tx/replication/controller/controller.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/sequenceshard/sequenceshard.h>

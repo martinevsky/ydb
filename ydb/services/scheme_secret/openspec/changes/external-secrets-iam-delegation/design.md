@@ -2,7 +2,7 @@
 
 ## Context
 
-Validate each secret reference independently and provide current credentials after schema, delegation and lifetime revalidation. The [shared architecture](../../../../../core/security/iam_delegation_lifecycle/docs/external-secrets/design.md) records component boundaries, decisions, recovery limits, rollout and validation.
+Validate each secret reference independently and provide current credentials after schema, delegation and lifetime revalidation. The [shared architecture](../../../../../core/security/iam_delegation/docs/external-secrets/design.md) records component boundaries, decisions, recovery limits, rollout and validation.
 
 ## Goals / Non-Goals
 
@@ -18,4 +18,10 @@ Cross-component changes must preserve the shared authorization, identity, timing
 
 ## Validation
 
-Local checks and their evidence are listed in `tasks.md`. Combined validation and fork delivery are tracked in the [integration checklist](../../../../../core/security/iam_delegation_lifecycle/docs/external-secrets/tasks.md).
+Local checks and their evidence are listed in `tasks.md`. Combined validation and fork delivery are tracked in the [integration checklist](../../../../../core/security/iam_delegation/docs/external-secrets/tasks.md).
+
+## Test-owned scenario specifications
+
+- [ydb/services/scheme_secret/ut/fast](../../../ut/fast/specs/external-secrets/spec.md)
+
+These coverage documents map real fixtures and executable cases; pending scenarios and unverified revisions are explicitly labelled. Feature requirements remain in the capability contracts.

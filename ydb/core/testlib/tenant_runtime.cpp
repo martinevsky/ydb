@@ -21,7 +21,7 @@
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
 #include <ydb/core/testlib/tablet_helpers.h>
 #include <ydb/core/tx/coordinator/coordinator.h>
-#include <ydb/core/tx/iam_delegation/iam_delegation.h>
+#include <ydb/core/security/iam_delegation/tablet/iam_delegation.h>
 #include <ydb/core/tx/long_tx_service/long_tx_service.h>
 #include <ydb/core/tx/long_tx_service/public/events.h>
 #include <ydb/core/tx/long_tx_service/public/snapshot_registry.h>

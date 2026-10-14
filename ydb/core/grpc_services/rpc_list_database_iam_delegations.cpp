@@ -3,7 +3,7 @@
 
 #include <ydb/core/base/auth.h>
 #include <ydb/core/base/path.h>
-#include <ydb/core/security/iam_delegation_lifecycle/client.h>
+#include <ydb/core/security/iam_delegation/lifecycle/client.h>
 #include <ydb/public/api/protos/ydb_cms.pb.h>
 
 #include <library/cpp/string_utils/base64/base64.h>

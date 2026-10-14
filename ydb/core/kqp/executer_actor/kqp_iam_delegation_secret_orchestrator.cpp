@@ -8,8 +8,8 @@
 #include <ydb/core/protos/schemeshard/operations.pb.h>
 #include <ydb/core/security/iam_delegation/cloud_resolver.h>
 #include <ydb/core/base/iam_delegation.h>
-#include <ydb/core/security/iam_delegation_lifecycle/operations.h>
-#include <ydb/core/security/iam_delegation_lifecycle/schema.h>
+#include <ydb/core/security/iam_delegation/lifecycle/operations.h>
+#include <ydb/core/security/iam_delegation/lifecycle/schema.h>
 #include <ydb/core/security/iam_delegation/iam_actor_base.h>
 
 #include <ydb/core/security/iam_delegation/settings.h>

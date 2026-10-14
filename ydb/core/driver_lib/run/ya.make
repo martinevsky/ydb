@@ -124,7 +124,7 @@ PEERDIR(
     ydb/core/tx/columnshard/column_fetching
     ydb/core/tx/coordinator
     ydb/core/tx/datashard
-    ydb/core/tx/iam_delegation
+    ydb/core/security/iam_delegation/tablet
     ydb/core/tx/limiter/grouped_memory/usage
     ydb/core/tx/long_tx_service
     ydb/core/tx/long_tx_service/public

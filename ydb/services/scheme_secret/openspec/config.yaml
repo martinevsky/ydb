@@ -3,7 +3,7 @@ schema: spec-driven
 context: |
   Validate each secret reference independently and provide current credentials after schema, delegation and lifetime revalidation.
   This is a component-local part of the external-secrets IAM delegation feature.
-  Read ../../core/security/iam_delegation_lifecycle/docs/external-secrets/README.md for the shared scope, design and integration tasks.
+  Read ../../core/security/iam_delegation/docs/external-secrets/README.md for the shared scope, design and integration tasks.
   Requirements are acceptance contracts; pending fixes stay unchecked until tested.
   Keep specs, changes and configuration inside this component.
   Use C++20 or earlier; follow the repository build and actor instructions.
