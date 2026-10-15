@@ -260,7 +260,7 @@ Contract coverage: iam-delegation-revocation / "Revocation retries use standard 
 - **WHEN** continuations are modified, conflicting fields are supplied, database names are reused, or the tablet/runtime is replaced.
 - **THEN** valid tokens retain their original identity and revision; every forged, unsupported or mismatched request fails without mutation; signing keys survive physical reopening; bounded pages enumerate each record once without preloading the inventory.
 
-Status: executable regression source added; RED execution pending. No passing verification is claimed.
+Status: nine cases produced behavioral RED at `885867ea426`; explicit-empty-field and mixed-known/unknown-mode cases below await their first run. No passing authentication verification is claimed.
 
 Contract coverage: iam-delegation-inventory / "Administrative export is authorized"; "Authenticated pagination has an explicit protocol mode"; "Inventory pagination is revision-bound and bounded".
 
@@ -275,3 +275,5 @@ Contract coverage: iam-delegation-inventory / "Administrative export is authoriz
 | `IamDelegationInventoryTokens::InjectedUnauthenticatedContinuationCannotFallBackToFirstPage` | [inventory_token_ut.cpp](../../inventory_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationStorageReopen::InventorySigningKeySurvivesWholeRuntimeReplacement` | [storage_reopen_ut.cpp](../../storage_reopen_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationColdScans::AuthenticatedPaginationRetriesColdPagesWithoutPreloadingInventory` | [cold_scan_ut.cpp](../../cold_scan_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationInventoryTokens::ExplicitEmptyPaginationFieldsCannotMixProtocols` | [inventory_token_ut.cpp](../../inventory_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationInventoryTokens::KnownAndUnknownPaginationModesCannotBypassValidation` | [inventory_token_ut.cpp](../../inventory_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |

@@ -325,7 +325,7 @@ Y_UNIT_TEST_SUITE(IamDelegationSecretReader) {
             GetSecret(fixture.Context, SecretIdentity(43)).GetRevision())).GetDelegation();
         const TReference otherReference{TTestContext::TabletId, "database-incarnation-1", "create-other", 100, 43};
         TRealTokenProducer producer(fixture);
-        THashMap<TActorId, ui32> replies;
+        THashMap<TActorId, TVector<THolder<TEvIamDelegationSecretReadResult>>> replies;
         ui32 getCalls = 0;
         ui32 deniedChecks = 0;
         auto gets = runtime.AddObserver<NIamDelegation::TEvIamDelegation::TEvGetToken>([&](auto& event) {
@@ -334,7 +334,10 @@ Y_UNIT_TEST_SUITE(IamDelegationSecretReader) {
                 "service-account-1", "cloud-1", "ydb", "data-plane", "resource-manager.cloud"));
         });
         auto responses = runtime.AddObserver<TEvIamDelegationSecretReadResult>([&](auto& event) {
-            ++replies[event->Recipient];
+            // Consume each result: an edge mailbox can be observed repeatedly
+            // before GrabEdgeEvent removes the same queued event.
+            replies[event->Recipient].emplace_back(event->Release());
+            event.Reset();
         });
         auto checks = runtime.AddObserver<TEvTxProxySchemeCache::TEvNavigateKeySet>([&](auto& event) {
             if (event->Get()->Request->UserToken->GetUserSID() != "denied-reader") {
@@ -372,13 +375,17 @@ Y_UNIT_TEST_SUITE(IamDelegationSecretReader) {
         runtime.Send(new IEventHandle(cancelled.second, {}, new TEvents::TEvPoison));
         runtime.SimulateSleep(TDuration::MilliSeconds(1));
         producer.Reply(*mint, "shared-token", TDuration::Minutes(20));
-        const auto success = fixture.FinishRead(allowed.first);
+        fixture.Until([&] {
+            return !replies[allowed.first].empty() && !replies[denied.first].empty()
+                && !replies[changed.first].empty();
+        });
+        const auto& success = replies[allowed.first].front();
         UNIT_ASSERT_VALUES_EQUAL(success->Status, Ydb::StatusIds::SUCCESS);
         UNIT_ASSERT_VALUES_EQUAL(success->Token, "shared-token");
-        const auto refused = fixture.FinishRead(denied.first);
+        const auto& refused = replies[denied.first].front();
         UNIT_ASSERT_VALUES_EQUAL(refused->Status, Ydb::StatusIds::UNAUTHORIZED);
         UNIT_ASSERT(refused->Token.empty());
-        const auto stale = fixture.FinishRead(changed.first);
+        const auto& stale = replies[changed.first].front();
         UNIT_ASSERT_VALUES_EQUAL(stale->Status, Ydb::StatusIds::NOT_FOUND);
         UNIT_ASSERT(stale->Token.empty());
         UNIT_ASSERT_VALUES_EQUAL(deniedChecks, 1);
@@ -386,10 +393,10 @@ Y_UNIT_TEST_SUITE(IamDelegationSecretReader) {
         UNIT_ASSERT_VALUES_EQUAL(getCalls, 4);
         // Exercise abandoned reader/producer wait timers before the healthy refresh.
         runtime.SimulateSleep(NIamDelegation::TIamDelegationSettings::MintAttemptTimeout() + TDuration::Seconds(2));
-        UNIT_ASSERT_VALUES_EQUAL(replies[cancelled.first], 0);
-        UNIT_ASSERT_VALUES_EQUAL(replies[allowed.first], 1);
-        UNIT_ASSERT_VALUES_EQUAL(replies[denied.first], 1);
-        UNIT_ASSERT_VALUES_EQUAL(replies[changed.first], 1);
+        UNIT_ASSERT_VALUES_EQUAL(replies[cancelled.first].size(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(replies[allowed.first].size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(replies[denied.first].size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(replies[changed.first].size(), 1);
         UNIT_ASSERT_VALUES_EQUAL(GetDelegation(fixture.Context, "create-other").SerializeAsString(),
             otherBefore.SerializeAsString());
     }
@@ -513,22 +520,26 @@ Y_UNIT_TEST_SUITE(IamDelegationSecretReader) {
         fixture.WaitForHeldMint();
         runtime.SimulateSleep(NIamDelegation::TIamDelegationSettings::MintAttemptTimeout() - TDuration::Seconds(6));
         ui32 schemaRequests = 0;
-        ui32 readerReplies = 0;
+        TVector<THolder<TEvIamDelegationSecretReadResult>> readerReplies;
         auto schemas = runtime.AddObserver<TEvTxProxySchemeCache::TEvNavigateKeySet>([&](auto& event) {
             ++schemaRequests;
             event.Reset();
         });
-        auto replies = runtime.AddObserver<TEvIamDelegationSecretReadResult>(
-            [&](auto&) { ++readerReplies; });
+        auto replies = runtime.AddObserver<TEvIamDelegationSecretReadResult>([&](auto& event) {
+            UNIT_ASSERT_VALUES_EQUAL(event->Recipient, edge);
+            readerReplies.emplace_back(event->Release());
+            event.Reset();
+        });
         fixture.ReleaseMint();
         fixture.Until([&] { return schemaRequests == 1; });
         const auto schemaStarted = runtime.GetCurrentTime();
         runtime.SimulateSleep(TDuration::Seconds(8)); // the old token-phase deadline has passed
-        UNIT_ASSERT_VALUES_EQUAL(readerReplies, 0);
-        const auto result = fixture.FinishRead(edge);
+        UNIT_ASSERT_VALUES_EQUAL(readerReplies.size(), 0);
+        fixture.Until([&] { return !readerReplies.empty(); });
+        const auto& result = readerReplies.front();
         UNIT_ASSERT_VALUES_EQUAL(result->Status, Ydb::StatusIds::UNAVAILABLE);
         UNIT_ASSERT_VALUES_EQUAL(runtime.GetCurrentTime() - schemaStarted, TDuration::Seconds(30));
-        UNIT_ASSERT_VALUES_EQUAL(readerReplies, 1);
+        UNIT_ASSERT_VALUES_EQUAL(readerReplies.size(), 1);
     }
 
     Y_UNIT_TEST(CancelledReaderIgnoresLateMintAndTimer) {

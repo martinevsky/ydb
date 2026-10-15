@@ -128,6 +128,41 @@ Y_UNIT_TEST_SUITE(IamDelegationInventoryTokens) {
         UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListRequest()).SerializeAsString(), before.SerializeAsString());
     }
 
+    Y_UNIT_TEST(ExplicitEmptyPaginationFieldsCannotMixProtocols) {
+        TTestContext ctx;
+        CreateActive(ctx);
+        const auto before = ctx.Call(ListRequest());
+        auto request = AuthenticatedListRequest();
+        request.MutableListInventory()->SetAfterOperationId("");
+        ctx.Call(request, NProto::INVALID_ARGUMENT);
+        request = AuthenticatedListRequest();
+        request.MutableListInventory()->SetInventoryRevision(0);
+        ctx.Call(request, NProto::INVALID_ARGUMENT);
+        for (const auto mode : {NProto::PAGINATION_LEGACY, NProto::PAGINATION_STRUCTURED}) {
+            request = ListRequest();
+            request.MutableListInventory()->SetPaginationMode(mode);
+            request.MutableListInventory()->SetContinuationToken("");
+            ctx.Call(request, NProto::INVALID_ARGUMENT);
+            request = ListRequest();
+            request.MutableListInventory()->SetPaginationMode(mode);
+            request.MutableListInventory()->SetDatabasePath("");
+            ctx.Call(request, NProto::INVALID_ARGUMENT);
+        }
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListRequest()).SerializeAsString(), before.SerializeAsString());
+    }
+
+    Y_UNIT_TEST(KnownAndUnknownPaginationModesCannotBypassValidation) {
+        TTestContext ctx;
+        CreateActive(ctx);
+        const auto before = ctx.Call(ListRequest());
+        auto request = ListRequest();
+        auto* list = request.MutableListInventory();
+        list->SetPaginationMode(NProto::PAGINATION_STRUCTURED);
+        list->GetReflection()->MutableUnknownFields(list)->AddVarint(7, 999);
+        ctx.Call(request, NProto::INVALID_ARGUMENT);
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListRequest()).SerializeAsString(), before.SerializeAsString());
+    }
+
     // Independent-key rejection has its own same-ID case above; this case
     // exercises dispatch to a different tablet ID.
     Y_UNIT_TEST(AuthenticatedInventoryRejectsContinuationOnDifferentTabletId) {

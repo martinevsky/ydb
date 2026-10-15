@@ -287,8 +287,8 @@ Y_UNIT_TEST_SUITE(ListDatabaseIamDelegations) {
         UNIT_ASSERT(!legacy.has_staged_at_us());
         UNIT_ASSERT(!legacy.has_cleanup_queued_at_us());
         UNIT_ASSERT(!legacy.has_revoke_consecutive_failures());
-        UNIT_ASSERT_VALUES_EQUAL(legacy.state(), Ydb::Cms::DatabaseIamDelegation::WAITING_SETUP);
-        UNIT_ASSERT_VALUES_EQUAL(legacy.setup_state(), Ydb::Cms::DatabaseIamDelegation::SETUP_UNKNOWN);
+        UNIT_ASSERT(legacy.state() == Ydb::Cms::DatabaseIamDelegation::WAITING_SETUP);
+        UNIT_ASSERT(legacy.setup_state() == Ydb::Cms::DatabaseIamDelegation::SETUP_UNKNOWN);
         UNIT_ASSERT_VALUES_EQUAL(legacy.setup_operation_id(), "iam-operation");
     }
 
