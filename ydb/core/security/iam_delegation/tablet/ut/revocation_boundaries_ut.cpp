@@ -1,9 +1,15 @@
 #include "requests.h"
 
+#include <ydb/core/testlib/tx_helpers.h>
+#include <ydb/library/mkql_proto/protos/minikql.pb.h>
+
 #include <util/generic/map.h>
 #include <util/generic/set.h>
 #include <util/generic/vector.h>
 #include <util/string/cast.h>
+#include <util/string/escape.h>
+
+#include <limits>
 
 namespace NKikimr::NIamDelegation::NTests {
 namespace {
@@ -31,6 +37,25 @@ NProto::TDelegation QueueDefault(TTestContext& ctx) {
     CreateActive(ctx);
     ctx.Call(DropRequest(GetSecret(ctx)));
     return GetDelegation(ctx, "create-1");
+}
+
+// Seed historical serialized rows through the existing local tablet API.
+// Keep both canonical and covering-index records consistent without adding
+// a test-only hook to production.
+void SeedStoredRevocationHistory(TTestContext& ctx, const NProto::TDelegation& stored) {
+    const TString program = TStringBuilder()
+        << "(\n(let key '('('OperationId (String '\"" << EscapeC(stored.GetOperationId()) << "\"))))\n"
+        << "(let indexedKey '('('Incarnation (String '\"" << EscapeC(stored.GetDatabaseIncarnation())
+        << "\")) '('OperationId (String '\"" << EscapeC(stored.GetOperationId()) << "\"))))\n"
+        << "(let value '('('Data (String '\"" << EscapeC(stored.SerializeAsString()) << "\"))))\n"
+        << "(return (AsList (UpdateRow 'Delegations key value) (UpdateRow 'Inventory indexedKey value)))\n)";
+    NKikimrMiniKQL::TResult result;
+    UNIT_ASSERT_VALUES_EQUAL(LocalQuery(ctx.GetRuntime(), TTestContext::TabletId, program, result), NKikimrProto::OK);
+    ctx.Reboot();
+    UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, stored.GetOperationId()).SerializeAsString(), stored.SerializeAsString());
+    const auto page = ctx.Call(ListRequest());
+    UNIT_ASSERT_VALUES_EQUAL(page.DelegationsSize(), 1);
+    UNIT_ASSERT_VALUES_EQUAL(page.GetDelegations(0).SerializeAsString(), stored.SerializeAsString());
 }
 
 NProto::TDelegation ClaimWithMaxLease(TTestContext& ctx) {
@@ -217,6 +242,45 @@ void FinishReplay(NProto::ERevokeOutcome outcome) {
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationRevocationBoundaries) {
+    Y_UNIT_TEST(LegacyQueuedRecordKeepsUnknownAgeAfterClaimAndRetry) {
+        TTestContext ctx;
+        auto legacy = QueueDefault(ctx);
+        legacy.ClearCleanupQueuedAtUs();
+        legacy.ClearRevokeConsecutiveFailures();
+        SeedStoredRevocationHistory(ctx, legacy);
+        const auto claimed = ctx.Call(ClaimRequest()).GetDelegations(0);
+        UNIT_ASSERT(!claimed.HasCleanupQueuedAtUs());
+        auto ack = FinishRequest(claimed, NProto::REVOKE_RETRY);
+        ack.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_FAILURE);
+        const auto retry = ctx.Call(ack).GetDelegation();
+        UNIT_ASSERT(!retry.HasCleanupQueuedAtUs());
+        UNIT_ASSERT_VALUES_EQUAL(retry.GetRevokeConsecutiveFailures(), 1);
+        ctx.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").SerializeAsString(), retry.SerializeAsString());
+    }
+
+    Y_UNIT_TEST(SaturatedFailureHistoryKeepsCappedDelayAcrossRestart) {
+        TTestContext ctx;
+        auto stored = QueueDefault(ctx);
+        stored.SetRevokeConsecutiveFailures(std::numeric_limits<ui32>::max());
+        SeedStoredRevocationHistory(ctx, stored);
+        for (ui32 attempt = 0; attempt < 2; ++attempt) {
+            const auto pending = GetDelegation(ctx, "create-1");
+            ctx.GetRuntime().UpdateCurrentTime(Max(ctx.GetRuntime().GetCurrentTime(), TInstant::MicroSeconds(pending.GetDueAtUs())));
+            const auto claimed = ctx.Call(ClaimRequest()).GetDelegations(0);
+            auto ack = FinishRequest(claimed, NProto::REVOKE_RETRY);
+            ack.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_FAILURE);
+            const auto before = ctx.GetRuntime().GetCurrentTime();
+            const auto retry = ctx.Call(ack).GetDelegation();
+            UNIT_ASSERT_VALUES_EQUAL(retry.GetRevokeConsecutiveFailures(), std::numeric_limits<ui32>::max());
+            UNIT_ASSERT(retry.GetDueAtUs() >= (before + TDuration::Seconds(60)).MicroSeconds());
+            UNIT_ASSERT(retry.GetDueAtUs() < (ctx.GetRuntime().GetCurrentTime() + TDuration::Seconds(75)).MicroSeconds());
+            UNIT_ASSERT_VALUES_EQUAL(retry.GetCleanupQueuedAtUs(), stored.GetCleanupQueuedAtUs());
+            ctx.Reboot();
+            UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").SerializeAsString(), retry.SerializeAsString());
+        }
+    }
+
     Y_UNIT_TEST(DurableRevocationFailuresGrowToCapAcrossTakeover) {
         TTestContext ctx;
         CreateActive(ctx);

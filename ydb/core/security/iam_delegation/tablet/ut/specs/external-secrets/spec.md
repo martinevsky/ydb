@@ -234,7 +234,7 @@ Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain th
 
 - **GIVEN** an actionable cleanup record or an unresolved setup, including historical ACK shapes.
 - **WHEN** typed failure and pending ACKs are committed, duplicated, rejected, taken over, or interrupted at commit boundaries and reopened from physical storage.
-- **THEN** the failure streak advances once, grows to the bounded standard backoff cap, resets on accepted progress, and survives restart; unknown operation identity and the first actionable cleanup timestamp remain intact; malformed classification consumes no claim.
+- **THEN** the failure streak advances once, grows to the bounded standard backoff cap, resets on accepted progress, and survives restart; unknown operation identity and the first actionable cleanup timestamp remain intact; historical missing timestamps stay unknown, saturated counters do not wrap or delay unboundedly, and malformed classification consumes no claim.
 
 Status: executable regression source added; RED execution pending. No passing verification is claimed.
 
@@ -245,6 +245,8 @@ Contract coverage: iam-delegation-revocation / "Revocation retries use standard 
 | `IamDelegationRevocationBoundaries::DurableRevocationFailuresGrowToCapAcrossTakeover` | [revocation_boundaries_ut.cpp](../../revocation_boundaries_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationRevocationBoundaries::PendingRevocationResetsFailuresAndRetainsOperation` | [revocation_boundaries_ut.cpp](../../revocation_boundaries_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationRevocationBoundaries::LegacyRevocationAckPreservesNewFailureHistory` | [revocation_boundaries_ut.cpp](../../revocation_boundaries_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationRevocationBoundaries::LegacyQueuedRecordKeepsUnknownAgeAfterClaimAndRetry` | [revocation_boundaries_ut.cpp](../../revocation_boundaries_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationRevocationBoundaries::SaturatedFailureHistoryKeepsCappedDelayAcrossRestart` | [revocation_boundaries_ut.cpp](../../revocation_boundaries_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationRevocationBoundaries::InvalidRetryClassificationDoesNotConsumeClaim` | [revocation_boundaries_ut.cpp](../../revocation_boundaries_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationRevocationBoundaries::UnknownSetupGetsCleanupAgeOnlyWhenAuthoritativelyResolved` | [revocation_boundaries_ut.cpp](../../revocation_boundaries_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationDurability::RevocationFailureHistoryAndCleanupAgeBeforeCommit` | [durability_ut.cpp](../../durability_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
