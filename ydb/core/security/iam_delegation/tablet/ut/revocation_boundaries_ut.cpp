@@ -49,8 +49,15 @@ void SeedStoredRevocationHistory(TTestContext& ctx, const NProto::TDelegation& s
         << "\")) '('OperationId (String '\"" << EscapeC(stored.GetOperationId()) << "\"))))\n"
         << "(let value '('('Data (String '\"" << EscapeC(stored.SerializeAsString()) << "\"))))\n"
         << "(return (AsList (UpdateRow 'Delegations key value) (UpdateRow 'Inventory indexedKey value)))\n)";
+    TString diagnostic;
+    auto responseObserver = ctx.GetRuntime().AddObserver<TEvTablet::TEvLocalMKQLResponse>([&](auto& event) {
+        if (event->Get()->Record.GetStatus() != NKikimrProto::OK) {
+            diagnostic = event->Get()->Record.DebugString();
+        }
+    });
     NKikimrMiniKQL::TResult result;
-    UNIT_ASSERT_VALUES_EQUAL(LocalQuery(ctx.GetRuntime(), TTestContext::TabletId, program, result), NKikimrProto::OK);
+    const auto status = LocalQuery(ctx.GetRuntime(), TTestContext::TabletId, program, result);
+    UNIT_ASSERT_VALUES_EQUAL_C(status, NKikimrProto::OK, diagnostic);
     ctx.Reboot();
     UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, stored.GetOperationId()).SerializeAsString(), stored.SerializeAsString());
     const auto page = ctx.Call(ListRequest());
