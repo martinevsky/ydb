@@ -173,3 +173,13 @@ Contract coverage: external-secret-consumers / Credentials are acquired for new 
 | --- | --- | --- |
 | `TS3ParquetFooter::LaterParquetAuthorizationDenialNeverReusesEarlierToken` | [yql_s3_read_actor_ut.cpp](../../yql_s3_read_actor_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
 | `TS3ParquetFooter::LaterParquetRangesUseNewCredentialsWithoutRestartingReader` | [yql_s3_read_actor_ut.cpp](../../yql_s3_read_actor_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
+
+### Requirement: Writer cancellation releases pending multipart authorization
+A stopped writer SHALL discard a pending part upload while allowing independent best-effort multipart cleanup to complete.
+
+#### Scenario: Cancellation after multipart initiation
+- **WHEN** the real writer stops with part authorization held after multipart initiation
+- **THEN** late credentials do not dispatch the part or complete the stopped writer
+- **AND** the detached cleanup issues one multipart DELETE without accessing the writer
+
+Executable coverage: `S3WriterAsynchronousCredentials::StoppedWriterDropsPendingPartAndRetainsIndependentCleanup`. Pending-payload release is verified by the common bridge ownership regressions.

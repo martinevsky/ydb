@@ -164,7 +164,7 @@ public:
         YQL_ENSURE(Parts, "Compression '" << compression << "' is not supported.");
     }
 
-    void Bootstrap(const TActorId& parentId) {
+    void Bootstrap(TActorId parentId) {
         ParentId = parentId;
         LOG_D("TS3FileWriteActor", "Bootstrap by " << ParentId << " for Key: [" << Key << "], Url: [" << Url << "], request id: [" << RequestId << "]");
         try {

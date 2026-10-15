@@ -167,7 +167,7 @@ public:
             new TEvIamDelegation::TEvDelegationOperationResult(std::move(result)), 0, request.Cookie));
     }
 
-    void ReplyToken(const IEventHandle& request) {
+    void ReplyToken(IEventHandle& request) {
         const auto key = request.Get<TEvIamDelegation::TEvGetToken>()->Key;
         MintKeys.push_back(key);
         auto reply = MakeHolder<TEvIamDelegation::TEvGetTokenResult>();
@@ -1296,7 +1296,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         const auto id = f.Create();
         const auto before = f.Delegation(id);
         f.Runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(false);
-        for (const TString sql : {
+        for (const TString& sql : {
             "CREATE SECRET another WITH (SOURCE = 'YC_IAM_DELEGATION', SERVICE_ACCOUNT_ID = 'account-2', RESOURCE = 'cloud-1');",
             "ALTER SECRET secret WITH (SERVICE_ACCOUNT_ID = 'account-2');",
             "CREATE OR REPLACE SECRET secret WITH (SOURCE = 'YC_IAM_DELEGATION', SERVICE_ACCOUNT_ID = 'account-2', RESOURCE = 'cloud-1');"}) {
@@ -1709,13 +1709,13 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         }).Success());
         const auto creator = MakeIntrusiveConst<NACLib::TUserToken>("creator@" BUILTIN_ACL_DOMAIN, TVector<TString>{});
         f.SetAccess("Root", creator->GetUserSID(), NACLib::GenericRead | NACLib::CreateTable);
-        for (const TString name : {TString("stored"), TString("secret")}) {
+        for (const TString& name : {TString("stored"), TString("secret")}) {
             f.SetAccess(name, creator->GetUserSID(), 0, NACLib::DescribeSchema | NACLib::SelectRow);
             const auto before = f.Describe(name).GetPathDescription().GetSecretDescription().SerializeAsString();
             UNIT_ASSERT_VALUES_EQUAL(f.Describe(name, creator, false).GetStatus(), NKikimrScheme::StatusAccessDenied);
             const auto calls = f.Commands.size();
             const auto setup = f.SetupBindings.size();
-            for (const TString options : {
+            for (const TString& options : {
                 TString("VALUE = 'replacement'"),
                 TString("SOURCE = 'YC_IAM_DELEGATION', SERVICE_ACCOUNT_ID = 'unused', RESOURCE = 'unused'")}) {
                 const auto result = f.Kikimr.RunCall([&] {
@@ -1743,7 +1743,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         f.SetAccess("private", creator->GetUserSID(), NACLib::CreateTable, NACLib::DescribeSchema);
         UNIT_ASSERT_VALUES_EQUAL(f.Describe("private", creator, false).GetStatus(), NKikimrScheme::StatusAccessDenied);
         f.AutoReply = true;
-        for (const TString sql : {
+        for (const TString& sql : {
             TString("CREATE SECRET `/Root/private/stored` WITH (VALUE = 'value');"),
             TString("CREATE SECRET `/Root/private/delegated` WITH (SOURCE = 'YC_IAM_DELEGATION', SERVICE_ACCOUNT_ID = 'account-1', RESOURCE = 'cloud-1');")}) {
             const auto result = f.Kikimr.RunCall([&] {

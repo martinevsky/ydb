@@ -1,0 +1,130 @@
+#include <ydb/library/yql/providers/common/ut_helpers/dq_fake_ca.h>
+#include <ydb/library/yql/providers/common/ut_helpers/async_credentials.h>
+#include <ydb/library/yql/providers/s3/actors/yql_s3_write_actor.h>
+#include <ydb/library/services/services.pb.h>
+#include <yql/essentials/minikql/mkql_string_util.h>
+
+namespace NYql::NDq {
+namespace {
+using namespace NActors;
+using namespace NKikimr::NMiniKQL;
+
+class TMultipartGateway final : public IHTTPGateway {
+public:
+    std::function<void()> OnInitiated;
+    ui32 Creates = 0;
+    ui32 Parts = 0;
+    ui32 Deletes = 0;
+    void Upload(TString url, THeaders, TString, TOnResult callback, bool, TRetryPolicy::TPtr, IHttpRequestContext::TPtr) override {
+        if (url.EndsWith("?uploads")) {
+            ++Creates;
+            if (OnInitiated) OnInitiated();
+            callback(TResult(TContent("<InitiateMultipartUploadResult><UploadId>held-upload</UploadId></InitiateMultipartUploadResult>", 200)));
+        } else if (url.Contains("?partNumber=")) {
+            ++Parts;
+        } else {
+            UNIT_FAIL("Unexpected multipart completion");
+        }
+    }
+    void Delete(TString, THeaders, TOnResult callback, TRetryPolicy::TPtr, IHttpRequestContext::TPtr) override {
+        ++Deletes;
+        callback(TResult(TContent("", 204)));
+    }
+    void Download(TString, THeaders, size_t, size_t, TOnResult, TString, TRetryPolicy::TPtr, IHttpRequestContext::TPtr) override {
+        UNIT_FAIL("Unexpected download");
+    }
+    TCancelHook Download(TString, THeaders, size_t, size_t, TOnDownloadStart, TOnNewDataPart, TOnDownloadFinish,
+        const ::NMonitoring::TDynamicCounters::TCounterPtr&, IHttpRequestContext::TPtr) override {
+        UNIT_FAIL("Unexpected streaming download");
+        return {};
+    }
+    ui64 GetBuffersSizePerStream() override { return 0; }
+    void UpdatePoolCaps(THashMap<TWorkScope, size_t>) override {}
+};
+
+class TS3Writer {
+public:
+    struct TCallbacks : IDqComputeActorAsyncOutput::ICallbacks {
+        ui32 Errors = 0;
+        bool Finished = false;
+        void ResumeExecution(EResumeSource) override {}
+        void OnAsyncOutputError(ui64, const TIssues&, NDqProto::StatusIds::StatusCode) override { ++Errors; }
+        void OnAsyncOutputStateSaved(TSinkState&&, ui64, const NDqProto::TCheckpoint&) override {}
+        void OnAsyncOutputStateCommitted(ui64, const NDqProto::TCheckpoint&) override {}
+        void OnAsyncOutputFinished(ui64) override { Finished = true; }
+    } Callbacks;
+    std::shared_ptr<NTests::TAsyncCredentialsFactory> Credentials = std::make_shared<NTests::TAsyncCredentialsFactory>();
+    std::shared_ptr<TMultipartGateway> Gateway = std::make_shared<TMultipartGateway>();
+
+    TS3Writer() {
+        Runtime.AddLocalService(FakeActorId, TActorSetupCmd(new TFakeActor(
+            std::make_shared<TAsyncInputPromises>(), std::make_shared<TAsyncOutputPromises>()), TMailboxType::Simple, 0));
+        Runtime.Initialize();
+        Runtime.GetLogSettings(0)->Append(NKikimrServices::EServiceKikimr_MIN,
+            NKikimrServices::EServiceKikimr_MAX, NKikimrServices::EServiceKikimr_Name);
+        Execute([&](TFakeActor& actor) {
+            NS3::TSink settings;
+            settings.SetUrl("http://unused.invalid/");
+            settings.SetMultipart(true);
+            settings.SetAtomicUploadCommit(true);
+            auto [output, outputActor] = CreateS3WriteActor(actor.TypeEnv, *actor.FunctionRegistry, nullptr,
+                Gateway, std::move(settings), 0, TCollectStatsLevel::None, "test", "output", {}, &Callbacks,
+                Credentials, GetHTTPDefaultRetryPolicy());
+            actor.InitAsyncOutput(output, outputActor);
+        });
+    }
+    ~TS3Writer() { Stop(); }
+    void Stop() { Execute([](TFakeActor& actor) { actor.Terminate(); }); }
+
+    void Write() {
+        Execute([](TFakeActor& actor) {
+            TUnboxedValueBatch batch;
+            batch.emplace_back(MakeString(TString(65536, 'x')));
+            actor.DqAsyncOutput->SendData(std::move(batch), 65536, {}, true);
+        });
+    }
+    void Pump() { Runtime.SimulateSleep(TDuration::MilliSeconds(1)); }
+    i64 FreeSpace() {
+        i64 result = 0;
+        Execute([&](TFakeActor& actor) { result = actor.DqAsyncOutput->GetFreeSpace(); });
+        return result;
+    }
+private:
+    void Execute(TCallback callback) {
+        std::exception_ptr exception;
+        auto promise = NThreading::NewPromise();
+        Runtime.Send(new IEventHandle(FakeActorId, Runtime.AllocateEdgeActor(),
+            new TEvPrivate::TEvExecute(promise, callback, exception)));
+        TDispatchOptions options;
+        options.CustomFinalCondition = [&] { return promise.HasValue(); };
+        Runtime.DispatchEvents(options, TDuration::Seconds(10));
+        UNIT_ASSERT(promise.HasValue());
+        if (exception) std::rethrow_exception(exception);
+    }
+    TTestActorRuntimeBase Runtime{1};
+    const TActorId FakeActorId{0, "FakeActor"};
+};
+} // namespace
+
+Y_UNIT_TEST_SUITE(S3WriterAsynchronousCredentials) {
+    Y_UNIT_TEST(StoppedWriterDropsPendingPartAndRetainsIndependentCleanup) {
+        TS3Writer writer;
+        writer.Gateway->OnInitiated = [&] { writer.Credentials->State->Held = true; };
+        writer.Write();
+        writer.Pump();
+        UNIT_ASSERT_VALUES_EQUAL(writer.Credentials->State->Calls, 1);
+        writer.Credentials->Release("initial-token");
+        writer.Pump();
+        UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Creates, 1);
+        UNIT_ASSERT_VALUES_EQUAL(writer.Credentials->State->Calls, 2);
+        UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Parts, 0);
+        writer.Stop();
+        writer.Credentials->Release("late-token");
+        writer.Pump();
+        UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Parts, 0);
+        UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Deletes, 1);
+        UNIT_ASSERT_VALUES_EQUAL(writer.Callbacks.Errors, 0);
+        UNIT_ASSERT(!writer.Callbacks.Finished);
+    }
+}
+} // namespace NYql::NDq

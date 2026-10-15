@@ -18,6 +18,7 @@ IF (CLANG AND NOT WITH_VALGRIND)
         download_cancellation_ut.cpp
         yql_arrow_column_converters_ut.cpp
         yql_s3_read_actor_ut.cpp
+        yql_s3_write_actor_ut.cpp
         yql_s3_source_queue_ut.cpp
     )
 
