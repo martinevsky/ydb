@@ -167,6 +167,35 @@ For convenience the bare query-level `full_scan` remains as a shorthand for
 `EXISTS TABLE WHERE full_scan`, but combining it with a path match is a
 compile-time warning precisely because of the correlation pitfall above.
 
+## Evaluation semantics (the correlation guarantee)
+
+The evaluator never sees a flat bag of query properties. It works in two
+steps:
+
+1. **Record construction.** From the compiled plan, KQP builds one record per
+   touched table: `{path, full_scan, read_bytes, access}`. `full_scan` for a
+   table is derived from that table's own read nodes in the plan
+   (`TableRange` without a key prefix / `TableLookup` etc.), so the flag is a
+   property of the table's access, not of the query.
+2. **Quantifier evaluation.** `EXISTS TABLE WHERE P` literally means
+   *∃ record r: P(r)* — every attribute inside `P` is read from the **same**
+   record. `path LIKE '/db/big%'` and `full_scan` in one predicate can only
+   both be true if one table's record carries both. There is no code path that
+   mixes `path` from one record with `full_scan` from another; the flat form
+   that would allow this is the deprecated shorthand above and triggers the
+   warning.
+
+Edge case — a table read more than once in one plan (self-join, or key lookup
+plus a secondary-index scan): the correlation unit is the **table**, not the
+individual read. The record aggregates all reads of that table, with
+`full_scan = TRUE` if *any* of its reads lacks a key prefix (conservative:
+one full scan of the table is enough to match). Read-level granularity, if
+ever needed, would be a separate `EXISTS READ WHERE ...` quantifier — out of
+scope here.
+
+Determinism: the record set is a pure function of the compiled plan, so the
+same query text + parameters + scheme version always classifies the same way.
+
 ## Semantics
 
 - Classifiers are evaluated in ascending `RANK`; the first classifier whose
