@@ -428,7 +428,7 @@ private:
     void SendMetrics(TMetricsToSend metricsToSend) {
         TString authToken;
         try {
-            const auto ready = co_await AwaitCredentials(CredentialsProvider->GetAuthInfoAsync());
+            const auto ready = co_await AwaitCredentials(SelfId(), CredentialsProvider->GetAuthInfoAsync());
             authToken = ready.GetValue();
         } catch (const std::exception&) {
             AuthorizationPending = false;

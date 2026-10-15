@@ -272,3 +272,10 @@ Delegated CREATE SHALL use ordinary CREATE authorization and cancellation before
 - **THEN** the coordinator terminates and a late reply cannot admit lifecycle work or start IAM setup
 
 Executable coverage: `CreateIfNotExistsNeedsParentCreateWithoutTargetDescribe`, `CreateNeedsCreatePermissionWithoutParentDescribe`, and `ExecutorAbortBeforeAdmissionCancelsCoordinator`.
+
+#### Scenario: Executor cancellation after admission preserves recovery
+- **WHEN** executor cancellation stops a coordinator after IAM accepted setup and its poll reply is held
+- **THEN** the late coordinator reply cannot mutate lifecycle state
+- **AND** after tablet reboot an independent worker polls the saved operation, activates the same secret and never resubmits setup
+
+Executable coverage: `ExecutorAbortAfterAdmissionPreservesDurableRecovery`.

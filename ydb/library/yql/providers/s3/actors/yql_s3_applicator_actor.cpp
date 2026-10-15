@@ -576,7 +576,7 @@ public:
     void CommitMultipartUpload(TCompleteMultipartUpload::TPtr state) {
         LOG_D("CommitMultipartUpload BEGIN " << state->BuildUrl());
         try {
-            const auto ready = co_await AwaitCredentials(GetAuthInfoAsync(state->Token));
+            const auto ready = co_await AwaitCredentials(SelfId(), GetAuthInfoAsync(state->Token));
             const auto& authInfo = ready.GetValue();
             Gateway->Upload(state->BuildUrl(),
                 IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), "application/xml", authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
@@ -596,7 +596,7 @@ public:
     void ListMultipartUploads(TListMultipartUploads::TPtr state) {
         LOG_D("ListMultipartUploads BEGIN " << state->BuildUrl());
         try {
-            const auto ready = co_await AwaitCredentials(GetAuthInfoAsync(state->Token));
+            const auto ready = co_await AwaitCredentials(SelfId(), GetAuthInfoAsync(state->Token));
             const auto& authInfo = ready.GetValue();
             Gateway->Download(state->BuildUrl(),
                 IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
@@ -617,7 +617,7 @@ public:
     void AbortMultipartUpload(TAbortMultipartUpload::TPtr state) {
         LOG_D("AbortMultipartUpload BEGIN " << state->BuildUrl());
         try {
-            const auto ready = co_await AwaitCredentials(GetAuthInfoAsync(state->Token));
+            const auto ready = co_await AwaitCredentials(SelfId(), GetAuthInfoAsync(state->Token));
             const auto& authInfo = ready.GetValue();
             Gateway->Delete(state->BuildUrl(),
                 IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), "application/xml", authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
@@ -635,7 +635,7 @@ public:
     void ListParts(TListParts::TPtr state) {
         LOG_D("ListParts BEGIN " << state->BuildUrl());
         try {
-            const auto ready = co_await AwaitCredentials(GetAuthInfoAsync(state->Token));
+            const auto ready = co_await AwaitCredentials(SelfId(), GetAuthInfoAsync(state->Token));
             const auto& authInfo = ready.GetValue();
             Gateway->Download(state->BuildUrl(),
                 IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),

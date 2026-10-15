@@ -460,7 +460,9 @@ Y_UNIT_TEST_SUITE(TS3ParquetFooter) {
         gateway->Body = MakeParquet(3);
         auto credentials = std::make_shared<NTests::TAsyncCredentialsFactory>();
         gateway->OnRange = [credentials] { credentials->State->Held = true; };
-        auto source = ParquetSource();
+        // One group at a time creates genuinely successive requests instead
+        // of releasing a parallel batch with the same credential snapshot.
+        auto source = ParquetSource(1);
         source.SetToken("test-credentials");
         reader.Start(gateway, std::move(source), 200_MB, credentials);
         reader.Pump();

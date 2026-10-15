@@ -77,11 +77,12 @@ public:
     ~TS3Writer() { Stop(); }
     void Stop() { Execute([](TFakeActor& actor) { actor.Terminate(); }); }
 
-    void Write() {
-        Execute([](TFakeActor& actor) {
+    enum class ECompletion { Continue, Finish };
+    void Write(ECompletion completion = ECompletion::Finish, size_t bytes = 65536) {
+        Execute([=](TFakeActor& actor) {
             TUnboxedValueBatch batch;
-            batch.emplace_back(MakeString(TString(65536, 'x')));
-            actor.DqAsyncOutput->SendData(std::move(batch), 65536, {}, true);
+            batch.emplace_back(MakeString(TString(bytes, 'x')));
+            actor.DqAsyncOutput->SendData(std::move(batch), bytes, {}, completion == ECompletion::Finish);
         });
     }
     void Pump() { Runtime.SimulateSleep(TDuration::MilliSeconds(1)); }
@@ -108,6 +109,30 @@ private:
 } // namespace
 
 Y_UNIT_TEST_SUITE(S3WriterAsynchronousCredentials) {
+    Y_UNIT_TEST(LaterDirectWriteCompletesCredentialsOnFileWriter) {
+        TS3Writer writer;
+        writer.Write(TS3Writer::ECompletion::Continue, 8 * 1024 * 1024);
+        writer.Pump();
+        UNIT_ASSERT_VALUES_EQUAL(writer.Credentials->State->Calls, 1);
+        writer.Credentials->Release("initial-token");
+        writer.Pump();
+        UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Creates, 1);
+        UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Parts, 1);
+        const auto calls = writer.Credentials->State->Calls;
+        writer.Credentials->State->Held = true;
+        // Multipart initialization is complete. This batch enters Go directly
+        // from the compute actor, rather than from the file actor's event loop.
+        writer.Write(TS3Writer::ECompletion::Continue, 8 * 1024 * 1024);
+        writer.Pump();
+        UNIT_ASSERT_VALUES_EQUAL(writer.Credentials->State->Calls, calls + 1);
+        UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Parts, 1);
+        writer.Credentials->Release("later-token");
+        writer.Pump();
+        UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Parts, 2);
+        UNIT_ASSERT_VALUES_EQUAL(writer.Callbacks.Errors, 0);
+        UNIT_ASSERT(!writer.Callbacks.Finished);
+    }
+
     Y_UNIT_TEST(StoppedWriterDropsPendingPartAndRetainsIndependentCleanup) {
         TS3Writer writer;
         writer.Gateway->OnInitiated = [&] { writer.Credentials->State->Held = true; };

@@ -184,7 +184,7 @@ public:
         auto id = object.GetPathIndex();
         const TString requestId = CreateGuidAsString();
         try {
-            const auto ready = co_await AwaitCredentials(Credentials.GetAuthInfoAsync());
+            const auto ready = co_await AwaitCredentials(SelfId(), Credentials.GetAuthInfoAsync());
             const auto& authInfo = ready.GetValue();
             LOG_D("TS3ReadActor", "Download: " << url << ", ID: " << id << ", request id: [" << requestId << "]");
             Gateway->Download(

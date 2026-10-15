@@ -8,12 +8,13 @@ namespace NYql {
 
 // Only the ready credential crosses the thread boundary. The caller's request
 // and payload stay in its coroutine frame and are released on actor cancellation.
+// Pass the owning actor explicitly: direct compute-to-consumer calls retain
+// the compute actor in the thread-local activation context.
 // Actor-system shutdown must still outlive the external credential producer.
 template <class T>
-NActors::async<NThreading::TFuture<T>> AwaitCredentials(NThreading::TFuture<T> future) {
+NActors::async<NThreading::TFuture<T>> AwaitCredentials(NActors::TActorId actor, NThreading::TFuture<T> future) {
     const auto cookie = NActors::AllocateWaitCookie();
     auto* actorSystem = NActors::TActivationContext::ActorSystem();
-    const auto actor = NActors::TActivationContext::AsActorContext().SelfID;
     future.Subscribe([actorSystem, actor, cookie](const NThreading::TFuture<T>& ready) {
         actorSystem->Send(new NActors::IEventHandle(actor, {}, new NActors::TEvents::TEvInvokeResult(
             [](auto&, const NActors::TActorContext&) {},

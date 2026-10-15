@@ -8,7 +8,7 @@ SRCS(
 
 PEERDIR(
     yql/essentials/minikql
-    yql/essentials/public/udf/service/stub
+    yql/essentials/public/udf/service/exception_policy
     yql/essentials/sql/pg_dummy
 )
 

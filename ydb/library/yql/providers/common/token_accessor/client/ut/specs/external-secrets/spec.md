@@ -16,3 +16,10 @@ The credential wait SHALL release consumer-owned request payloads when its actor
 - **AND** the surviving consumer receives the credential exactly once
 
 Executable coverage: `AsynchronousCredentialOwnership` in `async_credentials_ut.cpp`.
+
+#### Scenario: Direct calls retain the consumer as completion owner
+- **WHEN** another actor directly starts the consumer's credential wait
+- **THEN** both already-ready and delayed credentials resume the consumer exactly once
+- **AND** the calling actor receives no credential completion event
+
+Executable coverage: `DirectCallCompletesOnConsumerInsteadOfCallingActor`.

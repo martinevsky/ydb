@@ -1775,8 +1775,13 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
     Y_UNIT_TEST(ExecutorAbortBeforeAdmissionCancelsCoordinator) {
         TOrchestratorFixture f;
         THashMap<TActorId, TActorId> parents;
-        const auto previousRegistration = f.Runtime.SetRegistrationObserverFunc(
-            [&](auto&, const TActorId& parent, const TActorId& actor) { parents[actor] = parent; });
+        TTestActorRuntimeBase::TRegistrationObserver previousRegistration;
+        previousRegistration = f.Runtime.SetRegistrationObserverFunc(
+            [&](auto& runtime, const TActorId& parent, const TActorId& actor) {
+                // The server observer enables timers for newly registered actors.
+                previousRegistration(runtime, parent, actor);
+                parents[actor] = parent;
+            });
         Y_DEFER { f.Runtime.SetRegistrationObserverFunc(previousRegistration); };
         TAutoPtr<IEventHandle> held;
         TActorId coordinator;
@@ -1796,9 +1801,9 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
             return client.ExecuteQuery("CREATE SECRET `cancel-before-admission` WITH (SOURCE = 'YC_IAM_DELEGATION', SERVICE_ACCOUNT_ID = 'account-1', RESOURCE = 'cloud-1');",
                 NYdb::NQuery::TTxControl::NoTx()).GetValueSync();
         });
-        f.Until([&] { return bool(held) || query.HasValue(); });
+        f.Until([&] { return bool(held) || query.HasValue() || query.HasException(); });
         UNIT_ASSERT_C(held, "Query finished before the metadata boundary: "
-            << (query.HasValue() ? query.GetValue().GetIssues().ToString() : TString("pending")));
+            << query.GetValue().GetIssues().ToString());
         const auto executor = parents.at(coordinator);
         UNIT_ASSERT(executor);
         UNIT_ASSERT(f.Commands.empty());
@@ -1814,6 +1819,55 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         UNIT_ASSERT(f.Commands.empty());
         UNIT_ASSERT(f.SetupBindings.empty());
         UNIT_ASSERT_VALUES_EQUAL(f.Describe("cancel-before-admission").GetStatus(), NKikimrScheme::StatusPathDoesNotExist);
+    }
+
+    Y_UNIT_TEST(ExecutorAbortAfterAdmissionPreservesDurableRecovery) {
+        TOrchestratorFixture f;
+        THashMap<TActorId, TActorId> parents;
+        TTestActorRuntimeBase::TRegistrationObserver previousRegistration;
+        previousRegistration = f.Runtime.SetRegistrationObserverFunc(
+            [&](auto& runtime, const TActorId& parent, const TActorId& actor) {
+                // The server observer enables timers for newly registered actors.
+                previousRegistration(runtime, parent, actor);
+                parents[actor] = parent;
+            });
+        Y_DEFER { f.Runtime.SetRegistrationObserverFunc(previousRegistration); };
+        auto query = f.Kikimr.RunInThreadPool([&] {
+            auto client = f.Kikimr.GetQueryClient(NYdb::NQuery::TClientSettings().AuthToken("bob@" BUILTIN_ACL_DOMAIN));
+            return client.ExecuteQuery("CREATE SECRET `cancel-after-admission` WITH (SOURCE = 'YC_IAM_DELEGATION', SERVICE_ACCOUNT_ID = 'account-1', RESOURCE = 'cloud-1');",
+                NYdb::NQuery::TTxControl::NoTx()).GetValueSync();
+        });
+        f.Until([&] { return !f.Submissions.empty() || query.HasValue() || query.HasException(); });
+        UNIT_ASSERT_C(!f.Submissions.empty(), query.GetValue().GetIssues().ToString());
+        auto setup = f.Take(f.Submissions);
+        const TString id = setup->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->RequestId;
+        f.ReplyIam(*setup, EDelegationOperationOutcome::Accepted, "executor-cancelled-operation");
+        auto latePoll = f.Take(f.Polls);
+        const auto coordinator = latePoll->Sender;
+        const auto executor = parents.at(coordinator);
+        UNIT_ASSERT(executor);
+        const auto admitted = f.Delegation(id).GetDelegation();
+        UNIT_ASSERT_VALUES_EQUAL(admitted.GetSetupOperationId(), "executor-cancelled-operation");
+        f.Runtime.Send(new IEventHandle(executor, {}, new TEvKqp::TEvAbortExecution(
+            NYql::NDqProto::StatusIds::CANCELLED, NYql::TIssues{})), 0, true);
+        UNIT_ASSERT(!f.Runtime.WaitFuture(query).IsSuccess());
+        f.Runtime.SimulateSleep(TDuration::MilliSeconds(1));
+        UNIT_ASSERT_C(!f.Runtime.FindActor(coordinator), "Cancelled executor retained its admitted coordinator");
+        f.ReplyIam(*latePoll, EDelegationOperationOutcome::Succeeded);
+        f.Runtime.SimulateSleep(TDuration::MilliSeconds(1));
+        UNIT_ASSERT_VALUES_EQUAL(f.Delegation(id).GetDelegation().SerializeAsString(), admitted.SerializeAsString());
+        f.RebootTablet();
+        const auto worker = f.Runtime.Register(CreateIamDelegationRecoveryWorker(TOrchestratorFixture::TabletId));
+        f.Runtime.EnableScheduleForActor(worker);
+        auto recoveryPoll = f.Take(f.Polls);
+        UNIT_ASSERT_VALUES_UNEQUAL(recoveryPoll->Sender, coordinator);
+        UNIT_ASSERT_VALUES_EQUAL(recoveryPoll->Get<TEvIamDelegation::TEvPollDelegationOperation>()->OperationId,
+            "executor-cancelled-operation");
+        f.ReplyIam(*recoveryPoll, EDelegationOperationOutcome::Succeeded);
+        f.Until([&] { return f.ObservedDelegations[id].GetState() == P::ACTIVE; });
+        UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(f.Read("cancel-after-admission", f.Bob)->Status, Ydb::StatusIds::SUCCESS);
+        f.Runtime.Send(new IEventHandle(worker, {}, new TEvents::TEvPoison));
     }
 
     Y_UNIT_TEST(DescribeTimeoutFailsBeforeStagingOrIam) {

@@ -46,7 +46,12 @@ Schema/tablet/IAM coordination SHALL use `NActors::async` and `co_await`/`co_ret
 - **AND** recovery uses the durable intent and original identities.
 
 ### Requirement: Operation-specific DDL authorization
-ALTER of a delegation secret SHALL require AlterSchema and any rights needed for requested attributes, without adding DescribeSchema or SelectRow as prerequisites. CREATE OR REPLACE of an existing secret SHALL enforce both parent creation rights and target alteration rights. Authorization failure MUST precede lifecycle mutation or IAM setup.
+Plain CREATE and CREATE IF NOT EXISTS SHALL require parent CreateTable without adding DescribeSchema on the parent or existing target. ALTER of a delegation secret SHALL require AlterSchema and any rights needed for requested attributes, without adding DescribeSchema or SelectRow as prerequisites. CREATE OR REPLACE of an existing secret SHALL enforce both parent creation rights and target alteration rights. Authorization failure MUST precede lifecycle mutation or IAM setup.
+
+#### Scenario: Authorized creation without metadata visibility
+- **WHEN** a caller can create under the parent but cannot describe that parent or the existing secret
+- **THEN** fresh CREATE and an applicable CREATE IF NOT EXISTS succeed with ordinary CREATE semantics
+- **AND** an existing target remains unchanged with no lifecycle writes or IAM setup.
 
 #### Scenario: Authorized alteration without visibility or value access
 - **WHEN** a non-owner has AlterSchema but is explicitly denied DescribeSchema and SelectRow

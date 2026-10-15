@@ -20,16 +20,25 @@ struct TWaitState {
 
 class TWaitingConsumer final : public TActorBootstrapped<TWaitingConsumer> {
 public:
-    TWaitingConsumer(NThreading::TFuture<TString> future, std::shared_ptr<TWaitState> state)
-        : Future(std::move(future)), State(std::move(state)) {}
+    enum class EStart { Bootstrap, DirectCall };
+
+    TWaitingConsumer(NThreading::TFuture<TString> future, std::shared_ptr<TWaitState> state,
+        EStart start = EStart::Bootstrap)
+        : Future(std::move(future)), State(std::move(state)), Start(start) {}
     ~TWaitingConsumer() { ++State->Destroyed; }
 
     void Bootstrap() {
         Become(&TThis::StateWork);
+        if (Start == EStart::Bootstrap) {
+            WaitForCredentials();
+        }
+    }
+
+    void WaitForCredentials() {
         auto payload = std::make_shared<TString>(65536, 'x');
         State->Payload = payload;
         ++State->Started;
-        const auto ready = co_await AwaitCredentials(Future);
+        const auto ready = co_await AwaitCredentials(SelfId(), Future);
         UNIT_ASSERT_VALUES_EQUAL(payload->size(), 65536);
         State->Token = ready.GetValue();
         ++State->Completed;
@@ -45,6 +54,7 @@ private:
     }
     NThreading::TFuture<TString> Future;
     const std::shared_ptr<TWaitState> State;
+    const EStart Start;
 };
 
 void DispatchUntil(TTestActorRuntimeBase& runtime, std::function<bool()> condition) {
@@ -56,6 +66,33 @@ void DispatchUntil(TTestActorRuntimeBase& runtime, std::function<bool()> conditi
 } // namespace
 
 Y_UNIT_TEST_SUITE(AsynchronousCredentialOwnership) {
+    Y_UNIT_TEST(DirectCallCompletesOnConsumerInsteadOfCallingActor) {
+        enum class ECompletion { BeforeCall, AfterCall };
+        for (const auto completion : {ECompletion::BeforeCall, ECompletion::AfterCall}) {
+            TTestActorRuntimeBase runtime;
+            runtime.Initialize();
+            auto promise = NThreading::NewPromise<TString>();
+            auto state = std::make_shared<TWaitState>();
+            auto* consumer = new TWaitingConsumer(promise.GetFuture(), state, TWaitingConsumer::EStart::DirectCall);
+            runtime.Register(consumer);
+            runtime.SimulateSleep(TDuration::MilliSeconds(1));
+            if (completion == ECompletion::BeforeCall) {
+                promise.SetValue("owned-token");
+            }
+            // Async outputs are invoked directly by compute actors. RunCall
+            // supplies a distinct caller activation for this same boundary.
+            runtime.RunCall([&] { consumer->WaitForCredentials(); });
+            UNIT_ASSERT_VALUES_EQUAL(state->Started, 1);
+            if (completion == ECompletion::AfterCall) {
+                promise.SetValue("owned-token");
+            }
+            runtime.SimulateSleep(TDuration::MilliSeconds(1));
+            UNIT_ASSERT_VALUES_EQUAL_C(state->Completed, 1, "Credential completion went to the calling actor instead of its consumer");
+            UNIT_ASSERT_VALUES_EQUAL(state->Token, "owned-token");
+            UNIT_ASSERT(state->Payload.expired());
+        }
+    }
+
     Y_UNIT_TEST(CancellationReleasesPayloadBeforeCredentialReply) {
         TTestActorRuntimeBase runtime;
         runtime.Initialize();

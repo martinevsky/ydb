@@ -183,3 +183,9 @@ A stopped writer SHALL discard a pending part upload while allowing independent 
 - **AND** the detached cleanup issues one multipart DELETE without accessing the writer
 
 Executable coverage: `S3WriterAsynchronousCredentials::StoppedWriterDropsPendingPartAndRetainsIndependentCleanup`. Pending-payload release is verified by the common bridge ownership regressions.
+
+#### Scenario: A later multipart write enters from the compute actor
+- **WHEN** multipart initialization has finished and the compute actor directly sends another batch with held credentials
+- **THEN** releasing those credentials uploads the new part through the same file writer without a compute-actor error
+
+Executable coverage: `S3WriterAsynchronousCredentials::LaterDirectWriteCompletesCredentialsOnFileWriter`.
