@@ -64,3 +64,12 @@ Contract coverage: external-secret-consumers / Credentials are acquired for new 
 | --- | --- | --- |
 | `SolomonAsynchronousCredentials::LaterAuthorizationDenialNeverReusesThePreviousBatchToken` | [dq_solomon_async_credentials_ut.cpp](../../dq_solomon_async_credentials_ut.cpp) | `ydb/library/yql/providers/solomon/actors/ut` |
 | `SolomonAsynchronousCredentials::LaterBatchesUseCurrentCredentialsOnTheSameWriter` | [dq_solomon_async_credentials_ut.cpp](../../dq_solomon_async_credentials_ut.cpp) | `ydb/library/yql/providers/solomon/actors/ut` |
+
+### Requirement: Stopped writers cannot resume authorization work
+A stopped writer SHALL discard late credentials without sending HTTP or invoking output completion callbacks.
+
+#### Scenario: Writer stops while batch authorization is held
+- **WHEN** the writer is stopped before its pending credential future completes
+- **THEN** releasing that future sends no HTTP request and produces no output completion or error callback
+
+Executable coverage: `StoppedWriterIgnoresLateCredentials`; payload ownership is verified by the common credential bridge cancellation suite.

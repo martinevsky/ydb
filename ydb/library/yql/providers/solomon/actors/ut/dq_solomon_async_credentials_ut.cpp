@@ -49,7 +49,8 @@ public:
             actor.InitAsyncOutput(output, outputActor);
         });
     }
-    ~TAsyncWriter() { Execute([](TFakeActor& actor) { actor.Terminate(); }); }
+    ~TAsyncWriter() { Stop(); }
+    void Stop() { Execute([](TFakeActor& actor) { actor.Terminate(); }); }
 
     enum class ECompletion { Continue, Finish };
     void Write(ECompletion completion = ECompletion::Finish) {
@@ -126,6 +127,20 @@ Y_UNIT_TEST_SUITE(SolomonAsynchronousCredentials) {
         UNIT_ASSERT_VALUES_EQUAL(writer.Callbacks.Errors, 1);
         UNIT_ASSERT_VALUES_EQUAL(writer.FreeSpace(), before);
         UNIT_ASSERT_VALUES_EQUAL(writer.Authorizations.size(), 1);
+        UNIT_ASSERT(!writer.Callbacks.Finished);
+    }
+
+    Y_UNIT_TEST(StoppedWriterIgnoresLateCredentials) {
+        TAsyncWriter writer;
+        writer.Write();
+        writer.Pump();
+        UNIT_ASSERT_VALUES_EQUAL(writer.Credentials->State->Calls, 1);
+        UNIT_ASSERT_VALUES_EQUAL(writer.HttpRequests, 0);
+        writer.Stop();
+        writer.Credentials->Release("late-token");
+        writer.Pump();
+        UNIT_ASSERT_VALUES_EQUAL(writer.HttpRequests, 0);
+        UNIT_ASSERT_VALUES_EQUAL(writer.Callbacks.Errors, 0);
         UNIT_ASSERT(!writer.Callbacks.Finished);
     }
 

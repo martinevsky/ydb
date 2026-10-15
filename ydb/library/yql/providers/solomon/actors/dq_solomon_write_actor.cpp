@@ -408,33 +408,7 @@ private:
             }
 
             AuthorizationPending = true;
-            AwaitCredentials(NActors::TActivationContext::ActorSystem(), SelfId(), CredentialsProvider->GetAuthInfoAsync(),
-                [this, metricsToSend = std::get<TMetricsToSend>(std::move(variant))](const auto& ready) {
-                    AuthorizationPending = false;
-                    TString authToken;
-                    try {
-                        authToken = ready.GetValue();
-                    } catch (const std::exception&) {
-                        FreeSpace += metricsToSend.Data.size();
-                        Callbacks->OnAsyncOutputError(OutputIndex, {TIssue("Cannot acquire monitoring credentials")},
-                            NYql::NDqProto::StatusIds::EXTERNAL_ERROR);
-                        return;
-                    }
-                    const auto httpRequest = BuildSolomonRequest(metricsToSend.Data, authToken);
-                    if (!httpRequest) {
-                        FreeSpace += metricsToSend.Data.size();
-                        return;
-                    }
-                    const size_t bodySize = metricsToSend.Data.size();
-                    const TActorId httpSenderId = Register(CreateHttpSenderActor(SelfId(), HttpProxyId, RetryPolicy));
-                    Send(httpSenderId, new NHttp::TEvHttpProxy::TEvHttpOutgoingRequest(*httpRequest), 0, Cookie);
-                    *Metrics.SentMetrics += metricsToSend.MetricsCount;
-                    Y_VALIDATE(InflightBuffer.emplace(Cookie++, TMetricsInflight {
-                        httpSenderId, metricsToSend.MetricsCount, bodySize }).second, "Duplicated inflight event");
-                    EgressStats.Bytes += bodySize;
-                    EgressStats.Chunks++;
-                    while (TryToSendNextBatch()) {}
-                });
+            SendMetrics(std::get<TMetricsToSend>(std::move(variant)));
             return false;
         }
 
@@ -449,6 +423,35 @@ private:
         }
 
         Y_ENSURE(false, "Bad type");
+    }
+
+    void SendMetrics(TMetricsToSend metricsToSend) {
+        TString authToken;
+        try {
+            const auto ready = co_await AwaitCredentials(CredentialsProvider->GetAuthInfoAsync());
+            authToken = ready.GetValue();
+        } catch (const std::exception&) {
+            AuthorizationPending = false;
+            FreeSpace += metricsToSend.Data.size();
+            Callbacks->OnAsyncOutputError(OutputIndex, {TIssue("Cannot acquire monitoring credentials")},
+                NYql::NDqProto::StatusIds::EXTERNAL_ERROR);
+            co_return;
+        }
+        AuthorizationPending = false;
+        const auto httpRequest = BuildSolomonRequest(metricsToSend.Data, authToken);
+        if (!httpRequest) {
+            FreeSpace += metricsToSend.Data.size();
+            co_return;
+        }
+        const size_t bodySize = metricsToSend.Data.size();
+        const TActorId httpSenderId = Register(CreateHttpSenderActor(SelfId(), HttpProxyId, RetryPolicy));
+        Send(httpSenderId, new NHttp::TEvHttpProxy::TEvHttpOutgoingRequest(*httpRequest), 0, Cookie);
+        *Metrics.SentMetrics += metricsToSend.MetricsCount;
+        Y_VALIDATE(InflightBuffer.emplace(Cookie++, TMetricsInflight {
+            httpSenderId, metricsToSend.MetricsCount, bodySize }).second, "Duplicated inflight event");
+        EgressStats.Bytes += bodySize;
+        EgressStats.Chunks++;
+        while (TryToSendNextBatch()) {}
     }
 
     void HandleSuccessSolomonResponse(const NHttp::TEvHttpProxy::TEvHttpIncomingResponse& response, ui64 cookie) {

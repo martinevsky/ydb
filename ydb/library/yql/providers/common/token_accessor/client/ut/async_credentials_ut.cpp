@@ -28,13 +28,11 @@ public:
         Become(&TThis::StateWork);
         auto payload = std::make_shared<TString>(65536, 'x');
         State->Payload = payload;
-        AwaitCredentials(TActivationContext::ActorSystem(), SelfId(), Future,
-            [this, payload = std::move(payload)](const auto& ready) {
-                UNIT_ASSERT_VALUES_EQUAL(payload->size(), 65536);
-                State->Token = ready.GetValue();
-                ++State->Completed;
-            });
         ++State->Started;
+        const auto ready = co_await AwaitCredentials(Future);
+        UNIT_ASSERT_VALUES_EQUAL(payload->size(), 65536);
+        State->Token = ready.GetValue();
+        ++State->Completed;
     }
 
 private:

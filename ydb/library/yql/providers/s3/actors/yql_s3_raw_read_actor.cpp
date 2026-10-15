@@ -179,23 +179,26 @@ public:
 
     void StartDownload() {
         DownloadInflight++;
-        const auto& object = ReadPathFromCache();
+        const auto object = ReadPathFromCache();
         auto url = Url + object.GetPath();
         auto id = object.GetPathIndex();
         const TString requestId = CreateGuidAsString();
-        AwaitCredentials(ActorSystem, SelfId(), Credentials.GetAuthInfoAsync(),
-            [this, object, url, id, requestId](const auto& ready) {
-                const auto& authInfo = ready.GetValue();
-                LOG_D("TS3ReadActor", "Download: " << url << ", ID: " << id << ", request id: [" << requestId << "]");
-                Gateway->Download(
-                    NS3Util::UrlEscapeRet(url),
-                    IHTTPGateway::MakeYcHeaders(requestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
-                    0U,
-                    std::min(object.GetSize(), SizeLimit),
-                    std::bind(&TS3ReadActor::OnDownloadFinished, ActorSystem, SelfId(), requestId, std::placeholders::_1, id, object.GetPath()),
-                    {},
-                    RetryPolicy);
-        });
+        try {
+            const auto ready = co_await AwaitCredentials(Credentials.GetAuthInfoAsync());
+            const auto& authInfo = ready.GetValue();
+            LOG_D("TS3ReadActor", "Download: " << url << ", ID: " << id << ", request id: [" << requestId << "]");
+            Gateway->Download(
+                NS3Util::UrlEscapeRet(url),
+                IHTTPGateway::MakeYcHeaders(requestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
+                0U,
+                std::min(object.GetSize(), SizeLimit),
+                std::bind(&TS3ReadActor::OnDownloadFinished, ActorSystem, SelfId(), requestId, std::placeholders::_1, id, object.GetPath()),
+                {},
+                RetryPolicy);
+        } catch (const std::exception& e) {
+            TIssues issues{TIssue{TStringBuilder() << "An unknown exception has occurred: '" << e.what() << "'"}};
+            OnFatalError(std::move(issues), NYql::NDqProto::StatusIds::INTERNAL_ERROR);
+        }
     }
 
     NS3::FileQueue::TObjectPath ReadPathFromCache() {

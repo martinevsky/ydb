@@ -258,3 +258,17 @@ Status: Task 10 regression source added; first execution pending. The first runt
 | Executable case | Test source | Command target |
 | --- | --- | --- |
 | `KqpIamDelegationSecretOrchestrator::PopulatedTenantCleanupSurvivesWholeRuntimeDiskReopen` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+
+### Requirement: CREATE and cancellation preserve ordinary schema contracts
+Delegated CREATE SHALL use ordinary CREATE authorization and cancellation before durable admission SHALL stop the owned coordinator.
+
+#### Scenario: CREATE without DescribeSchema
+- **WHEN** a non-owner has parent CreateTable and the existing secret denies DescribeSchema
+- **THEN** stored and delegated CREATE IF NOT EXISTS both succeed without changing the secret or contacting IAM
+- **AND** fresh CREATE under a parent granting CreateTable but denying DescribeSchema also succeeds
+
+#### Scenario: Executor cancellation before admission
+- **WHEN** the real scheme executor is aborted while the coordinator's first metadata read is held
+- **THEN** the coordinator terminates and a late reply cannot admit lifecycle work or start IAM setup
+
+Executable coverage: `CreateIfNotExistsNeedsParentCreateWithoutTargetDescribe`, `CreateNeedsCreatePermissionWithoutParentDescribe`, and `ExecutorAbortBeforeAdmissionCancelsCoordinator`.

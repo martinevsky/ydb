@@ -196,3 +196,13 @@ Status: both ownership preservation cases passed at `ac2c2d3e0b3`; feature-filte
 | --- | --- | --- |
 | `ListDatabaseIamDelegations::InventoryDeadlineClosesChildAndIgnoresLateReply` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
 | `ListDatabaseIamDelegations::ClientDepartureCancelsOwnedInventoryWait` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
+
+### Requirement: Metadata cancellation releases each owned snapshot wait
+DescribeSecret SHALL close its owned lifecycle client on caller departure at every snapshot read boundary.
+
+#### Scenario: Caller leaves during secret, current, or pending read
+- **WHEN** the caller departs while any of the three metadata reads is held
+- **THEN** its tablet client is stopped once
+- **AND** late replies cause neither another read nor a second RPC result
+
+Executable coverage: `ClientDepartureCancelsEverySnapshotWait`.

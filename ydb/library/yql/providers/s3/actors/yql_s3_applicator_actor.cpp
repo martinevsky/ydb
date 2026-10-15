@@ -575,7 +575,8 @@ public:
 
     void CommitMultipartUpload(TCompleteMultipartUpload::TPtr state) {
         LOG_D("CommitMultipartUpload BEGIN " << state->BuildUrl());
-        AwaitCredentials(ActorSystem, SelfId(), GetAuthInfoAsync(state->Token), [this, state](const auto& ready) {
+        try {
+            const auto ready = co_await AwaitCredentials(GetAuthInfoAsync(state->Token));
             const auto& authInfo = ready.GetValue();
             Gateway->Upload(state->BuildUrl(),
                 IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), "application/xml", authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
@@ -583,7 +584,9 @@ public:
                 std::bind(&TS3ApplicatorActor::OnCommitMultipartUpload, ActorSystem, SelfId(), state, std::placeholders::_1),
                 false,
                 RetryPolicy);
-        });
+        } catch (const std::exception&) {
+            Finish(true, "Cannot acquire S3 credentials");
+        }
     }
 
     static void OnCommitMultipartUpload(NActors::TActorSystem* actorSystem, NActors::TActorId selfId, TCompleteMultipartUpload::TPtr state, IHTTPGateway::TResult&& result) {
@@ -592,7 +595,8 @@ public:
 
     void ListMultipartUploads(TListMultipartUploads::TPtr state) {
         LOG_D("ListMultipartUploads BEGIN " << state->BuildUrl());
-        AwaitCredentials(ActorSystem, SelfId(), GetAuthInfoAsync(state->Token), [this, state](const auto& ready) {
+        try {
+            const auto ready = co_await AwaitCredentials(GetAuthInfoAsync(state->Token));
             const auto& authInfo = ready.GetValue();
             Gateway->Download(state->BuildUrl(),
                 IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
@@ -601,7 +605,9 @@ public:
                 std::bind(&TS3ApplicatorActor::OnListMultipartUploads, ActorSystem, SelfId(), state, std::placeholders::_1),
                 {},
                 RetryPolicy);
-        });
+        } catch (const std::exception&) {
+            Finish(true, "Cannot acquire S3 credentials");
+        }
     }
 
     static void OnListMultipartUploads(NActors::TActorSystem* actorSystem, NActors::TActorId selfId, TListMultipartUploads::TPtr state, IHTTPGateway::TResult&& result) {
@@ -610,13 +616,16 @@ public:
 
     void AbortMultipartUpload(TAbortMultipartUpload::TPtr state) {
         LOG_D("AbortMultipartUpload BEGIN " << state->BuildUrl());
-        AwaitCredentials(ActorSystem, SelfId(), GetAuthInfoAsync(state->Token), [this, state](const auto& ready) {
+        try {
+            const auto ready = co_await AwaitCredentials(GetAuthInfoAsync(state->Token));
             const auto& authInfo = ready.GetValue();
             Gateway->Delete(state->BuildUrl(),
                 IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), "application/xml", authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
                 std::bind(&TS3ApplicatorActor::OnAbortMultipartUpload, ActorSystem, SelfId(), state, std::placeholders::_1),
                 RetryPolicy);
-        });
+        } catch (const std::exception&) {
+            Finish(true, "Cannot acquire S3 credentials");
+        }
     }
 
     static void OnAbortMultipartUpload(NActors::TActorSystem* actorSystem, NActors::TActorId selfId, TAbortMultipartUpload::TPtr state, IHTTPGateway::TResult&& result) {
@@ -625,7 +634,8 @@ public:
 
     void ListParts(TListParts::TPtr state) {
         LOG_D("ListParts BEGIN " << state->BuildUrl());
-        AwaitCredentials(ActorSystem, SelfId(), GetAuthInfoAsync(state->Token), [this, state](const auto& ready) {
+        try {
+            const auto ready = co_await AwaitCredentials(GetAuthInfoAsync(state->Token));
             const auto& authInfo = ready.GetValue();
             Gateway->Download(state->BuildUrl(),
                 IHTTPGateway::MakeYcHeaders(state->RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
@@ -634,7 +644,9 @@ public:
                 std::bind(&TS3ApplicatorActor::OnListParts, ActorSystem, SelfId(), state, std::placeholders::_1),
                 {},
                 RetryPolicy);
-        });
+        } catch (const std::exception&) {
+            Finish(true, "Cannot acquire S3 credentials");
+        }
     }
 
     static void OnListParts(NActors::TActorSystem* actorSystem, NActors::TActorId selfId, TListParts::TPtr state, IHTTPGateway::TResult&& result) {

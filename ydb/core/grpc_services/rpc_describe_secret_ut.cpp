@@ -171,6 +171,41 @@ struct TFixture : IFacilityProvider {
 } // namespace
 
 Y_UNIT_TEST_SUITE(DescribeSecretIamDelegation) {
+    Y_UNIT_TEST(ClientDepartureCancelsEverySnapshotWait) {
+        enum class EBoundary { Secret, Current, Pending };
+        for (const auto boundary : {EBoundary::Secret, EBoundary::Current, EBoundary::Pending}) {
+            TFixture f;
+            f.Describe();
+            const auto secret = f.Secret();
+            if (boundary != EBoundary::Secret) {
+                f.ReplySecret(secret);
+            }
+            if (boundary == EBoundary::Pending) {
+                f.ReplyDelegation(secret, "current", "current-account");
+            }
+            const auto request = f.Request();
+            const auto count = f.TabletRequestCount;
+            ui32 childStops = 0;
+            auto stops = f.Runtime.AddObserver<TEvents::TEvPoison>([&](auto& event) {
+                if (event->Recipient == request->Recipient) {
+                    ++childStops;
+                }
+            });
+            f.Runtime.Send(new IEventHandle(request->Sender, {}, new TRpcServices::TEvForgetOperation));
+            const auto response = f.Response();
+            UNIT_ASSERT_VALUES_EQUAL(response.operation().status(), Ydb::StatusIds::INTERNAL_ERROR);
+            f.Until([&] { return childStops == 1; });
+            auto late = MakeHolder<TTabletEvents::TEvResponse>();
+            late->Record.SetStatus(SUCCESS);
+            *late->Record.MutableSecret() = secret;
+            f.Runtime.Send(new IEventHandle(request->Sender, request->Recipient, late.Release(), 0, request->Cookie));
+            f.Runtime.SimulateSleep(TDuration::Seconds(31));
+            UNIT_ASSERT_VALUES_EQUAL(f.TabletRequestCount, count);
+            UNIT_ASSERT_VALUES_EQUAL(f.Response().SerializeAsString(), response.SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(childStops, 1);
+        }
+    }
+
     Y_UNIT_TEST(PlainSecretDoesNotReadTablet) {
         TFixture f;
         f.Describe(false);

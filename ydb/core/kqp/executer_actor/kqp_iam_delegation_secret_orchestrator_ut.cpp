@@ -1,4 +1,5 @@
 #include <ydb/services/scheme_secret/secret_credentials.h>
+#include <ydb/core/kqp/common/events/events.h>
 #include <ydb/core/kqp/executer_actor/kqp_iam_delegation_secret_orchestrator.h>
 #include <ydb/core/kqp/gateway/actors/scheme.h>
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
@@ -111,17 +112,9 @@ public:
                 case TEvIamDelegation::TEvPollDelegationOperation::EventType:
                     Polls.emplace_back(event.Release());
                     return EAction::DROP;
-                case TEvIamDelegation::TEvGetToken::EventType: {
-                    const auto key = event->Get<TEvIamDelegation::TEvGetToken>()->Key;
-                    MintKeys.push_back(key);
-                    auto reply = MakeHolder<TEvIamDelegation::TEvGetTokenResult>();
-                    reply->Key = key;
-                    reply->Token = "token-for-" + key.ServiceAccountId;
-                    reply->UsableUntil = Runtime.GetCurrentTime() + TDuration::Hours(1);
-                    reply->ExpiresAt = reply->UsableUntil + TDuration::Minutes(5);
-                    Runtime.Send(new IEventHandle(event->Sender, TokenService, reply.Release(), 0, event->Cookie));
+                case TEvIamDelegation::TEvGetToken::EventType:
+                    ReplyToken(*event);
                     return EAction::DROP;
-                }
                 case TEvIamDelegationTablet::TEvRequest::EventType:
                     if (event->GetRecipientRewrite() == TabletActor) {
                         Commands.push_back(event->Get<TEvIamDelegationTablet::TEvRequest>()->Record);
@@ -174,6 +167,17 @@ public:
             new TEvIamDelegation::TEvDelegationOperationResult(std::move(result)), 0, request.Cookie));
     }
 
+    void ReplyToken(const IEventHandle& request) {
+        const auto key = request.Get<TEvIamDelegation::TEvGetToken>()->Key;
+        MintKeys.push_back(key);
+        auto reply = MakeHolder<TEvIamDelegation::TEvGetTokenResult>();
+        reply->Key = key;
+        reply->Token = "token-for-" + key.ServiceAccountId;
+        reply->UsableUntil = Runtime.GetCurrentTime() + TDuration::Hours(1);
+        reply->ExpiresAt = reply->UsableUntil + TDuration::Minutes(5);
+        Runtime.Send(new IEventHandle(request.Sender, TokenService, reply.Release(), 0, request.Cookie));
+    }
+
     TGenericResult Scheme(std::function<void(NKikimrSchemeOp::TModifyScheme&)> fill) {
         auto request = MakeHolder<TEvTxUserProxy::TEvProposeTransaction>();
         request->Record.SetDatabaseName("/Root");
@@ -203,10 +207,10 @@ public:
     }
 
     NKikimrScheme::TEvDescribeSchemeResult Describe(const TString& name = "secret",
-        TIntrusiveConstPtr<NACLib::TUserToken> token = {}, bool returnValue = true) {
+        TIntrusiveConstPtr<NACLib::TUserToken> token = {}, bool returnValue = true, const TString& database = "/Root") {
         const auto edge = Runtime.AllocateEdgeActor();
         auto request = MakeHolder<TEvTxUserProxy::TEvNavigate>();
-        request->Record.SetDatabaseName("/Root");
+        request->Record.SetDatabaseName(database);
         if (token) {
             request->Record.SetUserToken(token->SerializeAsString());
         }
@@ -701,9 +705,9 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         f.Until([&] { return bool(held); });
         f.SetAccess("secret", reader->GetUserSID(), 0, NACLib::SelectRow);
         f.Intercept = {};
-        // Re-enter mailbox dispatch so the external-token boundary observer
-        // replies. Direct Send would deliver to its inert edge actor instead.
-        f.Runtime.Send(held.Release(), 0, true);
+        // Complete the held external boundary explicitly. Re-sending its
+        // request to the edge destination does not run the boundary observer.
+        f.ReplyToken(*held);
         const auto denied = f.FinishRead(read);
         UNIT_ASSERT_VALUES_EQUAL_C(denied->Status, Ydb::StatusIds::UNAUTHORIZED, denied->Issues.ToString());
         UNIT_ASSERT(denied->Token.empty());
@@ -1694,6 +1698,108 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         }
     }
 
+    Y_UNIT_TEST(CreateIfNotExistsNeedsParentCreateWithoutTargetDescribe) {
+        TOrchestratorFixture f;
+        f.Create();
+        UNIT_ASSERT(f.Scheme([](auto& scheme) {
+            scheme.SetWorkingDir("/Root");
+            scheme.SetOperationType(NKikimrSchemeOp::ESchemeOpCreateSecret);
+            scheme.MutableCreateSecret()->SetName("stored");
+            scheme.MutableCreateSecret()->SetValue("stored-value");
+        }).Success());
+        const auto creator = MakeIntrusiveConst<NACLib::TUserToken>("creator@" BUILTIN_ACL_DOMAIN, TVector<TString>{});
+        f.SetAccess("Root", creator->GetUserSID(), NACLib::GenericRead | NACLib::CreateTable);
+        for (const TString name : {TString("stored"), TString("secret")}) {
+            f.SetAccess(name, creator->GetUserSID(), 0, NACLib::DescribeSchema | NACLib::SelectRow);
+            const auto before = f.Describe(name).GetPathDescription().GetSecretDescription().SerializeAsString();
+            UNIT_ASSERT_VALUES_EQUAL(f.Describe(name, creator, false).GetStatus(), NKikimrScheme::StatusAccessDenied);
+            const auto calls = f.Commands.size();
+            const auto setup = f.SetupBindings.size();
+            for (const TString options : {
+                TString("VALUE = 'replacement'"),
+                TString("SOURCE = 'YC_IAM_DELEGATION', SERVICE_ACCOUNT_ID = 'unused', RESOURCE = 'unused'")}) {
+                const auto result = f.Kikimr.RunCall([&] {
+                    auto client = f.Kikimr.GetQueryClient(NYdb::NQuery::TClientSettings().AuthToken(creator->GetUserSID()));
+                    return client.ExecuteQuery("CREATE SECRET IF NOT EXISTS " + name + " WITH (" + options + ");",
+                        NYdb::NQuery::TTxControl::NoTx()).GetValueSync();
+                });
+                UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
+            }
+            UNIT_ASSERT_VALUES_EQUAL(f.Commands.size(), calls);
+            UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), setup);
+            UNIT_ASSERT_VALUES_EQUAL(f.Describe(name).GetPathDescription().GetSecretDescription().SerializeAsString(), before);
+        }
+    }
+
+    Y_UNIT_TEST(CreateNeedsCreatePermissionWithoutParentDescribe) {
+        TOrchestratorFixture f;
+        UNIT_ASSERT(f.Scheme([](auto& scheme) {
+            scheme.SetWorkingDir("/Root");
+            scheme.SetOperationType(NKikimrSchemeOp::ESchemeOpMkDir);
+            scheme.MutableMkDir()->SetName("private");
+        }).Success());
+        const auto creator = MakeIntrusiveConst<NACLib::TUserToken>("creator@" BUILTIN_ACL_DOMAIN, TVector<TString>{});
+        f.SetAccess("Root", creator->GetUserSID(), NACLib::GenericRead);
+        f.SetAccess("private", creator->GetUserSID(), NACLib::CreateTable, NACLib::DescribeSchema);
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe("private", creator, false).GetStatus(), NKikimrScheme::StatusAccessDenied);
+        f.AutoReply = true;
+        for (const TString sql : {
+            TString("CREATE SECRET `/Root/private/stored` WITH (VALUE = 'value');"),
+            TString("CREATE SECRET `/Root/private/delegated` WITH (SOURCE = 'YC_IAM_DELEGATION', SERVICE_ACCOUNT_ID = 'account-1', RESOURCE = 'cloud-1');")}) {
+            const auto result = f.Kikimr.RunCall([&] {
+                auto client = f.Kikimr.GetQueryClient(NYdb::NQuery::TClientSettings().AuthToken(creator->GetUserSID()));
+                return client.ExecuteQuery(sql, NYdb::NQuery::TTxControl::NoTx()).GetValueSync();
+            });
+            UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
+        }
+        UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe("private/stored").GetStatus(), NKikimrScheme::StatusSuccess);
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe("private/delegated").GetStatus(), NKikimrScheme::StatusSuccess);
+    }
+
+    Y_UNIT_TEST(ExecutorAbortBeforeAdmissionCancelsCoordinator) {
+        TOrchestratorFixture f;
+        THashMap<TActorId, TActorId> parents;
+        const auto previousRegistration = f.Runtime.SetRegistrationObserverFunc(
+            [&](auto&, const TActorId& parent, const TActorId& actor) { parents[actor] = parent; });
+        Y_DEFER { f.Runtime.SetRegistrationObserverFunc(previousRegistration); };
+        TAutoPtr<IEventHandle> held;
+        TActorId coordinator;
+        f.Intercept = [&](auto& event) {
+            if (event->GetTypeRewrite() == TEvTxUserProxy::TEvNavigate::EventType && event->Sender) {
+                const auto* sender = f.Runtime.FindActor(event->Sender);
+                if (!sender || sender->GetActivityType() != NKikimrServices::TActivity::IAM_DELEGATION_SECRET_ORCHESTRATOR) {
+                    return EAction::PROCESS;
+                }
+                coordinator = event->Sender;
+                held.Reset(event.Release());
+                return EAction::DROP;
+            }
+            return EAction::PROCESS;
+        };
+        auto query = f.Kikimr.RunInThreadPool([&] {
+            auto client = f.Kikimr.GetQueryClient(NYdb::NQuery::TClientSettings().AuthToken("bob@" BUILTIN_ACL_DOMAIN));
+            return client.ExecuteQuery("CREATE SECRET secret WITH (SOURCE = 'YC_IAM_DELEGATION', SERVICE_ACCOUNT_ID = 'account-1', RESOURCE = 'cloud-1');",
+                NYdb::NQuery::TTxControl::NoTx()).GetValueSync();
+        });
+        f.Until([&] { return bool(held); });
+        const auto executor = parents.at(coordinator);
+        UNIT_ASSERT(executor);
+        UNIT_ASSERT(f.Commands.empty());
+        f.Runtime.Send(new IEventHandle(executor, {}, new TEvKqp::TEvAbortExecution(
+            NYql::NDqProto::StatusIds::CANCELLED, NYql::TIssues{})), 0, true);
+        const auto result = f.Runtime.WaitFuture(query);
+        UNIT_ASSERT(!result.IsSuccess());
+        f.Runtime.SimulateSleep(TDuration::MilliSeconds(1));
+        UNIT_ASSERT_C(!f.Runtime.FindActor(coordinator), "Cancelled scheme executor left the pre-admission coordinator alive");
+        f.Intercept = {};
+        f.Runtime.Send(held.Release(), 0, true);
+        f.Runtime.SimulateSleep(TDuration::Seconds(1));
+        UNIT_ASSERT(f.Commands.empty());
+        UNIT_ASSERT(f.SetupBindings.empty());
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe().GetStatus(), NKikimrScheme::StatusPathDoesNotExist);
+    }
+
     Y_UNIT_TEST(DescribeTimeoutFailsBeforeStagingOrIam) {
         TOrchestratorFixture f;
         ui32 dropped = 0;
@@ -1883,7 +1989,10 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
             savedUndispatched = undispatchedId;
             savedNew = newId;
             oldDatabase = oldIncarnation;
-            replacementSchema = f.Describe("database/active");
+            replacementSchema = f.Describe("database/active", {}, true, "/Root/database");
+            UNIT_ASSERT_VALUES_EQUAL(replacementSchema.GetStatus(), NKikimrScheme::StatusSuccess);
+            UNIT_ASSERT_VALUES_EQUAL(replacementSchema.GetPathDescription().GetSelf().GetPathId(),
+                newRecord.GetSecret().GetPathLocalId());
             for (const auto& id : {savedActive, savedAccepted, savedUnknown, savedUndispatched, savedNew}) {
                 before[id] = f.Delegation(id).GetDelegation();
             }

@@ -169,8 +169,8 @@ public:
         LOG_D("TS3FileWriteActor", "Bootstrap by " << ParentId << " for Key: [" << Key << "], Url: [" << Url << "], request id: [" << RequestId << "]");
         try {
             Become(&TS3FileWriteActor::StateFuncWrapper<&TS3FileWriteActor::MultipartInitialStateFunc>);
-            AwaitCredentials(ActorSystem, SelfId(), Credentials.GetAuthInfoAsync(),
-                [this](const auto& ready) { BeginPartsUpload(ready.GetValue()); });
+            const auto ready = co_await AwaitCredentials(Credentials.GetAuthInfoAsync());
+            BeginPartsUpload(ready.GetValue());
         } catch (...) {
             FailOnException();
         }
@@ -402,16 +402,22 @@ private:
             InFlight += size;
             SentSize += size;
             SentCount++;
-            AwaitCredentials(ActorSystem, SelfId(), Credentials.GetAuthInfoAsync(),
-                [this, part = std::move(part), size, index](const auto& ready) mutable {
-                    const auto& authInfo = ready.GetValue();
-                    Gateway->Upload(Url + "?partNumber=" + std::to_string(index + 1) + "&uploadId=" + UploadId,
-                        IHTTPGateway::MakeYcHeaders(RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
-                        std::move(part),
-                        std::bind(&TS3FileWriteActor::OnPartUploadFinish, ActorSystem, SelfId(), ParentId, size, index, Url, RequestId, std::placeholders::_1),
-                        true,
-                        RetryPolicy);
-            });
+            UploadPart(std::move(part), size, index);
+        }
+    }
+
+    void UploadPart(TString part, size_t size, size_t index) {
+        try {
+            const auto ready = co_await AwaitCredentials(Credentials.GetAuthInfoAsync());
+            const auto& authInfo = ready.GetValue();
+            Gateway->Upload(Url + "?partNumber=" + std::to_string(index + 1) + "&uploadId=" + UploadId,
+                IHTTPGateway::MakeYcHeaders(RequestId, authInfo.GetToken(), {}, authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
+                std::move(part),
+                std::bind(&TS3FileWriteActor::OnPartUploadFinish, ActorSystem, SelfId(), ParentId, size, index, Url, RequestId, std::placeholders::_1),
+                true,
+                RetryPolicy);
+        } catch (...) {
+            FailOnException();
         }
     }
 
@@ -433,16 +439,18 @@ private:
         for (const auto& tag : Tags)
             xml << "<Part><PartNumber>" << ++i << "</PartNumber><ETag>" << tag << "</ETag></Part>" << Endl;
         xml << "</CompleteMultipartUpload>" << Endl;
-        AwaitCredentials(ActorSystem, SelfId(), Credentials.GetAuthInfoAsync(),
-            [this, body = TString(xml)](const auto& ready) {
-                const auto& authInfo = ready.GetValue();
-                Gateway->Upload(Url + "?uploadId=" + UploadId,
-                    IHTTPGateway::MakeYcHeaders(RequestId, authInfo.GetToken(), "application/xml", authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
-                    body,
-                    std::bind(&TS3FileWriteActor::OnMultipartUploadFinish, ActorSystem, SelfId(), ParentId, Key, Url, RequestId, SentSize, std::placeholders::_1),
-                    false,
-                    RetryPolicy);
-        });
+        try {
+            const auto ready = co_await AwaitCredentials(Credentials.GetAuthInfoAsync());
+            const auto& authInfo = ready.GetValue();
+            Gateway->Upload(Url + "?uploadId=" + UploadId,
+                IHTTPGateway::MakeYcHeaders(RequestId, authInfo.GetToken(), "application/xml", authInfo.GetAwsUserPwd(), authInfo.GetAwsSigV4()),
+                TString(xml),
+                std::bind(&TS3FileWriteActor::OnMultipartUploadFinish, ActorSystem, SelfId(), ParentId, Key, Url, RequestId, SentSize, std::placeholders::_1),
+                false,
+                RetryPolicy);
+        } catch (...) {
+            FailOnException();
+        }
     }
 
     void SafeAbortMultipartUpload() {
