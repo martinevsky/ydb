@@ -175,10 +175,8 @@ public:
             return result;
         }
         if (createSecretProto.HasIamDelegationReference()) {
-            if (!AppData()->FeatureFlags.GetEnableIamDelegationSecrets()) {
-                result->SetError(NKikimrScheme::StatusPreconditionFailed, "IAM delegation secrets are disabled");
-                return result;
-            }
+            // Grant admission belongs to the delegation tablet. Complete an
+            // admitted immutable schema reference even if new admission is off.
             const auto& reference = createSecretProto.GetIamDelegationReference();
             if (createSecretProto.HasValue() || !reference.GetTabletId()
                 || reference.GetDatabaseIncarnation().empty() || reference.GetCreateOperationId().empty())

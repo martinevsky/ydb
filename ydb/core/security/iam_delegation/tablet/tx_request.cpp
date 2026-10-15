@@ -1,5 +1,6 @@
 #include "tablet.h"
 
+#include <ydb/core/base/appdata.h>
 #include <ydb/core/base/path.h>
 #include <ydb/library/actors/core/interconnect.h>
 
@@ -286,6 +287,12 @@ struct TIamDelegationTablet::TTxRequest final
                 }
             }
             return Reply(record, record.HasSecret() ? &secret : nullptr);
+        }
+
+        // Stage is the durable admission boundary. Disabling new grants must
+        // not prevent exact replay or completion of a previously admitted intent.
+        if (!AppData()->FeatureFlags.GetEnableIamDelegationSecrets()) {
+            return Error(PRECONDITION_FAILED, "IAM delegation secrets are disabled");
         }
 
         TDatabaseRecord database;

@@ -3671,9 +3671,12 @@ public:
             }
             if (settings.Source == NYql::TSecretSettings::ESource::IamDelegation) {
                 if (!SessionCtx_->Config().FeatureFlags.GetEnableIamDelegationSecrets()) {
-                    return MakeErrorFuture<IKikimrGateway::TGenericResult>(
-                        std::make_exception_ptr(yexception() << "IAM delegation secrets are disabled. Please contact your system administrator to enable it")
-                    );
+                    TGenericResult result;
+                    const auto status = NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::PRECONDITION_FAILED);
+                    result.SetStatus(status);
+                    result.AddIssue(NYql::TIssue("IAM delegation secrets are disabled. Please contact your system administrator to enable it")
+                        .SetCode(status, NYql::TSeverityIds::S_ERROR));
+                    return MakeFuture(result);
                 }
                 if (!SessionCtx_->Query().PrepareOnly) {
                     // the delegation is orchestrated by the scheme executer of the query service

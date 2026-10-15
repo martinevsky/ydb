@@ -590,7 +590,7 @@ protected:
         const bool needsSetup = !secret.GetCurrentOperationId()
             || account != previous.GetServiceAccountId() || cloud != previous.GetCloudId();
         P::TDelegation pending;
-        if (secret.GetPendingOperationId()) {
+        if (needsSetup && secret.GetPendingOperationId()) {
             pending = (co_await ReadOperation(secret.GetPendingOperationId())).GetDelegation();
             // Expiry permits detaching, never revoking an unknown setup.
             if ((pending.GetSetupState() == P::SETUP_STARTED || pending.GetSetupState() == P::SETUP_UNKNOWN)
@@ -605,14 +605,17 @@ protected:
             binding = NewBinding(account, cloud);
         }
         // Recheck ACL and immutable schema identity before changing lifecycle.
-        // A no-op needs no IAM configuration and cancels a superseded pending
-        // replacement so it cannot silently become current later.
+        // A no-op needs no IAM configuration and preserves independently
+        // admitted pending work, including unresolved setup.
         secretOp.ClearIamDelegation();
         *secretOp.MutableIamDelegationReference() = existing.Description.GetIamDelegation();
         FenceSchema(ModifyScheme(), existing);
         const auto authorized = co_await RunStatementSchemeOp();
         if (!authorized.Success()) {
             co_return authorized;
+        }
+        if (!needsSetup) {
+            co_return MakeSuccess();
         }
         if (secret.GetPendingOperationId()) {
             P::TRequest retire;
@@ -622,9 +625,6 @@ protected:
             command->SetExpectedRevision(pending.GetRevision());
             command->SetExpectedSecretRevision(secret.GetRevision());
             secret = (co_await Tablet(std::move(retire))).GetSecret();
-        }
-        if (!needsSetup) {
-            co_return MakeSuccess();
         }
         P::TRequest stage;
         auto* command = stage.MutableStage();

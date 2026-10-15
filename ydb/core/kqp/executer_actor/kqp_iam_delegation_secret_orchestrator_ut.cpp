@@ -522,35 +522,37 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
     }
 
     Y_UNIT_TEST(AlterRechecksRevokedAclBeforeLifecycleMutation) {
-        TOrchestratorFixture f;
-        const auto createId = f.Create();
-        const auto previous = f.Delegation(createId).GetSecret().SerializeAsString();
-        const auto editor = MakeIntrusiveConst<NACLib::TUserToken>(
-            "editor@" BUILTIN_ACL_DOMAIN, TVector<NACLib::TSID>{});
-        f.SetAccess("secret", editor->GetUserSID(), NACLib::AlterSchema | NACLib::DescribeSchema);
-        f.Bob = editor;
-        TAutoPtr<IEventHandle> held;
-        f.Intercept = [&](auto& event) {
-            if (event->GetTypeRewrite() == TEvTxUserProxy::TEvProposeTransaction::EventType
-                && event->template Get<TEvTxUserProxy::TEvProposeTransaction>()->Record
-                    .GetTransaction().GetModifyScheme().GetOperationType() == NKikimrSchemeOp::ESchemeOpAlterSecret) {
-                UNIT_ASSERT(!held);
-                held.Reset(event.Release());
-                return EAction::DROP;
-            }
-            return EAction::PROCESS;
-        };
-        const auto altering = f.Start(f.Operation(true, "account-2"), true);
-        f.Until([&] { return bool(held); });
-        UNIT_ASSERT_VALUES_UNEQUAL(held->Get<TEvTxUserProxy::TEvProposeTransaction>()->Record.GetUserToken(), "");
-        f.SetAccess("secret", editor->GetUserSID(), 0, NACLib::AlterSchema);
-        f.Intercept = {};
-        f.Runtime.Send(held.Release());
-        const auto result = f.Finish(altering);
-        UNIT_ASSERT_C(result.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::UNAUTHORIZED), result.Issues().ToString());
-        UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
-        UNIT_ASSERT(f.RevokeBindings.empty());
-        UNIT_ASSERT_VALUES_EQUAL(f.Delegation(createId).GetSecret().SerializeAsString(), previous);
+        for (const TString account : {"account-1", "account-2"}) {
+            TOrchestratorFixture f;
+            const auto createId = f.Create();
+            const auto previous = f.Delegation(createId).GetSecret().SerializeAsString();
+            const auto editor = MakeIntrusiveConst<NACLib::TUserToken>(
+                "editor@" BUILTIN_ACL_DOMAIN, TVector<NACLib::TSID>{});
+            f.SetAccess("secret", editor->GetUserSID(), NACLib::AlterSchema | NACLib::DescribeSchema);
+            f.Bob = editor;
+            TAutoPtr<IEventHandle> held;
+            f.Intercept = [&](auto& event) {
+                if (event->GetTypeRewrite() == TEvTxUserProxy::TEvProposeTransaction::EventType
+                    && event->template Get<TEvTxUserProxy::TEvProposeTransaction>()->Record
+                        .GetTransaction().GetModifyScheme().GetOperationType() == NKikimrSchemeOp::ESchemeOpAlterSecret) {
+                    UNIT_ASSERT(!held);
+                    held.Reset(event.Release());
+                    return EAction::DROP;
+                }
+                return EAction::PROCESS;
+            };
+            const auto altering = f.Start(f.Operation(true, account), true);
+            f.Until([&] { return bool(held); });
+            UNIT_ASSERT_VALUES_UNEQUAL(held->Get<TEvTxUserProxy::TEvProposeTransaction>()->Record.GetUserToken(), "");
+            f.SetAccess("secret", editor->GetUserSID(), 0, NACLib::AlterSchema);
+            f.Intercept = {};
+            f.Runtime.Send(held.Release());
+            const auto result = f.Finish(altering);
+            UNIT_ASSERT_C(result.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::UNAUTHORIZED), result.Issues().ToString());
+            UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
+            UNIT_ASSERT(f.RevokeBindings.empty());
+            UNIT_ASSERT_VALUES_EQUAL(f.Delegation(createId).GetSecret().SerializeAsString(), previous);
+        }
     }
 
     Y_UNIT_TEST(AlterCannotTouchRecreatedSecretDuringResolution) {
@@ -792,6 +794,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
         const auto creating = f.Start(f.Operation());
         f.Until([&] { return bool(original); });
         const auto txId = original->Get<NSchemeShard::TEvSchemeShard::TEvModifySchemeTransaction>()->Record.GetTxId();
+        f.Runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(false);
         f.Intercept = {};
         f.AutoReply = true;
         f.StartWorker();
@@ -1103,36 +1106,38 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
     }
 
     Y_UNIT_TEST(AlterCannotTouchRecreatedSecretAfterAuthorization) {
-        TOrchestratorFixture f;
-        const auto id = f.Create();
-        TAutoPtr<IEventHandle> held;
-        f.Intercept = [&](auto& event) {
-            if (event->GetTypeRewrite() == TEvTxUserProxy::TEvProposeTransaction::EventType
-                && event->template Get<TEvTxUserProxy::TEvProposeTransaction>()->Record
-                    .GetTransaction().GetModifyScheme().GetOperationType() == NKikimrSchemeOp::ESchemeOpAlterSecret) {
-                UNIT_ASSERT(!held);
-                held.Reset(event.Release());
-                return EAction::DROP;
-            }
-            return EAction::PROCESS;
-        };
-        const auto altering = f.Start(f.Operation(true, "account-2"), true);
-        f.Until([&] { return bool(held); });
-        f.Drop();
-        UNIT_ASSERT(f.Scheme([](auto& scheme) {
-            scheme.SetWorkingDir("/Root");
-            scheme.SetOperationType(NKikimrSchemeOp::ESchemeOpCreateSecret);
-            scheme.MutableCreateSecret()->SetName("secret");
-            scheme.MutableCreateSecret()->SetValue("recreated-value");
-        }).Success());
-        f.Intercept = {};
-        f.Runtime.Send(held.Release());
-        UNIT_ASSERT(!f.Finish(altering).Success());
-        UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(f.Delegation(id).GetSecret().GetPendingOperationId(), "");
-        const auto schema = f.Describe();
-        UNIT_ASSERT(!schema.GetPathDescription().GetSecretDescription().HasIamDelegation());
-        UNIT_ASSERT_VALUES_EQUAL(schema.GetPathDescription().GetSecretDescription().GetValue(), "recreated-value");
+        for (const TString account : {"account-1", "account-2"}) {
+            TOrchestratorFixture f;
+            const auto id = f.Create();
+            TAutoPtr<IEventHandle> held;
+            f.Intercept = [&](auto& event) {
+                if (event->GetTypeRewrite() == TEvTxUserProxy::TEvProposeTransaction::EventType
+                    && event->template Get<TEvTxUserProxy::TEvProposeTransaction>()->Record
+                        .GetTransaction().GetModifyScheme().GetOperationType() == NKikimrSchemeOp::ESchemeOpAlterSecret) {
+                    UNIT_ASSERT(!held);
+                    held.Reset(event.Release());
+                    return EAction::DROP;
+                }
+                return EAction::PROCESS;
+            };
+            const auto altering = f.Start(f.Operation(true, account), true);
+            f.Until([&] { return bool(held); });
+            f.Drop();
+            UNIT_ASSERT(f.Scheme([](auto& scheme) {
+                scheme.SetWorkingDir("/Root");
+                scheme.SetOperationType(NKikimrSchemeOp::ESchemeOpCreateSecret);
+                scheme.MutableCreateSecret()->SetName("secret");
+                scheme.MutableCreateSecret()->SetValue("recreated-value");
+            }).Success());
+            f.Intercept = {};
+            f.Runtime.Send(held.Release());
+            UNIT_ASSERT(!f.Finish(altering).Success());
+            UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(f.Delegation(id).GetSecret().GetPendingOperationId(), "");
+            const auto schema = f.Describe();
+            UNIT_ASSERT(!schema.GetPathDescription().GetSecretDescription().HasIamDelegation());
+            UNIT_ASSERT_VALUES_EQUAL(schema.GetPathDescription().GetSecretDescription().GetValue(), "recreated-value");
+        }
     }
 
     Y_UNIT_TEST(NoopAlterPreservesPendingNotStarted) {

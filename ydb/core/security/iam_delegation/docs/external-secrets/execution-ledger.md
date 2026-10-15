@@ -23,3 +23,9 @@ Task 2 RED: `59d2b64a3ba`, tablet target filtered `*DisabledAdmissionRejectsNewS
 Ruling: Prepare Task 3 coordinator regressions together with Task 2 before the coordinator RED build because they share the same expensive target. Production changes still follow observed behavior failures; each task retains separate assertions and evidence.
 
 Task 3: regressions prepared for NOT_STARTED, SUCCEEDED, young UNKNOWN and expired UNKNOWN after tablet restart, checking exact lifecycle records and no extra IAM dispatch.
+
+Tasks 2–3 RED: `facf8f483cf`, coordinator target filters `*Admission*`, `*NoopAlterPreserves*`, `*WorkerRecoversLostStageReply*`, actual exit 10 (6 FAIL, 1 CRASHED). The four no-op cases demonstrate rejection/mutation; the admitted CREATE is rejected by the SchemeShard flag gate; worker recovery reaches the fixture timeout/abort for the same gate. Dereferenced results and full output: `spec-implementation-2026-10-15/task2-3-kqp-red*`.
+
+Task 2: Ruling: The new SQL-disabled regression also exposed an INTERNAL_ERROR from the gateway’s exceptional feature-flag future. Return a typed PRECONDITION_FAILED result with a matching issue code, following the neighboring gateway error convention. This is a narrow additional gateway fix; fresh admission stays disabled.
+
+Tasks 2–3 implementation: gate only genuinely new Stage, preserve exact replay, remove the redundant SchemeShard gate on immutable references, preserve pending work on authenticated no-op ALTER. Extend existing ACL-revocation and path-recreation regressions to both binding-changing and no-op ALTER. SchemeShard retains only ordinary schema checks; no lifecycle lookup/state is added.
