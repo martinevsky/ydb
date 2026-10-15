@@ -15,7 +15,6 @@
 #include <ydb/library/actors/async/wait_for_event.h>
 #include <util/generic/scope.h>
 #include <util/generic/hash_set.h>
-#include <functional>
 #include <limits>
 
 #define YDB_LOG_THIS_FILE_COMPONENT NKikimrServices::SCHEMA_SECRET_CACHE
@@ -230,30 +229,33 @@ struct TResolutionFailure {
 }
 } // namespace
 
-void TDescribeSchemaSecretsService::HandleIncomingRequest(TEvResolveSecret::TPtr& ev) {
+void TDescribeSchemaSecretsService::HandleIncomingRequest(TEvResolveSecret::TPtr ev) {
     auto request = std::move(ev);
     auto promise = request->Get()->Promise;
-    TDescription result(Ydb::StatusIds::UNAVAILABLE, {NYql::TIssue("Secret resolver stopped before completion")});
-    Y_DEFER { promise.TrySetValue(result); };
+    std::optional<TDescription> result;
+    Y_DEFER {
+        promise.TrySetValue(result ? *result : TDescription(Ydb::StatusIds::UNAVAILABLE,
+            {NYql::TIssue("Secret resolver stopped before completion")}));
+    };
     auto cancellation = co_await TAsyncCancellationScope::WithCurrentHandler();
     const TRequestKey key{request->Sender, request->Cookie};
     const bool callerOwned = request->Get()->Ownership == EResolveOwnership::Caller;
     if (callerOwned && (!request->Sender || !RunningRequests.emplace(key, &cancellation).second)) {
-        result = TDescription(Ydb::StatusIds::BAD_REQUEST, {NYql::TIssue("Duplicate secret request identity")});
+        result.emplace(Ydb::StatusIds::BAD_REQUEST, NYql::TIssues{NYql::TIssue("Duplicate secret request identity")});
         co_return;
     }
     Y_DEFER { if (callerOwned) RunningRequests.erase(key); };
     try {
-        result = co_await Resolve(*request->Get());
+        result.emplace(co_await Resolve(*request->Get()));
     } catch (const TResolutionFailure& error) {
-        result = error.Description;
+        result.emplace(error.Description);
     } catch (const std::exception&) {
-        result = TDescription(Ydb::StatusIds::UNAVAILABLE, {NYql::TIssue("Secret resolution failed")});
+        result.emplace(Ydb::StatusIds::UNAVAILABLE, NYql::TIssues{NYql::TIssue("Secret resolution failed")});
     }
 }
 
 void TDescribeSchemaSecretsService::HandleCancellation(TEvCancelResolveSecret::TPtr& ev) {
-    const auto it = RunningRequests.find({ev->Sender, ev->Cookie});
+    const auto it = RunningRequests.find(TRequestKey{ev->Sender, ev->Cookie});
     if (it != RunningRequests.end()) it->second->Cancel();
 }
 
@@ -432,10 +434,14 @@ async<TDescribeSchemaSecretsService::TDescription> TDescribeSchemaSecretsService
         THashSet<TString> names;
         for (const auto& entry : navigation->ResultSet) {
             const auto path = CanonizePath(entry.Path);
-            if (names.insert(path).second) group.Add(&TThis::ResolveOne, this, std::cref(request), entry);
+            if (names.insert(path).second) {
+                group.Add([this, &request, entry]() mutable {
+                    return ResolveOne(request, std::move(entry));
+                });
+            }
         }
         THashMap<TString, TVersionedSecret> resolved;
-        while (group) {
+        for (size_t remaining = names.size(); remaining; --remaining) {
             auto secret = co_await group.Next();
             resolved.emplace(secret.Name, std::move(secret));
         }
@@ -510,9 +516,14 @@ async<TDescription> ResolveSecretOwned(TVector<TString> names, TIntrusiveConstPt
     const auto cookie = AllocateWaitCookie();
     auto promise = NThreading::NewPromise<TDescription>();
     promise.GetFuture().Subscribe([system, self, cookie](const NThreading::TFuture<TDescription>& ready) {
-        TDescription response(Ydb::StatusIds::UNAVAILABLE, {NYql::TIssue("Secret resolution failed")});
-        try { response = ready.GetValue(); } catch (const std::exception&) {}
-        system->Send(new IEventHandle(self, {}, new NKqp::TEvDescribeSecretsResponse(std::move(response)), 0, cookie));
+        THolder<NKqp::TEvDescribeSecretsResponse> response;
+        try {
+            response = MakeHolder<NKqp::TEvDescribeSecretsResponse>(ready.GetValue());
+        } catch (const std::exception&) {
+            response = MakeHolder<NKqp::TEvDescribeSecretsResponse>(TDescription(Ydb::StatusIds::UNAVAILABLE,
+                {NYql::TIssue("Secret resolution failed")}));
+        }
+        system->Send(new IEventHandle(self, {}, response.Release(), 0, cookie));
     });
     TActorId legacy;
     EResolveState state = EResolveState::Pending;
@@ -564,13 +575,16 @@ public:
     void Bootstrap() {
         Become(&TThis::StateWork);
         auto promise = std::move(Promise);
-        TDescription result(Ydb::StatusIds::UNAVAILABLE, {NYql::TIssue("Secret acquisition was cancelled")});
-        Y_DEFER { promise.TrySetValue(result); };
+        std::optional<TDescription> result;
+        Y_DEFER {
+            promise.TrySetValue(result ? *result : TDescription(Ydb::StatusIds::UNAVAILABLE,
+                {NYql::TIssue("Secret acquisition was cancelled")}));
+        };
         try {
-            result = co_await ResolveSecretOwned(std::move(Names), std::move(UserToken),
-                std::move(Database), std::move(Settings), Source);
+            result.emplace(co_await ResolveSecretOwned(std::move(Names), std::move(UserToken),
+                std::move(Database), std::move(Settings), Source));
         } catch (const std::exception&) {
-            result = TDescription(Ydb::StatusIds::UNAVAILABLE, {NYql::TIssue("Secret resolution failed")});
+            result.emplace(Ydb::StatusIds::UNAVAILABLE, NYql::TIssues{NYql::TIssue("Secret resolution failed")});
         }
         PassAway();
     }

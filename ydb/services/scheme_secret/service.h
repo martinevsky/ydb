@@ -99,7 +99,7 @@ private:
         cFunc(NActors::TEvents::TEvPoison::EventType, PassAway);
     )
 
-    void HandleIncomingRequest(TEvResolveSecret::TPtr& ev);
+    void HandleIncomingRequest(TEvResolveSecret::TPtr ev);
     void HandleCancellation(TEvCancelResolveSecret::TPtr& ev);
     void HandleNotifyDelete(TSchemeBoardEvents::TEvNotifyDelete::TPtr& ev);
     void HandleNotifyUpdate(TSchemeBoardEvents::TEvNotifyUpdate::TPtr& ev);

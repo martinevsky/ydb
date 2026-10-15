@@ -91,13 +91,15 @@ private:
                 const auto it = expected.find(SecretNames[i]);
                 std::optional<TReference> pin;
                 if (it != expected.end()) pin = it->second;
-                group.Add(&TThis::ReadSecret, this, SecretNames[i], std::move(pin));
+                group.Add([this, path = SecretNames[i], pin = std::move(pin)]() mutable {
+                    return ReadSecret(std::move(path), std::move(pin));
+                });
                 indices.push_back(i);
             }
             std::vector<TString> values(SecretNames.size());
             std::vector<TReference> references(SecretNames.size());
             std::vector<TInstant> usableUntil(SecretNames.size(), TInstant::Max());
-            while (group) {
+            for (size_t remaining = indices.size(); remaining; --remaining) {
                 auto completed = co_await group.NextResult();
                 const auto index = indices.at(completed.GetIndex());
                 auto description = completed.ExtractValue();
