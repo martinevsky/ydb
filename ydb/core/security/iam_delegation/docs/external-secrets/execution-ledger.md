@@ -17,3 +17,9 @@ Pre-flight interfaces:
 Task 1: specification reconciliation complete. Seven feature specs (64 requirements, 110 scenarios), five strict native OpenSpec projects and twelve standalone test specs passed, with 225 links and 261 contract-name references checked. Artifacts: `/home/pretender/ydbwork/external-secrets-recovery/reviews/2026-10-15-spec-follow-up-9v72e6iy`. The reviewed exact diff hash was rechecked before this checkpoint; no runtime files changed and no product tests ran.
 
 Task 2: in progress — add executable admission/replay regressions before changing production code.
+
+Task 2 RED: `59d2b64a3ba`, tablet target filtered `*DisabledAdmissionRejectsNewStageButAllowsExactReplay*`, actual exit 10. New Stage incorrectly returned SUCCESS instead of PRECONDITION_FAILED after disablement. Build succeeded; behavior assertion failed. Full log and dereferenced results: `spec-implementation-2026-10-15/task2-tablet-red*` in the external recovery workspace.
+
+Ruling: Prepare Task 3 coordinator regressions together with Task 2 before the coordinator RED build because they share the same expensive target. Production changes still follow observed behavior failures; each task retains separate assertions and evidence.
+
+Task 3: regressions prepared for NOT_STARTED, SUCCEEDED, young UNKNOWN and expired UNKNOWN after tablet restart, checking exact lifecycle records and no extra IAM dispatch.

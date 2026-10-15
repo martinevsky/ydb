@@ -334,6 +334,49 @@ private:
     TTestActorRuntime::TEventObserverHolder ReadyObserver;
 };
 
+void CheckNoopAlterPreservesPending(P::ESetupState outcome, TDuration age = TDuration::Zero()) {
+    TOrchestratorFixture f;
+    const auto currentId = f.Create();
+    const auto current = f.Delegation(currentId);
+    P::TRequest stage;
+    auto* intent = stage.MutableStage();
+    intent->SetMode(P::ALTER);
+    intent->SetOperationId("pending-replacement");
+    intent->SetDatabaseIncarnation(current.GetDelegation().GetDatabaseIncarnation());
+    intent->SetSecretPath(current.GetDelegation().GetSecretPath());
+    intent->SetCreateTxId(current.GetDelegation().GetCreateTxId());
+    *intent->MutableSecret() = current.GetSecret().GetIdentity();
+    intent->SetExpectedSecretRevision(current.GetSecret().GetRevision());
+    *intent->MutableBinding() = current.GetDelegation().GetBinding();
+    intent->MutableBinding()->SetServiceAccountId("account-2");
+    intent->MutableBinding()->SetReferrerId("pending-referrer");
+    auto pending = f.Tablet(std::move(stage)).GetDelegation();
+    if (outcome != P::SETUP_NOT_STARTED) {
+        P::TRequest start;
+        start.MutableStartSetup()->SetOperationId(pending.GetOperationId());
+        start.MutableStartSetup()->SetExpectedRevision(pending.GetRevision());
+        pending = f.Tablet(std::move(start)).GetDelegation();
+        P::TRequest result;
+        result.MutableSetSetupResult()->SetOperationId(pending.GetOperationId());
+        result.MutableSetSetupResult()->SetExpectedRevision(pending.GetRevision());
+        result.MutableSetSetupResult()->SetOutcome(outcome);
+        pending = f.Tablet(std::move(result)).GetDelegation();
+    }
+    f.Runtime.AdvanceCurrentTime(age);
+    f.RebootTablet();
+    const auto before = f.Delegation(pending.GetOperationId());
+    const auto activeBefore = f.Delegation(currentId).GetDelegation();
+    const auto result = f.Finish(f.Start(f.Operation(true), true));
+    UNIT_ASSERT_C(result.Success(), result.Issues().ToString());
+    const auto after = f.Delegation(pending.GetOperationId());
+    UNIT_ASSERT_VALUES_EQUAL(after.GetDelegation().SerializeAsString(), before.GetDelegation().SerializeAsString());
+    UNIT_ASSERT_VALUES_EQUAL(after.GetSecret().SerializeAsString(), before.GetSecret().SerializeAsString());
+    UNIT_ASSERT_VALUES_EQUAL(f.Delegation(currentId).GetDelegation().SerializeAsString(), activeBefore.SerializeAsString());
+    UNIT_ASSERT_VALUES_EQUAL(f.Read()->Token, "token-for-account-1");
+    UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
+    UNIT_ASSERT(f.RevokeBindings.empty());
+}
+
 } // namespace
 
 Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
@@ -1090,6 +1133,22 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
         const auto schema = f.Describe();
         UNIT_ASSERT(!schema.GetPathDescription().GetSecretDescription().HasIamDelegation());
         UNIT_ASSERT_VALUES_EQUAL(schema.GetPathDescription().GetSecretDescription().GetValue(), "recreated-value");
+    }
+
+    Y_UNIT_TEST(NoopAlterPreservesPendingNotStarted) {
+        CheckNoopAlterPreservesPending(P::SETUP_NOT_STARTED);
+    }
+
+    Y_UNIT_TEST(NoopAlterPreservesPendingSucceeded) {
+        CheckNoopAlterPreservesPending(P::SETUP_SUCCEEDED);
+    }
+
+    Y_UNIT_TEST(NoopAlterPreservesYoungUnknownAfterRestart) {
+        CheckNoopAlterPreservesPending(P::SETUP_UNKNOWN, TDuration::Minutes(1));
+    }
+
+    Y_UNIT_TEST(NoopAlterPreservesExpiredUnknownAfterRestart) {
+        CheckNoopAlterPreservesPending(P::SETUP_UNKNOWN, TDuration::Minutes(10));
     }
 
     Y_UNIT_TEST(NoopsNeedNoIamConfigurationOrLifecycleMutation) {
