@@ -366,7 +366,8 @@ Y_UNIT_TEST_SUITE(IamDelegationActor) {
         f.Update(TTokenStatus::ECode::ERROR, "first-token", "refresh failed");
         f.Setup();
         auto error = f.Result(Ydb::StatusIds::UNAVAILABLE);
-        UNIT_ASSERT_STRING_CONTAINS(error.Result.Issues.ToOneLineString(), "refresh failed");
+        UNIT_ASSERT_STRING_CONTAINS(error.Result.Issues.ToOneLineString(), "system service account token is unavailable");
+        UNIT_ASSERT(!error.Result.Issues.ToOneLineString().Contains("refresh failed"));
         UNIT_ASSERT(f.Setups.empty());
         f.Update(TTokenStatus::ECode::NOT_READY, "first-token");
         f.Setup(44);
@@ -420,14 +421,15 @@ Y_UNIT_TEST_SUITE(IamDelegationActor) {
         UNIT_ASSERT(result);
         UNIT_ASSERT_VALUES_EQUAL(result->Cookie, 71u);
         UNIT_ASSERT_VALUES_EQUAL(result->Get()->Result.Status, Ydb::StatusIds::UNAVAILABLE);
-        UNIT_ASSERT_STRING_CONTAINS(result->Get()->Result.Issues.ToOneLineString(), "delegation-system-account was not found");
+        UNIT_ASSERT_STRING_CONTAINS(result->Get()->Result.Issues.ToOneLineString(), "system service account token is unavailable");
+        UNIT_ASSERT(!result->Get()->Result.Issues.ToOneLineString().Contains("delegation-system-account"));
     }
 
     Y_UNIT_TEST(MissingTokenManagerIsBounded) {
         TFixture f(TFixture::ETokenManager::Missing);
         f.Setup();
         auto result = f.Result(Ydb::StatusIds::UNAVAILABLE);
-        UNIT_ASSERT_STRING_CONTAINS(result.Result.Issues.ToOneLineString(), "token manager is not available");
+        UNIT_ASSERT_STRING_CONTAINS(result.Result.Issues.ToOneLineString(), "system service account token is unavailable");
         UNIT_ASSERT(f.Setups.empty());
     }
 

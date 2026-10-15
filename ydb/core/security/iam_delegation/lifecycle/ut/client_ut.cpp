@@ -59,7 +59,7 @@ Y_UNIT_TEST_SUITE(IamDelegationTabletClient) {
         TActorId client;
         TAutoPtr<IEventHandle> heldReply;
         ui32 returnedResults = 0;
-        ui32 undeliveredProbes = 0;
+        ui32 childStops = 0;
         auto requests = runtime.AddObserver<TEvIamDelegationTablet::TEvRequest>([&](auto& event) {
             if (event->Sender == caller) {
                 UNIT_ASSERT(!client);
@@ -75,11 +75,9 @@ Y_UNIT_TEST_SUITE(IamDelegationTabletClient) {
                 event.Reset();
             }
         });
-        constexpr ui64 probeCookie = 7755;
-        auto undelivered = runtime.AddObserver<NActors::TEvents::TEvUndelivered>([&](auto& event) {
-            if (event->GetRecipientRewrite() == edge && event->Cookie == probeCookie) {
-                ++undeliveredProbes;
-                event.Reset();
+        auto stops = runtime.AddObserver<NActors::TEvents::TEvPoison>([&](auto& event) {
+            if (event->GetRecipientRewrite() == client) {
+                ++childStops;
             }
         });
         caller = runtime.Register(new TTabletCaller(edge));
@@ -89,14 +87,15 @@ Y_UNIT_TEST_SUITE(IamDelegationTabletClient) {
         runtime.DispatchEvents(options, TDuration::Seconds(1));
         UNIT_ASSERT(heldReply);
         UNIT_ASSERT(client);
-        runtime.Send(new IEventHandle(caller, {}, new NActors::TEvents::TEvPoison));
-        runtime.SimulateSleep(TDuration::MilliSeconds(1));
-        auto probe = MakeHolder<TEvIamDelegationTablet::TEvRequest>();
-        probe->Record = ListDatabasesRequest();
-        runtime.Send(new IEventHandle(client, edge, probe.Release(), IEventHandle::FlagTrackDelivery, probeCookie));
-        runtime.SimulateSleep(TDuration::MilliSeconds(1));
-        UNIT_ASSERT_VALUES_EQUAL_C(undeliveredProbes, 1,
+        UNIT_ASSERT(runtime.FindActor(client));
+        runtime.Send(new IEventHandle(caller, {}, new NActors::TEvents::TEvPoison), 0, true);
+        options.CustomFinalCondition = [&] { return childStops == 1; };
+        runtime.DispatchEvents(options, TDuration::Seconds(1));
+        UNIT_ASSERT_VALUES_EQUAL_C(childStops, 1,
             "The cancelled coroutine left its tablet client alive until the 30-second timeout");
+        runtime.SimulateSleep(TDuration::MilliSeconds(1));
+        UNIT_ASSERT(!runtime.FindActor(client));
+        UNIT_ASSERT(!runtime.FindActor(caller));
         runtime.Send(heldReply.Release());
         runtime.SimulateSleep(TDuration::Seconds(31));
         UNIT_ASSERT_VALUES_EQUAL(returnedResults, 0);
