@@ -15,6 +15,7 @@ SRCS(
 )
 
 PEERDIR(
+    ydb/core/security/iam_delegation/tablet
     library/cpp/getopt
     library/cpp/regex/pcre
     library/cpp/svnversion

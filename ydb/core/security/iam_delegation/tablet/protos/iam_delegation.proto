@@ -215,12 +215,29 @@ message TGetDelegationRequest {
     optional string OperationId = 1;
 }
 
+enum EPaginationMode {
+    // Existing trusted clients use a structured revision/cursor pair.
+    PAGINATION_LEGACY = 0;
+    PAGINATION_STRUCTURED = 1;
+    // Public callers forward an opaque continuation authenticated by this tablet.
+    PAGINATION_AUTHENTICATED = 2;
+}
+
+enum EPaginationCapability {
+    PAGINATION_CAPABILITY_UNSPECIFIED = 0;
+    PAGINATION_CAPABILITY_AUTHENTICATED = 1;
+}
+
 message TListInventoryRequest {
     optional string DatabaseIncarnation = 1;
     optional uint32 PageSize = 2;
     optional string AfterOperationId = 3;
-    // Required on continuation; a changed revision returns SNAPSHOT_EXPIRED.
+    // Required on structured continuation; changed revision returns SNAPSHOT_EXPIRED.
     optional uint64 InventoryRevision = 4;
+    optional string ContinuationToken = 5;
+    // Authenticated continuations are bound to this requested database path.
+    optional string DatabasePath = 6;
+    optional EPaginationMode PaginationMode = 7;
 }
 
 // Recovery discovery over the append-only database registry. This is not an
@@ -302,4 +319,7 @@ message TResponse {
     optional string NextAfterOperationId = 7;
     repeated TDatabaseRecord Databases = 8;
     optional string NextAfterIncarnation = 9;
+    optional string NextPageToken = 10;
+    // Present also on empty/final authenticated pages, for fail-closed rollout.
+    optional EPaginationCapability PaginationCapability = 11;
 }

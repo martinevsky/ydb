@@ -68,6 +68,61 @@ private:
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationColdScans) {
+    Y_UNIT_TEST(AuthenticatedPaginationRetriesColdPagesWithoutPreloadingInventory) {
+        TTestContext ctx;
+        TPageReadEvidence evidence(ctx);
+        ctx.Call(RegisterRequest(DatabaseIdentity()));
+        EnableSmallCompactions(ctx, {TSchema::Inventory::TableId});
+        constexpr ui32 count = 257;
+        TSet<TString> expected;
+        for (ui32 index = 0; index < count; ++index) {
+            const TString operation = "operation-" + ToString(index);
+            ctx.Call(StageCreateRequest(operation, WideBinding(operation),
+                "/Root/database/secret-" + ToString(index)));
+            expected.insert(operation);
+        }
+        UNIT_ASSERT_C(evidence.CompactedCollections > 0, "The test must read persisted parts, not only the memtable");
+        ctx.Reboot();
+        evidence.TransactionFetches = 0;
+
+        auto request = AuthenticatedListRequest(64);
+        TSet<TString> actual;
+        ui64 revision = 0;
+        ui32 pages = 0;
+        ui64 firstPageFetches = 0;
+        TString previous;
+        while (true) {
+            const auto response = ctx.Call(request);
+            UNIT_ASSERT(++pages <= 5);
+            if (pages == 1) {
+                firstPageFetches = evidence.TransactionFetches;
+            }
+            if (!revision) {
+                revision = response.GetDatabase().GetInventoryRevision();
+            }
+            UNIT_ASSERT_VALUES_EQUAL(response.GetDatabase().GetInventoryRevision(), revision);
+            for (const auto& record : response.GetDelegations()) {
+                UNIT_ASSERT(actual.insert(record.GetOperationId()).second);
+                UNIT_ASSERT(previous.empty() || previous < record.GetOperationId());
+                previous = record.GetOperationId();
+                AssertBinding(record, WideBinding(record.GetOperationId()));
+            }
+            if (response.GetNextPageToken().empty()) {
+                UNIT_ASSERT_VALUES_EQUAL(response.DelegationsSize(), 1);
+                break;
+            }
+            UNIT_ASSERT_VALUES_EQUAL(response.DelegationsSize(), 64);
+            UNIT_ASSERT_VALUES_EQUAL(response.GetPaginationCapability(), NProto::PAGINATION_CAPABILITY_AUTHENTICATED);
+            request = AuthenticatedListRequest(64, response.GetNextPageToken());
+        }
+        UNIT_ASSERT_VALUES_EQUAL(pages, 5);
+        UNIT_ASSERT(actual == expected);
+        UNIT_ASSERT_C(evidence.TransactionFetches > firstPageFetches,
+            "The first bounded page must not preload the entire inventory");
+        UNIT_ASSERT_C(evidence.TransactionFetches > 1, "Cold transaction page reads must actually exercise Execute retries");
+    }
+
+
     Y_UNIT_TEST(DisabledAdmissionReplaysColdCommittedIntentsWithoutMutation) {
         TTestContext ctx;
         TPageReadEvidence evidence(ctx);

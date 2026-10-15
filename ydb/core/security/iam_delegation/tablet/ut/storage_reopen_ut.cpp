@@ -22,6 +22,26 @@ NFake::TStorage DiskStorage(const TTempDir& directory, EStorageOpenMode mode) {
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationStorageReopen) {
+    Y_UNIT_TEST(InventorySigningKeySurvivesWholeRuntimeReplacement) {
+        TTempDir directory;
+        NProto::TRequest continuation;
+        NProto::TResponse expected;
+        {
+            TTestContext ctx(DiskStorage(directory, EStorageOpenMode::Format));
+            CreateActive(ctx);
+            ctx.Call(StageAlterRequest(GetSecret(ctx), "replacement", Binding("replacement-referrer")));
+            const auto first = ctx.Call(AuthenticatedListRequest());
+            UNIT_ASSERT(!first.GetNextPageToken().empty());
+            continuation = AuthenticatedListRequest(1, first.GetNextPageToken());
+            expected = ctx.Call(continuation);
+        }
+        {
+            TTestContext ctx(DiskStorage(directory, EStorageOpenMode::Reopen));
+            UNIT_ASSERT_VALUES_EQUAL(ctx.Call(continuation).SerializeAsString(), expected.SerializeAsString());
+        }
+    }
+
+
 
     Y_UNIT_TEST(RevocationFailureHistorySurvivesWholeRuntimeReplacement) {
         TTempDir directory;

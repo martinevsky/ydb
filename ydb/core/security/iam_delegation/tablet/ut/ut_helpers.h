@@ -20,10 +20,12 @@ class TTestContext {
 public:
     static constexpr ui64 TabletId = MakeTabletID(false, 1);
 
-    explicit TTestContext(NFake::TStorage storage = {}) {
+    explicit TTestContext(NFake::TStorage storage = {}, ui64 tabletId = TabletId)
+        : InstanceTabletId(tabletId)
+    {
         ReadyObserver = Runtime.AddObserver<TEvTablet::TEvReady>([this](auto& event) {
             const auto* ready = event->Get();
-            if (ready->TabletID == TabletId) {
+            if (ready->TabletID == InstanceTabletId) {
                 CurrentGeneration = ready->Generation;
                 CurrentTabletActor = ready->UserTabletActor;
             }
@@ -32,7 +34,7 @@ public:
         Runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
         const auto bootstrapper = CreateTestBootstrapper(
             Runtime,
-            CreateTestTabletInfo(TabletId, TTabletTypes::IamDelegation),
+            CreateTestTabletInfo(InstanceTabletId, TTabletTypes::IamDelegation),
             &CreateIamDelegationTablet);
         Runtime.EnableScheduleForActor(bootstrapper);
         WaitTabletReady(0, TActorId());
@@ -43,7 +45,7 @@ public:
         const auto actor = CurrentTabletActor;
         Runtime.Send(new IEventHandle(actor, TActorId(), new TEvents::TEvPoison));
         WaitTabletReady(generation, actor);
-        InvalidateTabletResolverCache(Runtime, TabletId);
+        InvalidateTabletResolverCache(Runtime, InstanceTabletId);
     }
 
     // Execute one request while a quiescent tablet is interrupted at a proven
@@ -52,7 +54,7 @@ public:
     void CrashCall(NKikimrIamDelegation::TRequest request, ECrashPoint point) {
         const auto generation = CurrentGeneration;
         const auto actor = CurrentTabletActor;
-        const auto systemActor = ResolveTablet(Runtime, TabletId, 0, true);
+        const auto systemActor = ResolveTablet(Runtime, InstanceTabletId, 0, true);
         const auto edge = Runtime.AllocateEdgeActor();
         const auto cookie = ++LastCookie;
         bool requestDelivered = false;
@@ -72,7 +74,7 @@ public:
         });
         auto commits = Runtime.AddObserver<TEvTablet::TEvCommit>([&](auto& event) {
             if (point != ECrashPoint::BeforeCommit || !requestDelivered
-                || event->Get()->TabletID != TabletId || event->Get()->Generation != generation) {
+                || event->Get()->TabletID != InstanceTabletId || event->Get()->Generation != generation) {
                 return;
             }
             // The system tablet never receives this log commit. Destroy both
@@ -85,7 +87,7 @@ public:
         });
         auto committed = Runtime.AddObserver<TEvTablet::TEvCommitResult>([&](auto& event) {
             if (point != ECrashPoint::AfterDurableCommitBeforeComplete || !requestDelivered
-                || event->Get()->TabletID != TabletId || event->Get()->Generation != generation) {
+                || event->Get()->TabletID != InstanceTabletId || event->Get()->Generation != generation) {
                 return;
             }
             UNIT_ASSERT_VALUES_EQUAL(event->Get()->Status, NKikimrProto::OK);
@@ -112,12 +114,16 @@ public:
         });
         auto event = MakeHolder<TEvIamDelegationTablet::TEvRequest>();
         event->Record.Swap(&request);
-        Runtime.SendToPipe(TabletId, edge, event.Release(), 0,
+        Runtime.SendToPipe(InstanceTabletId, edge, event.Release(), 0,
             GetPipeConfigWithRetries(), TActorId(), cookie);
         WaitTabletReady(generation, actor);
         UNIT_ASSERT(requestDelivered);
         UNIT_ASSERT_VALUES_EQUAL(injectionCount, 1);
-        InvalidateTabletResolverCache(Runtime, TabletId);
+        InvalidateTabletResolverCache(Runtime, InstanceTabletId);
+    }
+
+    ui64 GetTabletId() const {
+        return InstanceTabletId;
     }
 
     ui32 Generation() const {
@@ -150,7 +156,7 @@ public:
     NKikimrIamDelegation::TResponse Send(THolder<TEvIamDelegationTablet::TEvRequest> request) {
         const auto edge = Runtime.AllocateEdgeActor();
         const auto cookie = ++LastCookie;
-        Runtime.SendToPipe(TabletId, edge, request.Release(), 0,
+        Runtime.SendToPipe(InstanceTabletId, edge, request.Release(), 0,
             GetPipeConfigWithRetries(), TActorId(), cookie);
         auto response = Runtime.GrabEdgeEvent<TEvIamDelegationTablet::TEvResponse>(edge);
         UNIT_ASSERT_VALUES_EQUAL(response->Cookie, cookie);
@@ -167,6 +173,7 @@ private:
         UNIT_ASSERT_C(CurrentTabletActor != previousActor, "Reboot reused the old tablet actor");
     }
 
+    const ui64 InstanceTabletId;
     TTestBasicRuntime Runtime;
     TTestActorRuntime::TEventObserverHolder ReadyObserver;
     ui32 CurrentGeneration = 0;

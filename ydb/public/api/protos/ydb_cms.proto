@@ -327,6 +327,15 @@ message DatabaseIamDelegation {
     uint64 revision = 13;
     string setup_operation_id = 14;
     string revoke_operation_id = 15;
+    // Unix microseconds; absent means the historical timestamp was not recorded.
+    optional uint64 staged_at_us = 16;
+    // First entry into actionable cleanup, preserved across retries and takeover.
+    // Absent means unknown age, not freshly queued. Uncertain setup remains unsafe
+    // to revoke until an authoritative outcome, even with a saved operation ID.
+    optional uint64 cleanup_queued_at_us = 17;
+    // Consecutive retryable failures; accepted/pending progress resets this count.
+    // Absent means no recorded history. Age/failure alert thresholds are external.
+    optional uint32 revoke_consecutive_failures = 18;
 }
 
 message ListDatabaseIamDelegationsResult {

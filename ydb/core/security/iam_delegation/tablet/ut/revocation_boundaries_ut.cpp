@@ -62,7 +62,7 @@ void SeedStoredRevocationHistory(TTestContext& ctx, const NProto::TDelegation& s
         }
     });
     NKikimrMiniKQL::TResult result;
-    const auto status = LocalQuery(ctx.GetRuntime(), TTestContext::TabletId, program, result);
+    const auto status = LocalQuery(ctx.GetRuntime(), ctx.GetTabletId(), program, result);
     UNIT_ASSERT_VALUES_EQUAL_C(status, NKikimrProto::OK, diagnostic);
     ctx.Reboot();
     UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, stored.GetOperationId()).SerializeAsString(), stored.SerializeAsString());

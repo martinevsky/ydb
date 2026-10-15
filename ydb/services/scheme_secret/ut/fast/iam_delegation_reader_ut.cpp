@@ -345,7 +345,7 @@ Y_UNIT_TEST_SUITE(IamDelegationSecretReader) {
             auto& entry = request->ResultSet.front();
             UNIT_ASSERT(entry.SyncVersion);
             UNIT_ASSERT_VALUES_EQUAL(entry.Access, ui32(NACLib::SelectRow));
-            UNIT_ASSERT_VALUES_EQUAL(JoinPath(entry.Path), "/Root/database/other");
+            UNIT_ASSERT_VALUES_EQUAL(CanonizePath(entry.Path), "/Root/database/other");
             entry.Status = NSchemeCache::TSchemeCacheNavigate::EStatus::AccessDenied;
             ++deniedChecks;
             runtime.Send(new IEventHandle(event->Sender, event->Recipient,

@@ -6,6 +6,22 @@ namespace NKikimr::NIamDelegation::NTests {
 
 namespace NProto = NKikimrIamDelegation;
 
+inline NProto::TRequest AuthenticatedListRequest(ui32 pageSize = 1, const TString& token = {}) {
+    NProto::TRequest request;
+    auto* list = request.MutableListInventory();
+    list->SetPageSize(pageSize);
+    list->SetDatabasePath("/Root/database");
+    list->SetPaginationMode(NProto::PAGINATION_AUTHENTICATED);
+    if (token) {
+        list->SetContinuationToken(token);
+    } else {
+        list->SetDatabaseIncarnation("database-incarnation-1");
+    }
+    return request;
+}
+
+
+
 inline NProto::TDatabaseIdentity DatabaseIdentity(
     const TString& incarnation = "database-incarnation-1",
     const TString& path = "/Root/database",

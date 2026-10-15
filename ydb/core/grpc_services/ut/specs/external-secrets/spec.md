@@ -10,9 +10,9 @@ Authoritative contracts: [schema](../../../../kqp/executer_actor/openspec/change
 
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/core/grpc_services/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
 
-Source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Status: **implemented and verified**, 20/20 GOOD in the feature-filtered cases (`-F 'DescribeSecretIamDelegation::*' -F 'ListDatabaseIamDelegations::*'`), with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../security/iam_delegation/docs/external-secrets/verification.md). Historical results remain distinguished from this final run.
+Source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Status: **implemented and verified**, 20/20 GOOD in the feature-filtered cases (`-F 'DescribeSecretIamDelegation::*' -F 'ListDatabaseIamDelegations::*'`), with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../security/iam_delegation/docs/external-secrets/verification.md). These results describe that historical revision; new cases below require fresh execution.
 
-Fixture boundary: Direct RPC actor fixtures intercept schema and typed tablet replies, authentication and continuation tokens. They check whether a tablet request was made. These tests cover handler protocol decisions; tablet durability belongs to the tablet suite.
+Fixture boundary: Direct RPC actor fixtures intercept schema and typed tablet replies and observe handler protocol decisions. The two real-inventory cases bridge actual RPC commands and responses through a separate real tablet runtime; they do not reimplement pagination or health projection. Physical storage reopening is covered by the owning tablet suite.
 
 ## Requirements
 
@@ -89,7 +89,7 @@ Executable mapping (status: implemented; execution per verification record):
 
 - **GIVEN** an inventory revision/cursor token.
 - **WHEN** page parameters change, snapshot expires or registry scan is required.
-- **THEN** token binding is enforced, expiry requires restart, malformed input never reads the tablet, and registry work is bounded.
+- **THEN** expiry requires restart, invalid public parameters never read the tablet, and registry work is bounded. Authenticated-token binding is verified by the tablet in the new cases below. The historical unsigned-token cases were replaced by opaque forwarding and authoritative rejection cases.
 
 Contract coverage: iam-delegation-inventory / "Inventory pagination is revision-bound and bounded" — scenarios "Mutation between pages", "Unsupported page size"; "Administrative export is authorized" — scenario "Continuation is used for another incarnation"; "Database discovery tolerates concurrent registration" (bounded registry scan).
 
@@ -97,8 +97,6 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `ListDatabaseIamDelegations::ContinuationCarriesRevisionAndCursor` | [rpc_list_database_iam_delegations_ut.cpp:201](../../../rpc_list_database_iam_delegations_ut.cpp#L201) | `ydb/core/grpc_services/ut` |
-| `ListDatabaseIamDelegations::ContinuationCannotChangePathOrIncarnation` | [rpc_list_database_iam_delegations_ut.cpp:218](../../../rpc_list_database_iam_delegations_ut.cpp#L218) | `ydb/core/grpc_services/ut` |
 | `ListDatabaseIamDelegations::ExpiredSnapshotRequiresCallerToRestart` | [rpc_list_database_iam_delegations_ut.cpp:231](../../../rpc_list_database_iam_delegations_ut.cpp#L231) | `ydb/core/grpc_services/ut` |
 | `ListDatabaseIamDelegations::InvalidPageSizeAndTokenDoNotReadTablet` | [rpc_list_database_iam_delegations_ut.cpp:242](../../../rpc_list_database_iam_delegations_ut.cpp#L242) | `ydb/core/grpc_services/ut` |
 | `ListDatabaseIamDelegations::RegistryScanHasBoundedWork` | [rpc_list_database_iam_delegations_ut.cpp:277](../../../rpc_list_database_iam_delegations_ut.cpp#L277) | `ydb/core/grpc_services/ut` |
@@ -119,7 +117,7 @@ Contract coverage: external-secret-schema / "Metadata is independent of token he
 - **WHEN** a continuation request arrives with an otherwise valid token.
 - **THEN** the continuation is rejected and no further records are disclosed.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: executable cases mapped below; RED execution pending. No passing verification is claimed.
 
 Contract coverage: iam-delegation-inventory / "Administrative export is authorized" — scenario "Authorization is revoked between pages".
 
@@ -129,7 +127,7 @@ Contract coverage: iam-delegation-inventory / "Administrative export is authoriz
 - **WHEN** the caller stops at the first short page.
 - **THEN** the caller has received every record exactly once.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: executable cases mapped below; RED execution pending. No passing verification is claimed.
 
 Contract coverage: iam-delegation-inventory / "Inventory pagination is revision-bound and bounded" — scenario "Consumer stops on a short page".
 
@@ -139,7 +137,7 @@ Contract coverage: iam-delegation-inventory / "Inventory pagination is revision-
 - **WHEN** the inventory is exported.
 - **THEN** each distinct referrer and its complete binding appears separately.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: executable cases mapped below; RED execution pending. No passing verification is claimed.
 
 Contract coverage: iam-delegation-inventory / "Inventory is authoritative beyond schema lifetime" — scenario "Multiple delegations use one account".
 
@@ -159,6 +157,29 @@ Contract coverage: iam-delegation-inventory / "Tablet cleanup ownership survives
 - **WHEN** payload/tag fields are altered, the path is reused, storage reopens, or a mixed-version tablet lacks authenticated mode.
 - **THEN** valid continuations retain the signed identity, tampering is rejected, keys survive reopening, and unsupported mode fails closed; omitted/zero public page size still means 100.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: executable cases mapped below; RED execution pending. No passing verification is claimed.
 
 Contract coverage: iam-delegation-inventory / "Administrative export is authorized" — scenarios "Continuation payload is modified", "Database path is reused between pages"; "Authenticated pagination has an explicit protocol mode" — scenario "Tablet lacks authenticated pagination support"; "Inventory pagination is revision-bound and bounded" — scenario "Public page size uses the default".
+
+#### Scenario: Authenticated protocol and observable cleanup health
+
+- **GIVEN** real saved delegation state, optional historical health fields, and mixed frontend/tablet capabilities.
+- **WHEN** an administrator enumerates across pages or evaluates configured age/failure thresholds.
+- **THEN** the RPC forwards authenticated tokens without rediscovery, refuses unsupported capability and unsigned v1 tokens, exports each same-account referrer separately, preserves unknown age, and exposes progress/recovery without changing cleanup ownership.
+
+Status: executable regression source added; RED execution pending. No passing verification is claimed. The source mappings below also cover the authorization, enumeration and authenticated-continuation scenarios above.
+
+Contract coverage: iam-delegation-inventory / "Administrative export is authorized"; "Authenticated pagination has an explicit protocol mode"; "Inventory pagination is revision-bound and bounded"; iam-delegation-revocation / "Outstanding cleanup is operator-visible".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `ListDatabaseIamDelegations::AuthenticatedContinuationIsOpaqueAndSkipsRegistryDiscovery` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::ContinuationRequiresFreshAdministrativeAuthorization` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::OldTabletCannotSilentlyDowngradeEmptyOrFinalPage` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::UnsignedLegacyContinuationRequiresEnumerationRestart` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::TabletRejectsTamperedContinuationWithoutRpcFallback` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::AuthenticatedPageSizesRetainPublicZeroDefault` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::InventoryExportsDurableCleanupHistoryWithoutInventingLegacyAge` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::RealAuthenticatedPagesPreserveEverySameAccountReferrer` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::RealInventorySupportsExternalAgeAndFailureThresholds` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::ContinuationForwardsRequestedIdentityAndTabletRejection` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |

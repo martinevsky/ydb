@@ -253,3 +253,25 @@ Contract coverage: iam-delegation-revocation / "Revocation retries use standard 
 | `IamDelegationDurability::RevocationFailureHistoryAndCleanupAgeAfterDurableCommit` | [durability_ut.cpp](../../durability_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationDurability::RevocationFailureHistoryAndCleanupAgeLostResponse` | [durability_ut.cpp](../../durability_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationStorageReopen::RevocationFailureHistorySurvivesWholeRuntimeReplacement` | [storage_reopen_ut.cpp](../../storage_reopen_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+
+#### Scenario: Authenticated inventory continuations
+
+- **GIVEN** multiple records in the real tablet, including cold persisted pages and an independently formatted tablet with the same public identity.
+- **WHEN** continuations are modified, conflicting fields are supplied, database names are reused, or the tablet/runtime is replaced.
+- **THEN** valid tokens retain their original identity and revision; every forged, unsupported or mismatched request fails without mutation; signing keys survive physical reopening; bounded pages enumerate each record once without preloading the inventory.
+
+Status: executable regression source added; RED execution pending. No passing verification is claimed.
+
+Contract coverage: iam-delegation-inventory / "Administrative export is authorized"; "Authenticated pagination has an explicit protocol mode"; "Inventory pagination is revision-bound and bounded".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationInventoryTokens::AuthenticatedInventoryContinuationSurvivesRestartAndNameReuse` | [inventory_token_ut.cpp](../../inventory_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationInventoryTokens::AuthenticatedInventoryRejectsTamperingAndConflictingFields` | [inventory_token_ut.cpp](../../inventory_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationInventoryTokens::AuthenticatedInventoryAdvertisesCapabilityOnEmptyAndFinalPages` | [inventory_token_ut.cpp](../../inventory_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationInventoryTokens::AuthenticatedInventoryRejectsTokenFromIndependentTabletStorage` | [inventory_token_ut.cpp](../../inventory_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationInventoryTokens::UnknownPaginationModeFailsClosedWithoutChangingInventory` | [inventory_token_ut.cpp](../../inventory_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationInventoryTokens::AuthenticatedInventoryRejectsContinuationOnDifferentTabletId` | [inventory_token_ut.cpp](../../inventory_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationInventoryTokens::InjectedUnauthenticatedContinuationCannotFallBackToFirstPage` | [inventory_token_ut.cpp](../../inventory_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationStorageReopen::InventorySigningKeySurvivesWholeRuntimeReplacement` | [storage_reopen_ut.cpp](../../storage_reopen_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationColdScans::AuthenticatedPaginationRetriesColdPagesWithoutPreloadingInventory` | [cold_scan_ut.cpp](../../cold_scan_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
