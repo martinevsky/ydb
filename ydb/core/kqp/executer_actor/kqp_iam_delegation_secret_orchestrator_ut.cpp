@@ -437,9 +437,112 @@ void CheckWorkerOwnedRefusal(ERefusalDelivery delivery, ERefusalReload reload) {
     UNIT_ASSERT(f.RevokeBindings.empty());
 }
 
+void ReplyCredentialBearingRefusal(TOrchestratorFixture& f, const IEventHandle& request) {
+    TDelegationOperationResult result;
+    result.Outcome = EDelegationOperationOutcome::Failed;
+    result.Status = Ydb::StatusIds::UNAUTHORIZED;
+    result.OperationId = "refused-setup-operation";
+    result.Issues.AddIssue("credential-sentinel-do-not-persist");
+    result.FailureReasons = {EDelegationFailureReason::SubjectNotDelegatable};
+    f.Runtime.Send(new IEventHandle(request.Sender, f.Iam,
+        new TEvIamDelegation::TEvDelegationOperationResult(std::move(result)), 0, request.Cookie));
+}
+
+void CheckCoordinatorOwnedRefusal(ERefusalDelivery delivery) {
+    TOrchestratorFixture f;
+    const auto currentId = f.Create();
+    const auto current = f.Delegation(currentId).GetDelegation();
+    const auto altering = f.Start(f.Operation(true, "account-2"), true);
+    auto request = f.Take(f.Submissions);
+    const auto pendingId = request->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->RequestId;
+    if (delivery == ERefusalDelivery::Poll) {
+        f.ReplyIam(*request, EDelegationOperationOutcome::Accepted, "refused-setup-operation");
+        request = f.Take(f.Polls);
+        UNIT_ASSERT_VALUES_EQUAL(request->Get<TEvIamDelegation::TEvPollDelegationOperation>()->OperationId,
+            "refused-setup-operation");
+    }
+    ReplyCredentialBearingRefusal(f, *request);
+    const auto result = f.Finish(altering);
+    UNIT_ASSERT_C(result.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::UNAUTHORIZED),
+        result.Issues().ToString());
+    UNIT_ASSERT(result.Issues().ToString().Contains("IAM refused delegation setup"));
+    UNIT_ASSERT(!result.Issues().ToString().Contains("credential-sentinel-do-not-persist"));
+    f.RebootTablet();
+    const auto saved = f.Delegation(pendingId);
+    UNIT_ASSERT(saved.GetDelegation().HasSetupFailure());
+    UNIT_ASSERT_VALUES_EQUAL(saved.GetDelegation().GetSetupFailure().GetStatus(), Ydb::StatusIds::UNAUTHORIZED);
+    UNIT_ASSERT_VALUES_EQUAL(saved.GetDelegation().GetSetupFailure().ReasonsSize(), 1);
+    UNIT_ASSERT_VALUES_EQUAL(saved.GetDelegation().GetSetupFailure().GetReasons(0),
+        P::SETUP_FAILURE_SUBJECT_NOT_DELEGATABLE);
+    UNIT_ASSERT(!TString(saved.SerializeAsString()).Contains("credential-sentinel-do-not-persist"));
+    UNIT_ASSERT(saved.GetSecret().GetPendingOperationId().empty());
+    UNIT_ASSERT_VALUES_EQUAL(saved.GetSecret().GetCurrentOperationId(), currentId);
+    UNIT_ASSERT_VALUES_EQUAL(f.Delegation(currentId).GetDelegation().SerializeAsString(), current.SerializeAsString());
+    UNIT_ASSERT_VALUES_EQUAL(f.Read()->Token, "token-for-account-1");
+    UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 2);
+    UNIT_ASSERT(f.RevokeBindings.empty());
+}
+
 } // namespace
 
 Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
+    Y_UNIT_TEST(CoordinatorOwnedSubmissionRefusalPersistsSafeDetails) {
+        CheckCoordinatorOwnedRefusal(ERefusalDelivery::Submission);
+    }
+
+    Y_UNIT_TEST(CoordinatorOwnedPolledRefusalPersistsSafeDetails) {
+        CheckCoordinatorOwnedRefusal(ERefusalDelivery::Poll);
+    }
+
+    Y_UNIT_TEST(LegacyWorkerRefusalKeepsGenericFallbackAfterRestart) {
+        TOrchestratorFixture f;
+        const auto currentId = f.Create();
+        const auto current = f.Delegation(currentId).GetDelegation();
+        TActorId coordinator;
+        TAutoPtr<IEventHandle> heldStage;
+        P::TDelegation pending;
+        f.Intercept = [&](auto& event) {
+            if (event->GetTypeRewrite() == TEvIamDelegationTablet::TEvResponse::EventType
+                && event->GetRecipientRewrite() == coordinator && pending.GetOperationId().empty()) {
+                const auto& response = event->template Get<TEvIamDelegationTablet::TEvResponse>()->Record;
+                if (response.HasDelegation() && response.GetDelegation().GetOperationId() != currentId
+                    && response.GetDelegation().GetSetupState() == P::SETUP_NOT_STARTED) {
+                    pending = response.GetDelegation();
+                    heldStage.Reset(event.Release());
+                    return EAction::DROP;
+                }
+            }
+            return EAction::PROCESS;
+        };
+        const auto altering = f.Start(f.Operation(true, "account-2"), true);
+        coordinator = altering.Actor;
+        f.Until([&] { return bool(heldStage); });
+        f.Intercept = {};
+        P::TRequest start;
+        start.MutableStartSetup()->SetOperationId(pending.GetOperationId());
+        start.MutableStartSetup()->SetExpectedRevision(pending.GetRevision());
+        pending = f.Tablet(std::move(start)).GetDelegation();
+        P::TRequest legacyResult;
+        auto* outcome = legacyResult.MutableSetSetupResult();
+        outcome->SetOperationId(pending.GetOperationId());
+        outcome->SetExpectedRevision(pending.GetRevision());
+        outcome->SetOutcome(P::SETUP_FAILED);
+        const auto saved = f.Tablet(std::move(legacyResult)).GetDelegation();
+        UNIT_ASSERT(!saved.HasSetupFailure());
+        f.RebootTablet();
+        f.Runtime.Send(heldStage.Release());
+        const auto result = f.Finish(altering);
+        UNIT_ASSERT_C(result.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::UNAVAILABLE),
+            result.Issues().ToString());
+        UNIT_ASSERT(result.Issues().ToString().Contains("IAM refused delegation setup"));
+        UNIT_ASSERT_VALUES_EQUAL(f.Delegation(pending.GetOperationId()).GetDelegation().SerializeAsString(),
+            saved.SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(f.Delegation(currentId).GetDelegation().SerializeAsString(), current.SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(f.Read()->Token, "token-for-account-1");
+        UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
+        UNIT_ASSERT(f.RevokeBindings.empty());
+    }
+
     Y_UNIT_TEST(WorkerOwnedSetupRefusalReturnsOriginalStatus) {
         CheckWorkerOwnedRefusal(ERefusalDelivery::Submission, ERefusalReload::Live);
     }

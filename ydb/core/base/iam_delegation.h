@@ -10,6 +10,7 @@
 #include <util/digest/multi.h>
 #include <util/generic/hash.h>
 #include <util/generic/string.h>
+#include <util/generic/vector.h>
 #include <util/string/builder.h>
 
 namespace NKikimr::NIamDelegation {
@@ -63,11 +64,21 @@ struct TDelegationBinding {
 enum class EDelegationOperationKind { Setup, Revoke };
 enum class EDelegationOperationOutcome { Unknown, Accepted, Succeeded, Failed };
 
+// Allowlisted diagnostic groups safe to persist; no remote messages or descriptions.
+enum class EDelegationFailureReason {
+    WrongCloud,
+    ServiceNotEnabled,
+    CloudNotFound,
+    ServiceAccountNotFound,
+    SubjectNotDelegatable,
+};
+
 struct TDelegationOperationResult {
     EDelegationOperationOutcome Outcome = EDelegationOperationOutcome::Unknown;
     TString OperationId;
     Ydb::StatusIds::StatusCode Status = Ydb::StatusIds::UNAVAILABLE;
     NYql::TIssues Issues;
+    TVector<EDelegationFailureReason> FailureReasons;
 };
 
 struct TTokenKey {

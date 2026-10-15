@@ -5,6 +5,115 @@
 namespace NKikimr::NIamDelegation::NTests {
 
 Y_UNIT_TEST_SUITE(IamDelegationTablet) {
+    Y_UNIT_TEST(SetupFailureDetailsSurviveRestartAndFenceConflictingReplay) {
+        TTestContext ctx;
+        CreateActive(ctx);
+        const auto active = GetDelegation(ctx, "create-1");
+        auto pending = ctx.Call(StageAlterRequest(GetSecret(ctx), "refused", Binding("refused-referrer"))).GetDelegation();
+        pending = ctx.Call(StartRequest(pending)).GetDelegation();
+        auto request = SetupResultRequest(pending, NProto::SETUP_FAILED, "refused-operation");
+        auto* failure = request.MutableSetSetupResult()->MutableSetupFailure();
+        failure->SetStatus(Ydb::StatusIds::UNAUTHORIZED);
+        failure->AddReasons(NProto::SETUP_FAILURE_SUBJECT_NOT_DELEGATABLE);
+        const auto saved = ctx.Call(request);
+        UNIT_ASSERT(saved.GetDelegation().HasSetupFailure());
+        UNIT_ASSERT_VALUES_EQUAL(saved.GetDelegation().GetSetupFailure().SerializeAsString(), failure->SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(saved.GetDelegation().GetSetupState(), NProto::SETUP_FAILED);
+        UNIT_ASSERT_VALUES_EQUAL(saved.GetDelegation().GetState(), NProto::CANCELLED);
+        UNIT_ASSERT(saved.GetSecret().GetPendingOperationId().empty());
+        UNIT_ASSERT_VALUES_EQUAL(saved.GetSecret().GetCurrentOperationId(), "create-1");
+        ctx.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "refused").SerializeAsString(), saved.GetDelegation().SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(request).GetDelegation().SerializeAsString(), saved.GetDelegation().SerializeAsString());
+        auto legacyReplay = request;
+        legacyReplay.MutableSetSetupResult()->ClearSetupFailure();
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(legacyReplay).GetDelegation().SerializeAsString(), saved.GetDelegation().SerializeAsString());
+        auto conflict = request;
+        conflict.MutableSetSetupResult()->MutableSetupFailure()->SetStatus(Ydb::StatusIds::BAD_REQUEST);
+        ctx.Call(conflict, NProto::CONFLICT);
+        conflict = request;
+        conflict.MutableSetSetupResult()->MutableSetupFailure()->SetReasons(0, NProto::SETUP_FAILURE_WRONG_CLOUD);
+        ctx.Call(conflict, NProto::CONFLICT);
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "refused").SerializeAsString(), saved.GetDelegation().SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").SerializeAsString(), active.SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ClaimRequest()).DelegationsSize(), 0);
+    }
+
+    Y_UNIT_TEST(InvalidSetupFailureDetailsDoNotMutateIntent) {
+        TTestContext ctx;
+        ctx.Call(RegisterRequest(DatabaseIdentity()));
+        const auto staged = ctx.Call(StageCreateRequest()).GetDelegation();
+        const auto bound = ctx.Call(BindRequest(staged)).GetDelegation();
+        const auto started = ctx.Call(StartRequest(bound)).GetDelegation();
+        const auto secret = GetSecret(ctx);
+        const auto inventory = ctx.Call(ListRequest());
+        auto valid = SetupResultRequest(started, NProto::SETUP_FAILED);
+        valid.MutableSetSetupResult()->MutableSetupFailure()->SetStatus(Ydb::StatusIds::UNAUTHORIZED);
+        TVector<NProto::TRequest> invalid;
+        auto add = [&](auto change) {
+            auto request = valid;
+            change(*request.MutableSetSetupResult());
+            invalid.push_back(std::move(request));
+        };
+        add([](auto& result) { result.MutableSetupFailure()->ClearStatus(); });
+        add([](auto& result) { result.MutableSetupFailure()->SetStatus(Ydb::StatusIds::SUCCESS); });
+        add([](auto& result) { result.MutableSetupFailure()->SetStatus(Ydb::StatusIds::STATUS_CODE_UNSPECIFIED); });
+        add([](auto& result) { result.SetOutcome(NProto::SETUP_UNKNOWN); });
+        add([](auto& result) { result.SetOutcome(NProto::SETUP_SUCCEEDED); });
+        add([](auto& result) { result.MutableSetupFailure()->AddReasons(NProto::SETUP_FAILURE_REASON_UNSPECIFIED); });
+        add([](auto& result) {
+            result.MutableSetupFailure()->AddReasons(NProto::SETUP_FAILURE_WRONG_CLOUD);
+            result.MutableSetupFailure()->AddReasons(NProto::SETUP_FAILURE_WRONG_CLOUD);
+        });
+        add([](auto& result) {
+            for (ui32 i = 0; i < 128; ++i) {
+                result.MutableSetupFailure()->AddReasons(NProto::SETUP_FAILURE_WRONG_CLOUD);
+            }
+        });
+        add([](auto& result) {
+            auto* failure = result.MutableSetupFailure();
+            failure->GetReflection()->MutableUnknownFields(failure)->AddVarint(1, 999999);
+        });
+        add([](auto& result) {
+            auto* failure = result.MutableSetupFailure();
+            failure->GetReflection()->MutableUnknownFields(failure)->AddVarint(2, 999999);
+        });
+        add([](auto& result) {
+            auto* failure = result.MutableSetupFailure();
+            failure->GetReflection()->MutableUnknownFields(failure)->AddLengthDelimited(100, "credential-sentinel-do-not-persist");
+        });
+        add([](auto& result) {
+            auto* failure = result.MutableSetupFailure();
+            failure->GetReflection()->MutableUnknownFields(failure)->AddLengthDelimited(100, TString(65536, 'x'));
+        });
+        for (const auto& request : invalid) {
+            ctx.Call(request, NProto::INVALID_ARGUMENT);
+            UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").SerializeAsString(), started.SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(GetSecret(ctx).SerializeAsString(), secret.SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListRequest()).SerializeAsString(), inventory.SerializeAsString());
+        }
+        const auto saved = ctx.Call(valid).GetDelegation();
+        UNIT_ASSERT(saved.HasSetupFailure());
+        UNIT_ASSERT(!TString(saved.SerializeAsString()).Contains("credential-sentinel-do-not-persist"));
+    }
+
+    Y_UNIT_TEST(LegacySetupFailureDoesNotInventDiagnostics) {
+        TTestContext ctx;
+        ctx.Call(RegisterRequest(DatabaseIdentity()));
+        const auto staged = ctx.Call(StageCreateRequest()).GetDelegation();
+        const auto bound = ctx.Call(BindRequest(staged)).GetDelegation();
+        const auto started = ctx.Call(StartRequest(bound)).GetDelegation();
+        const auto request = SetupResultRequest(started, NProto::SETUP_FAILED);
+        const auto saved = ctx.Call(request).GetDelegation();
+        UNIT_ASSERT(!saved.HasSetupFailure());
+        ctx.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(request).GetDelegation().SerializeAsString(), saved.SerializeAsString());
+        auto enrichedReplay = request;
+        enrichedReplay.MutableSetSetupResult()->MutableSetupFailure()->SetStatus(Ydb::StatusIds::UNAUTHORIZED);
+        ctx.Call(enrichedReplay, NProto::CONFLICT);
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").SerializeAsString(), saved.SerializeAsString());
+    }
+
     Y_UNIT_TEST(DisabledAdmissionRejectsNewStageButAllowsExactReplay) {
         TTestContext ctx;
         ctx.Call(RegisterRequest(DatabaseIdentity()));

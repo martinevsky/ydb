@@ -8,6 +8,9 @@
 
 #include <library/cpp/testing/unittest/registar.h>
 
+#include <google/rpc/error_details.pb.h>
+
+#include <algorithm>
 #include <deque>
 #include <optional>
 
@@ -255,6 +258,58 @@ struct TFixture {
         UNIT_ASSERT(PoisonedClients[0] != PoisonedClients[1]);
     }
 };
+
+enum class EFailureDelivery { SubmissionStatus, PolledOperation };
+
+void CheckSafeFailureReasons(EFailureDelivery delivery) {
+    TFixture f;
+    f.Update();
+    google::rpc::Status error;
+    error.set_code(grpc::StatusCode::PERMISSION_DENIED);
+    error.set_message("credential-sentinel-do-not-persist");
+    google::rpc::PreconditionFailure details;
+    for (const TString type : {
+        "BAD_SERVICE_ACCOUNT_CLOUD", "SERVICE_NOT_ENABLED", "SYSTEM_FOLDER_NOT_FOUND", "AGENT_SA_NOT_FOUND",
+        "RESOURCE_CONTAINER_SETTINGS_NOT_FOUND", "RESOURCE_CONTAINER_NOT_FOUND", "SERVICE_ACCOUNT_NOT_FOUND",
+        "SUBJECT_NOT_FOUND", "BAD_SUBJECT_TYPE", "credential-sentinel-do-not-persist"}) {
+        auto* violation = details.add_violations();
+        violation->set_type(type);
+        violation->set_description("credential-sentinel-do-not-persist");
+    }
+    for (ui32 i = 0; i < 128; ++i) {
+        auto* violation = details.add_violations();
+        violation->set_type("BAD_SERVICE_ACCOUNT_CLOUD");
+    }
+    error.add_details()->PackFrom(details);
+    if (delivery == EFailureDelivery::SubmissionStatus) {
+        f.Submit();
+        auto request = f.Take(f.Setups);
+        auto response = MakeHolder<TControl::TEvSetupDelegationResponse>();
+        response->Status.GRpcStatusCode = grpc::StatusCode::PERMISSION_DENIED;
+        response->Status.Msg = error.message();
+        response->Status.Details = error.SerializeAsString();
+        f.Runtime.Send(new IEventHandle(request->Sender, request->Recipient, response.Release(), 0, request->Cookie));
+    } else {
+        f.Poll("saved-operation");
+        auto request = f.Take(f.Polls);
+        auto response = MakeHolder<TOperation::TEvGetOperationResponse>();
+        response->Response.set_id("saved-operation");
+        response->Response.set_done(true);
+        *response->Response.mutable_error() = error;
+        f.Runtime.Send(new IEventHandle(request->Sender, request->Recipient, response.Release(), 0, request->Cookie));
+    }
+    const auto result = f.OperationResult(EDelegationOperationOutcome::Failed);
+    UNIT_ASSERT_VALUES_EQUAL(result.Status, Ydb::StatusIds::UNAUTHORIZED);
+    UNIT_ASSERT_VALUES_EQUAL(result.FailureReasons.size(), 5);
+    for (const auto reason : {
+        EDelegationFailureReason::WrongCloud, EDelegationFailureReason::ServiceNotEnabled,
+        EDelegationFailureReason::CloudNotFound, EDelegationFailureReason::ServiceAccountNotFound,
+        EDelegationFailureReason::SubjectNotDelegatable}) {
+        UNIT_ASSERT(std::find(result.FailureReasons.begin(), result.FailureReasons.end(), reason) != result.FailureReasons.end());
+    }
+    UNIT_ASSERT(f.Setups.empty());
+    UNIT_ASSERT(f.Revokes.empty());
+}
 
 } // namespace
 
@@ -522,6 +577,31 @@ Y_UNIT_TEST_SUITE(IamDelegationActor) {
 }
 
 Y_UNIT_TEST_SUITE(IamDelegationRecovery) {
+    Y_UNIT_TEST(SubmissionRefusalExtractsOnlyBoundedSafeReasons) {
+        CheckSafeFailureReasons(EFailureDelivery::SubmissionStatus);
+    }
+
+    Y_UNIT_TEST(PolledRefusalExtractsOnlyBoundedSafeReasons) {
+        CheckSafeFailureReasons(EFailureDelivery::PolledOperation);
+    }
+
+    Y_UNIT_TEST(TerminalOperationWithSuccessErrorCodeRemainsUnknown) {
+        TFixture f;
+        f.Update();
+        f.Poll("saved-operation");
+        auto request = f.Take(f.Polls);
+        auto response = MakeHolder<TOperation::TEvGetOperationResponse>();
+        response->Response.set_id("saved-operation");
+        response->Response.set_done(true);
+        response->Response.mutable_error()->set_code(grpc::StatusCode::OK);
+        f.Runtime.Send(new IEventHandle(request->Sender, request->Recipient, response.Release(), 0, request->Cookie));
+        const auto result = f.OperationResult(EDelegationOperationOutcome::Unknown);
+        UNIT_ASSERT_VALUES_EQUAL(result.OperationId, "saved-operation");
+        UNIT_ASSERT_VALUES_EQUAL(result.Status, Ydb::StatusIds::INTERNAL_ERROR);
+        UNIT_ASSERT(f.Setups.empty());
+        UNIT_ASSERT(f.Revokes.empty());
+    }
+
     Y_UNIT_TEST(CredentialsFailureBeforeSubmitProvesNoRemoteMutation) {
         for (ui32 failure = 0; failure != 3; ++failure) {
             TFixture f;

@@ -10,7 +10,9 @@ Authoritative contracts: [lifecycle](../../../openspec/changes/external-secrets-
 
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/core/security/iam_delegation/tablet/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
 
-Source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Status: **implemented and verified**, 87/87 GOOD in the full owning executable, with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../docs/external-secrets/verification.md). Historical results remain distinguished from this final run.
+Historical source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Historical status: **implemented and verified**, 87/87 GOOD in the full owning executable, with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../docs/external-secrets/verification.md). These counts apply only to that source revision; added cases below require separate fresh execution.
+
+Fresh admission checkpoint: `e6c24582d62` passed all 89 cases (exit 0), including the two disabled-admission regressions. See the follow-up tablet admission validation in the linked verification record. Setup-failure cases added below have not yet run.
 
 Fixture boundary: TTestContext drives the real tablet executor/storage via typed requests. ECrashPoint injects BeforeCommit, AfterDurableCommitBeforeComplete and ResponseLost. DiskStorage uses an 8 GiB disk with real PDisk/VDisk, preserves its file across wholly new runtimes, and explicitly selects Format/Reopen. Seeded chaos uses an independent inventory model, not only command success.
 
@@ -178,6 +180,52 @@ Contract coverage: iam-delegation-revocation / "Completed acknowledgement replay
 - **WHEN** commit/reply loss, cold reads, tablet restart and fresh-runtime disk reopening occur.
 - **THEN** records and replay receipts retain their values atomically; duplicate ACKs do not advance history, and legacy records remain readable.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: partially covered by the refusal regressions listed below; execution is pending. Any additional backoff or cancellation assertions remain planned and do not contribute to executed counts.
 
 Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics"; iam-delegation-revocation / "Revocation retries use standard backoff and typed reasons"; "Outstanding cleanup is operator-visible".
+
+#### Scenario: Terminal refusal validation and replay
+
+- **GIVEN** a started replacement and a separate active binding.
+- **WHEN** typed refusal details are committed, replayed after reboot, omitted by a legacy replay, or supplied with invalid/conflicting data.
+- **THEN** the status and reasons persist atomically; exact or legacy replay preserves the saved result; invalid requests mutate no canonical or inventory records; conflicting terminal data cannot rewrite history; the active binding is unchanged.
+
+Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+
+Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationTablet::SetupFailureDetailsSurviveRestartAndFenceConflictingReplay` | [iam_delegation_ut.cpp](../../iam_delegation_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationTablet::InvalidSetupFailureDetailsDoNotMutateIntent` | [iam_delegation_ut.cpp](../../iam_delegation_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationTablet::LegacySetupFailureDoesNotInventDiagnostics` | [iam_delegation_ut.cpp](../../iam_delegation_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+
+#### Scenario: Refusal persistence at commit boundaries
+
+- **GIVEN** an active binding and a pending replacement with typed terminal refusal details.
+- **WHEN** the result transaction crashes before commit, after durable commit before Complete, or loses its reply.
+- **THEN** recovery observes the entire old or committed result and pending-slot update; replay preserves diagnostics without changing the active binding or creating cleanup work.
+
+Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+
+Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics"; "Recovery preserves committed state under storage failures".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationDurability::SetupFailureDetailsBeforeCommit` | [durability_ut.cpp](../../durability_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationDurability::SetupFailureDetailsAfterDurableCommit` | [durability_ut.cpp](../../durability_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationDurability::SetupFailureDetailsLostResponse` | [durability_ut.cpp](../../durability_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+
+#### Scenario: Refusal persistence after disk reopening
+
+- **GIVEN** typed refusal details committed in the real disk fixture.
+- **WHEN** all actors are discarded and the same disk is reopened in two fresh runtimes.
+- **THEN** serialized delegation, secret and active records remain unchanged; exact replay succeeds and conflicting details are rejected.
+
+Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+
+Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics"; "Recovery preserves committed state under storage failures".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationStorageReopen::SetupFailureDetailsSurviveWholeRuntimeReplacement` | [storage_reopen_ut.cpp](../../storage_reopen_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |

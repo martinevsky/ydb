@@ -2,6 +2,8 @@ syntax = "proto2";
 
 package NKikimrIamDelegation;
 
+import "ydb/public/api/protos/ydb_status_codes.proto";
+
 // Incarnation is an opaque, immutable, globally unique database incarnation ID.
 // The provisioning service must never reuse it, including after path reuse.
 message TDatabaseIdentity {
@@ -75,6 +77,21 @@ message TSchemaCreateIntent {
     optional string DiffACL = 10;
 }
 
+// Only bounded reason codes are durable; remote error text may contain credentials.
+enum ESetupFailureReason {
+    SETUP_FAILURE_REASON_UNSPECIFIED = 0;
+    SETUP_FAILURE_WRONG_CLOUD = 1;
+    SETUP_FAILURE_SERVICE_NOT_ENABLED = 2;
+    SETUP_FAILURE_CLOUD_NOT_FOUND = 3;
+    SETUP_FAILURE_SERVICE_ACCOUNT_NOT_FOUND = 4;
+    SETUP_FAILURE_SUBJECT_NOT_DELEGATABLE = 5;
+}
+
+message TSetupFailure {
+    optional Ydb.StatusIds.StatusCode Status = 1;
+    repeated ESetupFailureReason Reasons = 2;
+}
+
 message TDelegation {
     optional string OperationId = 1;
     optional string DatabaseIncarnation = 2;
@@ -93,6 +110,7 @@ message TDelegation {
     optional uint64 StagedAtUs = 15;
     optional string SubjectId = 16;
     optional TSchemaCreateIntent SchemaCreate = 17;
+    optional TSetupFailure SetupFailure = 18;
 }
 
 enum ESecretState {
@@ -158,6 +176,7 @@ message TSetSetupResultRequest {
     // Only UNKNOWN, SUCCEEDED and FAILED are accepted as outcomes.
     optional ESetupState Outcome = 3;
     optional string SetupOperationId = 4;
+    optional TSetupFailure SetupFailure = 5;
 }
 
 message TPromoteRequest {

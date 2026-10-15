@@ -180,9 +180,63 @@ NProto::TDelegation CreateUnknown(TWorkerFixture& f, const TString& remoteOperat
     return f.Tablet.Call(SetupResultRequest(started, NProto::SETUP_UNKNOWN, remoteOperationId)).GetDelegation();
 }
 
+enum class ERefusalDelivery { Submission, Poll };
+
+void CheckWorkerFailureDetails(ERefusalDelivery delivery) {
+    TWorkerFixture f;
+    f.Tablet.Call(RegisterRequest(DatabaseIdentity()));
+    auto stage = StageCreateRequest();
+    stage.MutableStage()->SetSubjectId("original-cloud-subject");
+    auto delegation = f.Tablet.Call(stage).GetDelegation();
+    delegation = f.Tablet.Call(BindRequest(delegation)).GetDelegation();
+    f.Start();
+    auto describe = f.Take(f.Descriptions);
+    f.ReplySchema(*describe, TWorkerFixture::MatchingSchema(delegation));
+    auto request = f.Take(f.Submissions);
+    UNIT_ASSERT_VALUES_EQUAL(request->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->SubjectId,
+        "original-cloud-subject");
+    if (delivery == ERefusalDelivery::Poll) {
+        f.ReplyIam(*request, EDelegationOperationOutcome::Accepted, "refused-operation");
+        request = f.Take(f.Polls);
+        UNIT_ASSERT_VALUES_EQUAL(request->Get<TEvIamDelegation::TEvPollDelegationOperation>()->OperationId,
+            "refused-operation");
+    }
+    TDelegationOperationResult failure;
+    failure.Outcome = EDelegationOperationOutcome::Failed;
+    failure.Status = Ydb::StatusIds::UNAUTHORIZED;
+    failure.OperationId = "refused-operation";
+    failure.Issues.AddIssue("credential-sentinel-do-not-persist");
+    failure.FailureReasons = {EDelegationFailureReason::SubjectNotDelegatable,
+        EDelegationFailureReason::SubjectNotDelegatable};
+    f.Runtime.Send(new IEventHandle(request->Sender, f.Iam,
+        new TEvIamDelegation::TEvDelegationOperationResult(std::move(failure)), 0, request->Cookie));
+    f.WaitState("create-1", NProto::CANCELLED);
+    f.Stop();
+    f.Tablet.Reboot();
+    const auto saved = GetDelegation(f.Tablet, "create-1");
+    UNIT_ASSERT(saved.HasSetupFailure());
+    UNIT_ASSERT_VALUES_EQUAL(saved.GetSetupFailure().GetStatus(), Ydb::StatusIds::UNAUTHORIZED);
+    UNIT_ASSERT_VALUES_EQUAL(saved.GetSetupFailure().ReasonsSize(), 1);
+    UNIT_ASSERT_VALUES_EQUAL(saved.GetSetupFailure().GetReasons(0), NProto::SETUP_FAILURE_SUBJECT_NOT_DELEGATABLE);
+    UNIT_ASSERT_VALUES_EQUAL(saved.GetSetupOperationId(), "refused-operation");
+    UNIT_ASSERT_VALUES_EQUAL(saved.GetBinding().SerializeAsString(), delegation.GetBinding().SerializeAsString());
+    UNIT_ASSERT(!TString(saved.SerializeAsString()).Contains("credential-sentinel-do-not-persist"));
+    UNIT_ASSERT(GetSecret(f.Tablet).GetPendingOperationId().empty());
+    UNIT_ASSERT_VALUES_EQUAL(f.SubmissionCount, 1);
+    UNIT_ASSERT_VALUES_EQUAL(f.Tablet.Call(ClaimRequest()).DelegationsSize(), 0);
+}
+
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationRecoveryWorker) {
+    Y_UNIT_TEST(SubmissionRefusalPersistsSafeDetails) {
+        CheckWorkerFailureDetails(ERefusalDelivery::Submission);
+    }
+
+    Y_UNIT_TEST(PolledRefusalPersistsSafeDetails) {
+        CheckWorkerFailureDetails(ERefusalDelivery::Poll);
+    }
+
     Y_UNIT_TEST(AcceptedRevokePersistsAndRestartPollsSavedOperation) {
         TWorkerFixture f;
         CreateActive(f.Tablet);

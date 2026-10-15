@@ -10,7 +10,7 @@ Authoritative contracts: [lifecycle](../../../../tablet/openspec/changes/externa
 
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/core/security/iam_delegation/lifecycle/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
 
-Source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Status: **implemented and verified**, 22/22 GOOD in the full owning executable, with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../docs/external-secrets/verification.md). Historical results remain distinguished from this final run.
+Historical source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Historical status: **implemented and verified**, 22/22 GOOD in the full owning executable, with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../docs/external-secrets/verification.md). These counts apply only to that source revision; added cases below require separate fresh execution.
 
 Fixture boundary: TWorkerFixture uses the real independent tablet and real worker/client actors. IAM submit/poll and schema replies are controlled by event observers. TTestContext persists tablet transactions across reboot; no live IAM or schema transport is required.
 
@@ -193,7 +193,7 @@ Contract coverage: iam-delegation-lifecycle / "Lifecycle state is owned independ
 - **WHEN** the worker sends setup on the saved initiating subject's behalf and IAM returns a known terminal denial.
 - **THEN** the mapped denial is persisted, no binding is activated, and a waiting coordinator can recover the original refusal without resubmitting setup.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: partially covered by the refusal regressions listed below; execution is pending. Any additional backoff or cancellation assertions remain planned and do not contribute to executed counts.
 
 Contract coverage: iam-delegation-lifecycle / "Intent precedes remote setup" (dispatch-time authorization clause); "Terminal setup failures retain their diagnostics" — scenario "Recovery records refusal before the coordinator resumes".
 
@@ -216,3 +216,18 @@ Contract coverage: iam-delegation-lifecycle / "Asynchronous coordination keeps o
 Status: planned — no executable case yet; does not contribute to executed counts.
 
 Contract coverage: iam-delegation-lifecycle / "Modes and outcomes use typed enums"; iam-delegation-revocation / "Revocation retries use standard backoff and typed reasons"; "Revoke outcomes preserve remote operation identity" — scenarios "Unknown poll retains operation and failure history", "Accepted operation makes progress".
+
+#### Scenario: Worker persists only safe refusal details
+
+- **GIVEN** a recovered intent carrying the initiating subject and immutable binding.
+- **WHEN** IAM denies submission or polling with repeated typed reasons and a credential-bearing raw issue.
+- **THEN** the worker saves the mapped denial and deduplicated reason across reboot; pending clears without activation or revocation; the credential sentinel is absent from durable state. IAM is mocked at the event boundary.
+
+Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+
+Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics"; "Intent precedes remote setup".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationRecoveryWorker::SubmissionRefusalPersistsSafeDetails` | [worker_ut.cpp](../../worker_ut.cpp) | `ydb/core/security/iam_delegation/lifecycle/ut` |
+| `IamDelegationRecoveryWorker::PolledRefusalPersistsSafeDetails` | [worker_ut.cpp](../../worker_ut.cpp) | `ydb/core/security/iam_delegation/lifecycle/ut` |

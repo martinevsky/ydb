@@ -22,6 +22,41 @@ NFake::TStorage DiskStorage(const TTempDir& directory, EStorageOpenMode mode) {
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationStorageReopen) {
+    Y_UNIT_TEST(SetupFailureDetailsSurviveWholeRuntimeReplacement) {
+        TTempDir directory;
+        NProto::TRequest request;
+        NProto::TResponse saved;
+        NProto::TDelegation active;
+        TInstant clock;
+        {
+            TTestContext ctx(DiskStorage(directory, EStorageOpenMode::Format));
+            CreateActive(ctx);
+            active = GetDelegation(ctx, "create-1");
+            auto pending = ctx.Call(StageAlterRequest(GetSecret(ctx), "refused", Binding("refused-referrer"))).GetDelegation();
+            pending = ctx.Call(StartRequest(pending)).GetDelegation();
+            request = SetupResultRequest(pending, NProto::SETUP_FAILED, "refused-operation");
+            auto* failure = request.MutableSetSetupResult()->MutableSetupFailure();
+            failure->SetStatus(Ydb::StatusIds::UNAUTHORIZED);
+            failure->AddReasons(NProto::SETUP_FAILURE_SUBJECT_NOT_DELEGATABLE);
+            saved = ctx.Call(request);
+            UNIT_ASSERT_VALUES_EQUAL(saved.GetDelegation().GetSetupFailure().SerializeAsString(), failure->SerializeAsString());
+            clock = ctx.GetRuntime().GetCurrentTime();
+        }
+        for (ui32 reopen = 0; reopen < 2; ++reopen) {
+            TTestContext ctx(DiskStorage(directory, EStorageOpenMode::Reopen));
+            ctx.GetRuntime().UpdateCurrentTime(Max(clock, ctx.GetRuntime().GetCurrentTime()));
+            UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "refused").SerializeAsString(), saved.GetDelegation().SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(GetSecret(ctx).SerializeAsString(), saved.GetSecret().SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").SerializeAsString(), active.SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(ctx.Call(request).GetDelegation().SerializeAsString(), saved.GetDelegation().SerializeAsString());
+            auto conflict = request;
+            conflict.MutableSetSetupResult()->MutableSetupFailure()->SetStatus(Ydb::StatusIds::BAD_REQUEST);
+            ctx.Call(conflict, NProto::CONFLICT);
+            UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ClaimRequest()).DelegationsSize(), 0);
+            clock = ctx.GetRuntime().GetCurrentTime();
+        }
+    }
+
     Y_UNIT_TEST(RetiredPendingAndItsReplayReceiptSurviveWholeRuntimeReplacement) {
         TTempDir directory;
         NProto::TRequest retirement;

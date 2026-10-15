@@ -4,13 +4,13 @@
 
 Specify test-owned coverage and its reproducible fixture boundaries. The linked feature contracts remain authoritative; these scenarios describe assertions and evidence, not additional runtime requirements.
 
-Authoritative contracts: [token](../../../openspec/changes/external-secrets-iam-delegation/specs/iam-delegated-token-acquisition/spec.md).
+Authoritative contracts: [lifecycle](../../../tablet/openspec/changes/external-secrets-iam-delegation/specs/iam-delegation-lifecycle/spec.md), [token](../../../openspec/changes/external-secrets-iam-delegation/specs/iam-delegated-token-acquisition/spec.md).
 
 ## Execution and evidence
 
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/core/security/iam_delegation/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
 
-Source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Status: **implemented and verified**, 57/57 GOOD in the full owning executable, with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../docs/external-secrets/verification.md). Historical results remain distinguished from this final run.
+Historical source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Historical status: **implemented and verified**, 57/57 GOOD in the full owning executable, with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../docs/external-secrets/verification.md). These counts apply only to that source revision; added cases below require separate fresh execution.
 
 Fixture boundary: Real delegation/token/cloud-resolver actors run in TTestActorRuntime; token-manager and cloud RPC events are intercepted at their service boundaries. The fixture controls time, cookies and gRPC outcomes; it does not call a live IAM endpoint.
 
@@ -178,3 +178,32 @@ Contract coverage: iam-delegated-token-acquisition / "Minting uses platform cred
 Status: planned — no executable case yet; does not contribute to executed counts.
 
 Contract coverage: iam-delegated-token-acquisition / "Refresh operation state belongs to its coroutine" — scenario "Producer stops with a mint outstanding"; "Caller policy and cancellation remain effective" — scenario "One concurrent caller cancels".
+
+#### Scenario: IAM refusal reasons exclude remote free text
+
+- **GIVEN** submission or poll errors containing supported precondition types, duplicates, unknown types and credential sentinels in messages/descriptions.
+- **WHEN** the real IAM adapter processes the mocked service response.
+- **THEN** the diagnostic vector contains each of the five allowlisted reason groups once with the mapped denial status and no additional setup/revoke; the typed representation has no remote free-text field.
+
+Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+
+Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationRecovery::SubmissionRefusalExtractsOnlyBoundedSafeReasons` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegationRecovery::PolledRefusalExtractsOnlyBoundedSafeReasons` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+
+#### Scenario: Contradictory operation result preserves uncertainty
+
+- **GIVEN** a saved IAM operation identifier.
+- **WHEN** polling returns a done operation containing an error object with code OK.
+- **THEN** the adapter returns Unknown/INTERNAL_ERROR with the saved identifier; it sends no setup/revoke and does not treat the contradictory response as definitive failure.
+
+Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+
+Contract coverage: iam-delegation-lifecycle / "Unknown setup is not a failed setup".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationRecovery::TerminalOperationWithSuccessErrorCodeRemainsUnknown` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |

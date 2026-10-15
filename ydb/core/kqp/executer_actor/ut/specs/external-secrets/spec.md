@@ -10,7 +10,7 @@ Authoritative contracts: [schema](../../../openspec/changes/external-secrets-iam
 
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/core/kqp/executer_actor/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
 
-Source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Status: **implemented and verified**, 119/119 GOOD in the full owning executable, with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../../security/iam_delegation/docs/external-secrets/verification.md). Historical results remain distinguished from this final run.
+Historical source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Historical status: **implemented and verified**, 119/119 GOOD in the full owning executable, with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../../security/iam_delegation/docs/external-secrets/verification.md). These counts apply only to that source revision; added cases below require separate fresh execution.
 
 Fixture boundary: TOrchestratorFixture runs real SchemeShard, SchemeCache, independent delegation tablet, coordinator, worker and reader actors. IAM/cloud responses are intercepted. ACL tests use serialized authenticated identities and assert effective rights before operations; public describe/value probes remain separate from internal lifecycle access.
 
@@ -160,6 +160,52 @@ Contract coverage: external-secret-schema / "Stored-secret compatibility" — sc
 - **WHEN** the coordinator resumes, including after storage restart, or is cancelled before a late result.
 - **THEN** recovery returns the recorded IAM status/issues with the old binding intact; a cancelled coordinator emits no late result.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: partially covered by the refusal regressions listed below; execution is pending. Any additional backoff or cancellation assertions remain planned and do not contribute to executed counts.
 
 Contract coverage: external-secret-schema / "DDL asynchronous state belongs to the coordinator coroutine" — scenario "Late response after coordinator cancellation"; "Setup fails for an account not delegable in its cloud" — scenario "Recovery owns the terminal refusal".
+
+#### Scenario: Worker-owned refusal returns its original status
+
+- **GIVEN** an active binding and a held coordinator Stage reply for a replacement.
+- **WHEN** the worker owns submission or polling and commits a refusal before the coordinator resumes, with or without tablet reboot.
+- **THEN** the statement returns saved UNAUTHORIZED and the refusal issue; the old active record and token remain intact; no revoke or extra setup is dispatched.
+
+Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+
+Contract coverage: external-secret-schema / "Setup fails for an account not delegable in its cloud" — scenario "Recovery owns the terminal refusal".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `KqpIamDelegationSecretOrchestrator::WorkerOwnedSetupRefusalReturnsOriginalStatus` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::WorkerOwnedSetupRefusalReturnsOriginalStatusAfterRestart` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::WorkerOwnedPolledRefusalReturnsOriginalStatus` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::WorkerOwnedPolledRefusalReturnsOriginalStatusAfterRestart` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+
+#### Scenario: Coordinator-owned refusal saves safe diagnostics
+
+- **GIVEN** an active binding and a coordinator-owned replacement setup.
+- **WHEN** submission or polling returns denial with safe typed reasons and a raw credential sentinel.
+- **THEN** the coordinator returns the mapped status without the sentinel, persists only safe diagnostics across reboot, and preserves the active binding and token.
+
+Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+
+Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `KqpIamDelegationSecretOrchestrator::CoordinatorOwnedSubmissionRefusalPersistsSafeDetails` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::CoordinatorOwnedPolledRefusalPersistsSafeDetails` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+
+#### Scenario: Legacy refusal keeps its generic fallback
+
+- **GIVEN** a terminal failed replacement saved by an old-shaped worker request without diagnostic fields.
+- **WHEN** the tablet restarts and the original coordinator resumes from its held Stage reply.
+- **THEN** the statement returns the generic UNAVAILABLE refusal without resubmitting setup, rewriting the terminal record or replacing the active binding.
+
+Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+
+Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics" (legacy compatibility).
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `KqpIamDelegationSecretOrchestrator::LegacyWorkerRefusalKeepsGenericFallbackAfterRestart` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |

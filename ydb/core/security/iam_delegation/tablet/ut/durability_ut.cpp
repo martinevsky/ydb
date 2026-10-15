@@ -39,6 +39,36 @@ void AssertInventoryMatchesCanonicalRecords(TTestContext& ctx, ui32 expectedSize
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationDurability) {
+    Y_UNIT_TEST_DURABLE_BOUNDARIES(SetupFailureDetails) {
+        TTestContext ctx;
+        CreateActive(ctx);
+        const auto active = GetDelegation(ctx, "create-1");
+        auto pending = ctx.Call(StageAlterRequest(GetSecret(ctx), "refused", Binding("refused-referrer"))).GetDelegation();
+        pending = ctx.Call(StartRequest(pending)).GetDelegation();
+        const auto beforeSecret = GetSecret(ctx);
+        auto request = SetupResultRequest(pending, NProto::SETUP_FAILED, "refused-operation");
+        auto* failure = request.MutableSetSetupResult()->MutableSetupFailure();
+        failure->SetStatus(Ydb::StatusIds::UNAUTHORIZED);
+        failure->AddReasons(NProto::SETUP_FAILURE_SUBJECT_NOT_DELEGATABLE);
+        ctx.CrashCall(request, point);
+        const auto restored = GetDelegation(ctx, "refused");
+        if (point == ECrashPoint::BeforeCommit) {
+            UNIT_ASSERT_VALUES_EQUAL(restored.SerializeAsString(), pending.SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(GetSecret(ctx).SerializeAsString(), beforeSecret.SerializeAsString());
+        } else {
+            UNIT_ASSERT_VALUES_EQUAL(restored.GetSetupState(), NProto::SETUP_FAILED);
+            UNIT_ASSERT_VALUES_EQUAL(restored.GetSetupFailure().SerializeAsString(), failure->SerializeAsString());
+            UNIT_ASSERT(GetSecret(ctx).GetPendingOperationId().empty());
+        }
+        const auto replay = ctx.Call(request);
+        ctx.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(request).GetDelegation().SerializeAsString(), replay.GetDelegation().SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(GetSecret(ctx).SerializeAsString(), replay.GetSecret().SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").SerializeAsString(), active.SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ClaimRequest()).DelegationsSize(), 0);
+        AssertInventoryMatchesCanonicalRecords(ctx, 1);
+    }
+
     Y_UNIT_TEST_DURABLE_BOUNDARIES(RegisterDatabase) {
         TTestContext ctx;
         const auto request = RegisterRequest(DatabaseIdentity());
