@@ -20,7 +20,7 @@
 - Preserve durable uncertainty. Timeout, tenant deletion, inventory listing and operator alerts never prove that an unknown setup failed or make it safe to revoke.
 - Preserve atomic promotion/retirement, atomic revocation claims, exact committed-ACK replay and generation/attempt/worker/deadline fencing.
 - Preserve strict token serving before `expiry - 5 minutes`, finite phase-specific waits, and cancellation of one reader without cancelling unrelated readers.
-- Use `./ya make --build relwithdebinfo -tA`; no `-j`, forced rebuilds or source edits during compilation. Preserve full logs and the actual process exit code.
+- Use `./ya make --build relwithdebinfo -tA`; the user explicitly requested 100 build jobs after the OOM recovery, overriding the earlier no-`-j` preference. Keep a memory-pressure guard and one link job. No forced rebuilds or source edits during compilation. Preserve full logs and the actual process exit code.
 - Commit and push each test/code checkpoint to the existing fork branch **before starting tests on that checkpoint**. Verify the remote SHA. This includes RED regression runs.
 - Run implementation natively. If a separate build monitor is useful, use a cheaper model only for reading build output; keep technical review independent.
 
