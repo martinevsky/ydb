@@ -229,6 +229,86 @@ void CheckWorkerFailureDetails(ERefusalDelivery delivery) {
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationRecoveryWorker) {
+    Y_UNIT_TEST(RevocationOutcomeHistorySurvivesWorkerAndTabletTakeover) {
+        TWorkerFixture f;
+        CreateActive(f.Tablet);
+        f.Tablet.Call(DropRequest(GetSecret(f.Tablet)));
+        f.Start();
+        auto request = f.Take(f.Submissions);
+        f.ReplyIam(*request, EDelegationOperationOutcome::Accepted, "saved-revoke");
+        f.Until([&] { return f.LastDelegations["create-1"].GetRevokeOperationId() == "saved-revoke"; });
+        const auto queuedAt = f.LastDelegations["create-1"].GetCleanupQueuedAtUs();
+        UNIT_ASSERT(queuedAt != 0);
+        f.Stop();
+
+        for (ui32 failure = 1; failure <= 4; ++failure) {
+            f.Tablet.Reboot();
+            const auto pending = GetDelegation(f.Tablet, "create-1");
+            f.Runtime.UpdateCurrentTime(Max(f.Runtime.GetCurrentTime(), TInstant::MicroSeconds(pending.GetDueAtUs())));
+            f.Start();
+            auto poll = f.Take(f.Polls);
+            UNIT_ASSERT_VALUES_EQUAL(poll->Get<TEvIamDelegation::TEvPollDelegationOperation>()->OperationId, "saved-revoke");
+            // A transport failure with no returned ID cannot forget the saved ID.
+            f.ReplyIam(*poll, EDelegationOperationOutcome::Unknown);
+            f.Until([&] { return f.LastDelegations["create-1"].GetRevokeConsecutiveFailures() == failure; });
+            const auto saved = GetDelegation(f.Tablet, "create-1");
+            UNIT_ASSERT_VALUES_EQUAL(saved.GetState(), NProto::REVOCATION_PENDING);
+            UNIT_ASSERT_VALUES_EQUAL(saved.GetRevokeOperationId(), "saved-revoke");
+            UNIT_ASSERT_VALUES_EQUAL(saved.GetCleanupQueuedAtUs(), queuedAt);
+            UNIT_ASSERT_VALUES_EQUAL(f.SubmissionCount, 1);
+            f.Stop();
+        }
+
+        // Remote progress resets the streak without resetting age or submitting
+        // another mutation; a later definitive failure permits a new submission.
+        f.Start();
+        auto poll = f.Take(f.Polls);
+        f.ReplyIam(*poll, EDelegationOperationOutcome::Accepted, "saved-revoke");
+        f.Until([&] { return f.LastDelegations["create-1"].GetRevokeConsecutiveFailures() == 0; });
+        poll = f.Take(f.Polls);
+        f.ReplyIam(*poll, EDelegationOperationOutcome::Failed, "saved-revoke");
+        f.Until([&] {
+            const auto& current = f.LastDelegations["create-1"];
+            return current.GetRevokeConsecutiveFailures() == 1 && current.GetRevokeOperationId().empty();
+        });
+        request = f.Take(f.Submissions);
+        UNIT_ASSERT_VALUES_EQUAL(f.SubmissionCount, 2);
+        f.ReplyIam(*request, EDelegationOperationOutcome::Succeeded, "replacement-revoke");
+        f.WaitState("create-1", NProto::REVOKED);
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(f.Tablet, "create-1").GetCleanupQueuedAtUs(), queuedAt);
+        f.Stop();
+    }
+
+    Y_UNIT_TEST(FailingRevocationDoesNotHoldAnotherRecordsLease) {
+        TWorkerFixture f;
+        CreateActive(f.Tablet);
+        f.Tablet.Call(DropRequest(GetSecret(f.Tablet)));
+        auto second = f.Tablet.Call(StageCreateRequest("create-2", Binding("second-referrer"),
+            "/Root/database/second", "database-incarnation-1", 20)).GetDelegation();
+        second = f.Tablet.Call(BindRequest(second, SecretIdentity(43))).GetDelegation();
+        CompleteSetup(f.Tablet, second);
+        f.Tablet.Call(DropRequest(GetSecret(f.Tablet, SecretIdentity(43))));
+        f.Start();
+        auto firstRequest = f.Take(f.Submissions);
+        UNIT_ASSERT_VALUES_EQUAL(firstRequest->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->RequestId, "create-1");
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(f.Tablet, "create-2").GetState(), NProto::REVOCATION_PENDING);
+        f.ReplyIam(*firstRequest, EDelegationOperationOutcome::Failed);
+        auto secondRequest = f.Take(f.Submissions);
+        UNIT_ASSERT_VALUES_EQUAL(secondRequest->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->RequestId, "create-2");
+        const auto retried = GetDelegation(f.Tablet, "create-1");
+        UNIT_ASSERT_VALUES_EQUAL(retried.GetState(), NProto::REVOCATION_PENDING);
+        UNIT_ASSERT_VALUES_EQUAL(retried.GetRevokeConsecutiveFailures(), 1);
+        f.ReplyIam(*secondRequest, EDelegationOperationOutcome::Succeeded);
+        f.WaitState("create-2", NProto::REVOKED);
+        for (const auto& command : f.Commands) {
+            if (command.HasClaimRevocations()) {
+                UNIT_ASSERT_VALUES_EQUAL(command.GetClaimRevocations().GetLimit(), 1);
+            }
+        }
+        f.Stop();
+    }
+
+
     Y_UNIT_TEST(SubmissionRefusalPersistsSafeDetails) {
         CheckWorkerFailureDetails(ERefusalDelivery::Submission);
     }

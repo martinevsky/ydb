@@ -229,3 +229,25 @@ Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain th
 | Executable case | Test source | Command target |
 | --- | --- | --- |
 | `IamDelegationStorageReopen::SetupFailureDetailsSurviveWholeRuntimeReplacement` | [storage_reopen_ut.cpp](../../storage_reopen_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+
+#### Scenario: Durable retry policy and cleanup age
+
+- **GIVEN** an actionable cleanup record or an unresolved setup, including historical ACK shapes.
+- **WHEN** typed failure and pending ACKs are committed, duplicated, rejected, taken over, or interrupted at commit boundaries and reopened from physical storage.
+- **THEN** the failure streak advances once, grows to the bounded standard backoff cap, resets on accepted progress, and survives restart; unknown operation identity and the first actionable cleanup timestamp remain intact; malformed classification consumes no claim.
+
+Status: executable regression source added; RED execution pending. No passing verification is claimed.
+
+Contract coverage: iam-delegation-revocation / "Revocation retries use standard backoff and typed reasons"; "Outstanding cleanup is operator-visible".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationRevocationBoundaries::DurableRevocationFailuresGrowToCapAcrossTakeover` | [revocation_boundaries_ut.cpp](../../revocation_boundaries_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationRevocationBoundaries::PendingRevocationResetsFailuresAndRetainsOperation` | [revocation_boundaries_ut.cpp](../../revocation_boundaries_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationRevocationBoundaries::LegacyRevocationAckPreservesNewFailureHistory` | [revocation_boundaries_ut.cpp](../../revocation_boundaries_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationRevocationBoundaries::InvalidRetryClassificationDoesNotConsumeClaim` | [revocation_boundaries_ut.cpp](../../revocation_boundaries_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationRevocationBoundaries::UnknownSetupGetsCleanupAgeOnlyWhenAuthoritativelyResolved` | [revocation_boundaries_ut.cpp](../../revocation_boundaries_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationDurability::RevocationFailureHistoryAndCleanupAgeBeforeCommit` | [durability_ut.cpp](../../durability_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationDurability::RevocationFailureHistoryAndCleanupAgeAfterDurableCommit` | [durability_ut.cpp](../../durability_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationDurability::RevocationFailureHistoryAndCleanupAgeLostResponse` | [durability_ut.cpp](../../durability_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationStorageReopen::RevocationFailureHistorySurvivesWholeRuntimeReplacement` | [storage_reopen_ut.cpp](../../storage_reopen_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |

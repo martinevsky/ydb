@@ -111,6 +111,9 @@ message TDelegation {
     optional string SubjectId = 16;
     optional TSchemaCreateIntent SchemaCreate = 17;
     optional TSetupFailure SetupFailure = 18;
+    optional uint32 RevokeConsecutiveFailures = 19;
+    // First actionable cleanup transition; absent in historical records.
+    optional uint64 CleanupQueuedAtUs = 20;
 }
 
 enum ESecretState {
@@ -240,6 +243,12 @@ enum ERevokeOutcome {
     REVOKE_RETRY = 2;
 }
 
+enum ERevokeRetryReason {
+    REVOKE_RETRY_UNSPECIFIED = 0;
+    REVOKE_RETRY_FAILURE = 1;
+    REVOKE_RETRY_PENDING = 2;
+}
+
 message TFinishRevocationRequest {
     optional string OperationId = 1;
     optional TClaim Claim = 2;
@@ -249,6 +258,8 @@ message TFinishRevocationRequest {
     // Only after a definitive remote operation failure, never a polling error.
     // Requires REVOKE_RETRY and an empty RevokeOperationId. Empty alone retains it.
     optional bool ClearRevokeOperationId = 6;
+    // Unspecified preserves legacy RetryAfterUs and any durable failure history.
+    optional ERevokeRetryReason RetryReason = 7;
 }
 
 message TRequest {

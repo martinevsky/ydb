@@ -231,3 +231,18 @@ Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain th
 | --- | --- | --- |
 | `IamDelegationRecoveryWorker::SubmissionRefusalPersistsSafeDetails` | [worker_ut.cpp](../../worker_ut.cpp) | `ydb/core/security/iam_delegation/lifecycle/ut` |
 | `IamDelegationRecoveryWorker::PolledRefusalPersistsSafeDetails` | [worker_ut.cpp](../../worker_ut.cpp) | `ydb/core/security/iam_delegation/lifecycle/ut` |
+
+#### Scenario: Retry progress survives worker takeover
+
+- **GIVEN** a saved revoke operation, repeated transport failures and another independent cleanup record.
+- **WHEN** the real worker and tablet restart, then receive accepted, uncertain, definitive-failure and successful replies.
+- **THEN** the worker classifies retries explicitly, retains a known operation on uncertainty, resets the streak on progress and never holds another record's lease while waiting on IAM.
+
+Status: executable regression source added; RED execution pending. No passing verification is claimed.
+
+Contract coverage: iam-delegation-revocation / "Revocation retries use standard backoff and typed reasons"; "Revoke outcomes preserve remote operation identity".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationRecoveryWorker::RevocationOutcomeHistorySurvivesWorkerAndTabletTakeover` | [worker_ut.cpp](../../worker_ut.cpp) | `ydb/core/security/iam_delegation/lifecycle/ut` |
+| `IamDelegationRecoveryWorker::FailingRevocationDoesNotHoldAnotherRecordsLease` | [worker_ut.cpp](../../worker_ut.cpp) | `ydb/core/security/iam_delegation/lifecycle/ut` |

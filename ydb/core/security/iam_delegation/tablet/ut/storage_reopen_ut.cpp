@@ -22,6 +22,44 @@ NFake::TStorage DiskStorage(const TTempDir& directory, EStorageOpenMode mode) {
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationStorageReopen) {
+
+    Y_UNIT_TEST(RevocationFailureHistorySurvivesWholeRuntimeReplacement) {
+        TTempDir directory;
+        NProto::TDelegation saved;
+        NProto::TRequest oldAck;
+        NProto::TResponse inventory;
+        TInstant clock;
+        {
+            TTestContext ctx(DiskStorage(directory, EStorageOpenMode::Format));
+            CreateActive(ctx);
+            ctx.Call(DropRequest(GetSecret(ctx)));
+            const auto claimed = ctx.Call(ClaimRequest()).GetDelegations(0);
+            oldAck = FinishRequest(claimed, NProto::REVOKE_RETRY);
+            oldAck.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_FAILURE);
+            saved = ctx.Call(oldAck).GetDelegation();
+            UNIT_ASSERT_VALUES_EQUAL(saved.GetRevokeConsecutiveFailures(), 1);
+            UNIT_ASSERT(saved.HasCleanupQueuedAtUs());
+            inventory = ctx.Call(ListRequest());
+            clock = ctx.GetRuntime().GetCurrentTime();
+        }
+        {
+            TTestContext ctx(DiskStorage(directory, EStorageOpenMode::Reopen));
+            ctx.GetRuntime().UpdateCurrentTime(Max(clock, ctx.GetRuntime().GetCurrentTime()));
+            UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").SerializeAsString(), saved.SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListRequest()).SerializeAsString(), inventory.SerializeAsString());
+            ctx.Call(oldAck, NProto::STALE_CLAIM);
+            ctx.GetRuntime().UpdateCurrentTime(Max(ctx.GetRuntime().GetCurrentTime(),
+                TInstant::MicroSeconds(saved.GetDueAtUs())));
+            const auto claimed = ctx.Call(ClaimRequest("replacement-runtime", 1)).GetDelegations(0);
+            auto ack = FinishRequest(claimed, NProto::REVOKE_RETRY);
+            ack.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_FAILURE);
+            const auto retried = ctx.Call(ack).GetDelegation();
+            UNIT_ASSERT_VALUES_EQUAL(retried.GetRevokeConsecutiveFailures(), 2);
+            UNIT_ASSERT_VALUES_EQUAL(retried.GetCleanupQueuedAtUs(), saved.GetCleanupQueuedAtUs());
+        }
+    }
+
+
     Y_UNIT_TEST(SetupFailureDetailsSurviveWholeRuntimeReplacement) {
         TTempDir directory;
         NProto::TRequest request;

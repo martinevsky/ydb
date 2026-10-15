@@ -217,6 +217,164 @@ void FinishReplay(NProto::ERevokeOutcome outcome) {
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationRevocationBoundaries) {
+    Y_UNIT_TEST(DurableRevocationFailuresGrowToCapAcrossTakeover) {
+        TTestContext ctx;
+        CreateActive(ctx);
+        ctx.Call(DropRequest(GetSecret(ctx)));
+        const auto queued = GetDelegation(ctx, "create-1");
+        UNIT_ASSERT(queued.HasCleanupQueuedAtUs());
+        const auto queuedAt = queued.GetCleanupQueuedAtUs();
+        NProto::TRequest lastAck;
+
+        for (ui32 failure = 1; failure <= 14; ++failure) {
+            const auto pending = GetDelegation(ctx, "create-1");
+            ctx.GetRuntime().UpdateCurrentTime(Max(ctx.GetRuntime().GetCurrentTime(),
+                TInstant::MicroSeconds(pending.GetDueAtUs())));
+            const auto batch = ctx.Call(ClaimRequest(TStringBuilder() << "worker-" << failure, 1));
+            UNIT_ASSERT_VALUES_EQUAL(batch.DelegationsSize(), 1);
+            const auto claimed = batch.GetDelegations(0);
+            UNIT_ASSERT_VALUES_EQUAL(claimed.GetRevokeConsecutiveFailures(), failure - 1);
+            if (failure > 1) {
+                ctx.Call(lastAck, NProto::STALE_CLAIM);
+            }
+            auto ack = FinishRequest(claimed, NProto::REVOKE_RETRY);
+            ack.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_FAILURE);
+            const auto before = ctx.GetRuntime().GetCurrentTime();
+            const auto finished = ctx.Call(ack).GetDelegation();
+            const auto after = ctx.GetRuntime().GetCurrentTime();
+            const auto due = TInstant::MicroSeconds(finished.GetDueAtUs());
+            UNIT_ASSERT_VALUES_EQUAL(finished.GetRevokeConsecutiveFailures(), failure);
+            UNIT_ASSERT_VALUES_EQUAL(finished.GetCleanupQueuedAtUs(), queuedAt);
+            UNIT_ASSERT(due >= before + TDuration::Seconds(1));
+            UNIT_ASSERT(due < after + TDuration::Seconds(75));
+            if (failure == 1) {
+                UNIT_ASSERT(due < after + TDuration::MilliSeconds(1250));
+            } else if (failure == 3) {
+                UNIT_ASSERT(due >= before + TDuration::Seconds(2));
+            } else if (failure >= 12) {
+                UNIT_ASSERT(due >= before + TDuration::Seconds(60));
+            }
+            const auto inventory = ctx.Call(ListRequest());
+            UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ack).GetDelegation().SerializeAsString(), finished.SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListRequest()).SerializeAsString(), inventory.SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ClaimRequest("too-early", 1)).DelegationsSize(), 0);
+            lastAck = ack;
+            ctx.Reboot();
+            UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").SerializeAsString(), finished.SerializeAsString());
+        }
+    }
+
+    Y_UNIT_TEST(PendingRevocationResetsFailuresAndRetainsOperation) {
+        TTestContext ctx;
+        CreateActive(ctx);
+        ctx.Call(DropRequest(GetSecret(ctx)));
+        for (ui32 i = 0; i < 3; ++i) {
+            const auto pending = GetDelegation(ctx, "create-1");
+            ctx.GetRuntime().UpdateCurrentTime(Max(ctx.GetRuntime().GetCurrentTime(),
+                TInstant::MicroSeconds(pending.GetDueAtUs())));
+            const auto claimed = ctx.Call(ClaimRequest("failing-worker", 1)).GetDelegations(0);
+            auto ack = FinishRequest(claimed, NProto::REVOKE_RETRY);
+            ack.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_FAILURE);
+            ctx.Call(ack);
+        }
+        const auto failing = GetDelegation(ctx, "create-1");
+        UNIT_ASSERT_VALUES_EQUAL(failing.GetRevokeConsecutiveFailures(), 3);
+        ctx.GetRuntime().UpdateCurrentTime(TInstant::MicroSeconds(failing.GetDueAtUs()));
+        const auto claimed = ctx.Call(ClaimRequest("progress-worker", 1)).GetDelegations(0);
+        auto ack = FinishRequest(claimed, NProto::REVOKE_RETRY);
+        ack.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_PENDING);
+        ack.MutableFinishRevocation()->SetRevokeOperationId("remote-revoke-still-pending");
+        const auto before = ctx.GetRuntime().GetCurrentTime();
+        const auto saved = ctx.Call(ack).GetDelegation();
+        UNIT_ASSERT_VALUES_EQUAL(saved.GetRevokeConsecutiveFailures(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(saved.GetRevokeOperationId(), "remote-revoke-still-pending");
+        UNIT_ASSERT_VALUES_EQUAL(saved.GetCleanupQueuedAtUs(), failing.GetCleanupQueuedAtUs());
+        UNIT_ASSERT(saved.GetDueAtUs() >= (before + TDuration::Seconds(1)).MicroSeconds());
+        UNIT_ASSERT(saved.GetDueAtUs() < (ctx.GetRuntime().GetCurrentTime() + TDuration::MilliSeconds(1250)).MicroSeconds());
+        ctx.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").SerializeAsString(), saved.SerializeAsString());
+
+        ctx.GetRuntime().UpdateCurrentTime(Max(ctx.GetRuntime().GetCurrentTime(),
+            TInstant::MicroSeconds(saved.GetDueAtUs())));
+        const auto next = ctx.Call(ClaimRequest("new-worker", 1)).GetDelegations(0);
+        auto unknown = FinishRequest(next, NProto::REVOKE_RETRY);
+        unknown.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_FAILURE);
+        unknown.MutableFinishRevocation()->ClearRevokeOperationId();
+        const auto retried = ctx.Call(unknown).GetDelegation();
+        UNIT_ASSERT_VALUES_EQUAL(retried.GetRevokeConsecutiveFailures(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(retried.GetRevokeOperationId(), "remote-revoke-still-pending");
+    }
+
+    Y_UNIT_TEST(LegacyRevocationAckPreservesNewFailureHistory) {
+        TTestContext ctx;
+        CreateActive(ctx);
+        ctx.Call(DropRequest(GetSecret(ctx)));
+        auto claimed = ctx.Call(ClaimRequest()).GetDelegations(0);
+        auto failure = FinishRequest(claimed, NProto::REVOKE_RETRY);
+        failure.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_FAILURE);
+        const auto first = ctx.Call(failure).GetDelegation();
+        UNIT_ASSERT_VALUES_EQUAL(first.GetRevokeConsecutiveFailures(), 1);
+        ctx.GetRuntime().UpdateCurrentTime(TInstant::MicroSeconds(first.GetDueAtUs()));
+        claimed = ctx.Call(ClaimRequest("legacy-worker")).GetDelegations(0);
+        const auto before = ctx.GetRuntime().GetCurrentTime();
+        const auto legacy = FinishRequest(claimed, NProto::REVOKE_RETRY, TDuration::Seconds(30));
+        UNIT_ASSERT(!legacy.GetFinishRevocation().HasRetryReason());
+        const auto saved = ctx.Call(legacy).GetDelegation();
+        UNIT_ASSERT_VALUES_EQUAL(saved.GetRevokeConsecutiveFailures(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(saved.GetCleanupQueuedAtUs(), first.GetCleanupQueuedAtUs());
+        UNIT_ASSERT(saved.GetDueAtUs() >= (before + TDuration::Seconds(30)).MicroSeconds());
+        UNIT_ASSERT(saved.GetDueAtUs() <= (ctx.GetRuntime().GetCurrentTime() + TDuration::Seconds(30)).MicroSeconds());
+        ctx.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").SerializeAsString(), saved.SerializeAsString());
+    }
+
+    Y_UNIT_TEST(InvalidRetryClassificationDoesNotConsumeClaim) {
+        TTestContext ctx;
+        CreateActive(ctx);
+        ctx.Call(DropRequest(GetSecret(ctx)));
+        const auto claimed = ctx.Call(ClaimRequest()).GetDelegations(0);
+        const auto inventory = ctx.Call(ListRequest());
+        auto invalid = FinishRequest(claimed);
+        invalid.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_FAILURE);
+        ctx.Call(invalid, NProto::INVALID_ARGUMENT);
+        invalid = FinishRequest(claimed, NProto::REVOKE_RETRY);
+        invalid.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_PENDING);
+        invalid.MutableFinishRevocation()->ClearRevokeOperationId();
+        invalid.MutableFinishRevocation()->SetClearRevokeOperationId(true);
+        ctx.Call(invalid, NProto::INVALID_ARGUMENT);
+        invalid = FinishRequest(claimed, NProto::REVOKE_RETRY);
+        auto* unknown = invalid.MutableFinishRevocation();
+        unknown->GetReflection()->MutableUnknownFields(unknown)->AddVarint(7, 999);
+        ctx.Call(invalid, NProto::INVALID_ARGUMENT);
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").SerializeAsString(), claimed.SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListRequest()).SerializeAsString(), inventory.SerializeAsString());
+        ctx.Call(FinishRequest(claimed));
+    }
+
+    Y_UNIT_TEST(UnknownSetupGetsCleanupAgeOnlyWhenAuthoritativelyResolved) {
+        TTestContext ctx;
+        ctx.Call(RegisterRequest(DatabaseIdentity()));
+        const auto staged = ctx.Call(StageCreateRequest()).GetDelegation();
+        const auto bound = ctx.Call(BindRequest(staged)).GetDelegation();
+        const auto started = ctx.Call(StartRequest(bound)).GetDelegation();
+        const auto unknown = ctx.Call(SetupResultRequest(started, NProto::SETUP_UNKNOWN)).GetDelegation();
+        UNIT_ASSERT(!unknown.HasCleanupQueuedAtUs());
+        ctx.Call(DropRequest(GetSecret(ctx)));
+        ctx.AdvanceTime(TDuration::Days(1));
+        ctx.Reboot();
+        const auto waiting = GetDelegation(ctx, "create-1");
+        UNIT_ASSERT_VALUES_EQUAL(waiting.GetState(), NProto::WAITING_SETUP);
+        UNIT_ASSERT(!waiting.HasCleanupQueuedAtUs());
+        const auto before = ctx.GetRuntime().GetCurrentTime();
+        const auto queued = ctx.Call(SetupResultRequest(waiting, NProto::SETUP_SUCCEEDED)).GetDelegation();
+        UNIT_ASSERT(queued.HasCleanupQueuedAtUs());
+        UNIT_ASSERT(queued.GetCleanupQueuedAtUs() >= before.MicroSeconds());
+        UNIT_ASSERT(queued.GetCleanupQueuedAtUs() <= ctx.GetRuntime().GetCurrentTime().MicroSeconds());
+        ctx.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").GetCleanupQueuedAtUs(), queued.GetCleanupQueuedAtUs());
+    }
+
+
     Y_UNIT_TEST(CrossDatabaseClaimBeforeCommit) {
         CrossDatabaseClaimBoundary(ECrashPoint::BeforeCommit);
     }

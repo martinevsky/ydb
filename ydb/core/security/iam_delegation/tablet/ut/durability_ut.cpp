@@ -39,6 +39,42 @@ void AssertInventoryMatchesCanonicalRecords(TTestContext& ctx, ui32 expectedSize
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationDurability) {
+    Y_UNIT_TEST_DURABLE_BOUNDARIES(RevocationFailureHistoryAndCleanupAge) {
+        TTestContext ctx;
+        CreateActive(ctx);
+        ctx.Call(DropRequest(GetSecret(ctx)));
+        const auto claimed = ctx.Call(ClaimRequest()).GetDelegations(0);
+        UNIT_ASSERT(claimed.HasCleanupQueuedAtUs());
+        auto ack = FinishRequest(claimed, NProto::REVOKE_RETRY);
+        ack.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_FAILURE);
+        ctx.CrashCall(ack, point);
+        const auto recovered = GetDelegation(ctx, "create-1");
+        UNIT_ASSERT_VALUES_EQUAL(recovered.GetCleanupQueuedAtUs(), claimed.GetCleanupQueuedAtUs());
+        if (point == ECrashPoint::BeforeCommit) {
+            UNIT_ASSERT_VALUES_EQUAL(recovered.SerializeAsString(), claimed.SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(recovered.GetRevokeConsecutiveFailures(), 0);
+        } else {
+            UNIT_ASSERT_VALUES_EQUAL(recovered.GetState(), NProto::REVOCATION_PENDING);
+            UNIT_ASSERT_VALUES_EQUAL(recovered.GetRevokeConsecutiveFailures(), 1);
+        }
+        // Reboot fences even an exact ACK from the old generation. The committed
+        // counter must not advance again while the old response is being recovered.
+        ctx.Call(ack, NProto::STALE_CLAIM);
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").SerializeAsString(), recovered.SerializeAsString());
+        AssertInventoryMatchesCanonicalRecords(ctx, 1);
+        ctx.GetRuntime().UpdateCurrentTime(Max(ctx.GetRuntime().GetCurrentTime(),
+            TInstant::MicroSeconds(recovered.GetDueAtUs())));
+        const auto next = ctx.Call(ClaimRequest("takeover", 1)).GetDelegations(0);
+        auto nextAck = FinishRequest(next, NProto::REVOKE_RETRY);
+        nextAck.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_FAILURE);
+        const auto saved = ctx.Call(nextAck).GetDelegation();
+        UNIT_ASSERT_VALUES_EQUAL(saved.GetRevokeConsecutiveFailures(), recovered.GetRevokeConsecutiveFailures() + 1);
+        UNIT_ASSERT_VALUES_EQUAL(saved.GetCleanupQueuedAtUs(), claimed.GetCleanupQueuedAtUs());
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(nextAck).GetDelegation().SerializeAsString(), saved.SerializeAsString());
+    }
+
+
+
     Y_UNIT_TEST_DURABLE_BOUNDARIES(SetupFailureDetails) {
         TTestContext ctx;
         CreateActive(ctx);

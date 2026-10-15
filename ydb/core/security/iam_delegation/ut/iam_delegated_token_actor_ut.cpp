@@ -11,6 +11,10 @@
 
 #include <library/cpp/testing/unittest/registar.h>
 
+#include <util/generic/set.h>
+#include <util/generic/scope.h>
+#include <util/random/random.h>
+
 #include <deque>
 
 namespace NKikimr::NIamDelegation {
@@ -184,10 +188,22 @@ struct TFixture {
     }
 
     TAutoPtr<IEventHandle> Refresh() {
-        Runtime.AdvanceCurrentTime(TDuration::Minutes(59));
-        Get(); // keep the key active before its scheduled refresh
-        UNIT_ASSERT_VALUES_EQUAL(Result().Token, "delegated-token");
-        Runtime.AdvanceCurrentTime(TDuration::Minutes(1));
+        const auto deadline = Runtime.GetCurrentTime() + TDuration::Hours(1) + TDuration::Seconds(1);
+        auto nextDemand = Runtime.GetCurrentTime() + TDuration::Minutes(5);
+        while (Mints.empty()) {
+            // Observe the actual scheduled mint before its client timeout, and
+            // retain ordinary demand during the ten-minute idle window.
+            Runtime.SimulateSleep(TDuration::Seconds(1));
+            if (!Mints.empty()) {
+                break;
+            }
+            UNIT_ASSERT(Runtime.GetCurrentTime() < deadline);
+            if (Runtime.GetCurrentTime() >= nextDemand) {
+                Get();
+                UNIT_ASSERT_VALUES_EQUAL(Result().Token, "delegated-token");
+                nextDemand = Runtime.GetCurrentTime() + TDuration::Minutes(5);
+            }
+        }
         return Mint();
     }
 };
@@ -195,6 +211,112 @@ struct TFixture {
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegatedTokenActor) {
+    Y_UNIT_TEST(SuccessfulRefreshesAreDispersedAcrossEntriesAndNodes) {
+        SetRandomSeed(314159);
+        Y_DEFER { ResetRandomState(); };
+        TSet<ui64> offsets;
+        for (ui32 node = 0; node < 2; ++node) {
+            TFixture f;
+            f.Runtime.UpdateCurrentTime(TInstant::Seconds(f.Runtime.GetCurrentTime().Seconds() + 1));
+            const auto started = f.Runtime.GetCurrentTime();
+            for (ui32 entry = 0; entry < 32; ++entry) {
+                f.Get(entry + 1, {TStringBuilder() << "account-" << entry, "cloud", {}, {}, {}});
+                auto mint = f.Mint();
+                // Cold demand keeps its immediate first attempt.
+                UNIT_ASSERT_VALUES_EQUAL(f.Runtime.GetCurrentTime(), started);
+                f.Reply(*mint, TDuration::Minutes(10));
+                UNIT_ASSERT(f.Result(entry + 1).IsSuccess());
+            }
+            TSet<TString> refreshed;
+            for (ui32 entry = 0; entry < 32; ++entry) {
+                auto mint = f.Mint();
+                const auto elapsed = f.Runtime.GetCurrentTime() - started;
+                UNIT_ASSERT(elapsed >= TDuration::Minutes(4));
+                UNIT_ASSERT(elapsed <= TDuration::Minutes(5));
+                const auto account = mint->Get<TCloudToken::TEvCreateForServiceRequest>()->Request.target_service_account_id();
+                UNIT_ASSERT(refreshed.insert(account).second);
+                offsets.insert(elapsed.MicroSeconds());
+                f.Reply(*mint, TDuration::Minutes(10), "refreshed-token");
+            }
+            UNIT_ASSERT_VALUES_EQUAL(refreshed.size(), 32);
+        }
+        // Deterministic seed, broad bound: a fixed half-life timer has one offset.
+        // Do not pin the test to the standard helper's individual random samples.
+        UNIT_ASSERT_C(offsets.size() > 8, "healthy refreshes remained synchronized");
+    }
+
+    Y_UNIT_TEST(NearBoundaryRefreshRemainsPacedAndNeverServesExpiredToken) {
+        TFixture f;
+        f.Runtime.UpdateCurrentTime(TInstant::Seconds(f.Runtime.GetCurrentTime().Seconds() + 1)
+            + TDuration::MilliSeconds(500));
+        f.Get(1);
+        auto mint = f.Mint();
+        const auto mintedAt = f.Runtime.GetCurrentTime();
+        // The IAM fixture's seconds-only expiry gives exactly half a second of
+        // usability. The refresh pacing floor must not extend that serving cutoff.
+        f.Reply(*mint, TDuration::Minutes(5) + TDuration::Seconds(1), "short-token");
+        const auto first = f.Result(1);
+        UNIT_ASSERT(first.IsSuccess());
+        UNIT_ASSERT_VALUES_EQUAL(first.UsableUntil - mintedAt, TDuration::MilliSeconds(500));
+        f.Runtime.UpdateCurrentTime(first.UsableUntil - TDuration::MicroSeconds(1));
+        f.Get(2);
+        UNIT_ASSERT_VALUES_EQUAL(f.Result(2).Token, "short-token");
+        f.Runtime.UpdateCurrentTime(first.UsableUntil);
+        f.Get(3);
+        auto refresh = f.Mint();
+        UNIT_ASSERT(f.Results.empty());
+        UNIT_ASSERT(f.Runtime.GetCurrentTime() >= mintedAt + TDuration::Seconds(1));
+        UNIT_ASSERT(f.Runtime.GetCurrentTime() < mintedAt + TDuration::Seconds(2));
+        f.Reply(*refresh, TDuration::Minutes(20), "fresh-token");
+        UNIT_ASSERT_VALUES_EQUAL(f.Result(3).Token, "fresh-token");
+    }
+
+    Y_UNIT_TEST(SuccessfulMintResetsFailureBackoffBeforeNextFailure) {
+        TFixture f;
+        f.Get();
+        TInstant previous;
+        for (ui32 failure = 1; failure <= 5; ++failure) {
+            auto mint = f.Mint();
+            const auto now = f.Runtime.GetCurrentTime();
+            if (failure == 5) {
+                UNIT_ASSERT(now - previous >= TDuration::Seconds(3));
+            }
+            f.Reply(*mint, TDuration::Hours(12), {}, grpc::StatusCode::PERMISSION_DENIED);
+            if (failure == 1) {
+                UNIT_ASSERT(!f.Result().IsSuccess());
+            }
+            previous = now;
+        }
+        auto recovered = f.Mint();
+        f.Reply(*recovered, TDuration::Minutes(10));
+        auto healthyRefresh = f.Mint();
+        const auto failedAt = f.Runtime.GetCurrentTime();
+        f.Reply(*healthyRefresh, TDuration::Hours(12), {}, grpc::StatusCode::PERMISSION_DENIED);
+        auto firstRetry = f.Mint();
+        const auto delay = f.Runtime.GetCurrentTime() - failedAt;
+        UNIT_ASSERT(delay >= TDuration::Seconds(1));
+        UNIT_ASSERT(delay < TDuration::MilliSeconds(1250));
+        f.Reply(*firstRetry, TDuration::Minutes(10));
+    }
+
+    // Coverage control: idle eviction must survive the new healthy-refresh jitter.
+    Y_UNIT_TEST(IdleEntryStopsBackgroundMintingAndNextDemandStartsImmediately) {
+        TFixture f;
+        f.InitialToken();
+        f.Runtime.SimulateSleep(TDuration::Hours(1) + TDuration::Seconds(1));
+        UNIT_ASSERT(f.Mints.empty()); // idle entry was removed before its background refresh
+        UNIT_ASSERT(f.Results.empty());
+        const auto demandAt = f.Runtime.GetCurrentTime();
+        f.Get(2);
+        auto mint = f.Mint();
+        UNIT_ASSERT(f.Runtime.GetCurrentTime() - demandAt < TDuration::Seconds(1));
+        UNIT_ASSERT(f.Results.empty());
+        f.Reply(*mint, TDuration::Hours(12), "new-entry-token");
+        UNIT_ASSERT_VALUES_EQUAL(f.Result(2).Token, "new-entry-token");
+        UNIT_ASSERT_VALUES_EQUAL(f.Subscriptions, 1);
+    }
+
+
     Y_UNIT_TEST(ConcurrentReadersShareMintAndReceiveUsableBoundary) {
         TFixture f;
         f.Get(1);

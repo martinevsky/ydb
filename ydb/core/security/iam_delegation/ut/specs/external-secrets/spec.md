@@ -207,3 +207,20 @@ Contract coverage: iam-delegation-lifecycle / "Unknown setup is not a failed set
 | Executable case | Test source | Command target |
 | --- | --- | --- |
 | `IamDelegationRecovery::TerminalOperationWithSuccessErrorCodeRemainsUnknown` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+
+#### Scenario: Refresh dispersion and exact serving cutoffs
+
+- **GIVEN** 64 independently keyed entries across two controlled runtimes, short-lived tokens, prior failures and idle entries.
+- **WHEN** cold demand, successful refresh, a new failure after success, exact expiry and demand after eviction occur.
+- **THEN** first mint remains immediate, healthy refreshes spread within the bounded earlier window, subsecond usability still expires at the exact boundary despite one-second pacing, recovery resets failure backoff, and idle entries stop minting until new demand.
+
+Status: executable regression source added; RED execution pending. No passing verification is claimed.
+
+Contract coverage: iam-delegated-token-acquisition / "Refresh scheduling is dispersed"; "Refresh is automatic and bounded against busy loops"; "Idle entries expire in bounded time".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegatedTokenActor::SuccessfulRefreshesAreDispersedAcrossEntriesAndNodes` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::NearBoundaryRefreshRemainsPacedAndNeverServesExpiredToken` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::SuccessfulMintResetsFailureBackoffBeforeNextFailure` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::IdleEntryStopsBackgroundMintingAndNextDemandStartsImmediately` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
