@@ -7,6 +7,7 @@ SRCS(
 )
 
 PEERDIR(
+    ydb/core/security/iam_delegation/policy
     ydb/core/base
     ydb/core/security/iam_delegation/tablet/public
     ydb/core/tx/schemeshard

@@ -1,5 +1,6 @@
 #include "tablet.h"
 #include "public/setup_failure.h"
+#include <ydb/core/security/iam_delegation/policy/retry.h>
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/path.h>
@@ -8,6 +9,8 @@
 #include <util/generic/map.h>
 #include <util/generic/vector.h>
 #include <util/string/builder.h>
+
+#include <limits>
 
 namespace NKikimr::NIamDelegation {
 namespace {
@@ -188,6 +191,14 @@ void WriteDelegation(NIceDb::TNiceDb& db, const TDelegation& record, const TDele
     }
 }
 
+void QueueRevocation(TDelegation& record, ui64 nowUs) {
+    if (!InQueue(record) && !record.HasCleanupQueuedAtUs()) {
+        record.SetCleanupQueuedAtUs(nowUs);
+    }
+    record.SetState(REVOCATION_PENDING);
+    record.SetDueAtUs(nowUs);
+}
+
 void Retire(TDelegation& record, ui64 nowUs) {
     switch (record.GetSetupState()) {
         case SETUP_NOT_STARTED:
@@ -199,8 +210,7 @@ void Retire(TDelegation& record, ui64 nowUs) {
             record.SetState(WAITING_SETUP);
             break;
         case SETUP_SUCCEEDED:
-            record.SetState(REVOCATION_PENDING);
-            record.SetDueAtUs(nowUs);
+            QueueRevocation(record, nowUs);
             break;
         default:
             Y_ABORT("Invalid persisted IAM setup state");
@@ -517,8 +527,7 @@ struct TIamDelegationTablet::TTxRequest final
             }
         } else if (secret.GetState() == SECRET_DROPPED || record.GetState() == WAITING_SETUP) {
             if (request.GetOutcome() == SETUP_SUCCEEDED) {
-                record.SetState(REVOCATION_PENDING);
-                record.SetDueAtUs(nowUs);
+                QueueRevocation(record, nowUs);
             } else {
                 record.SetState(WAITING_SETUP);
             }
@@ -872,6 +881,30 @@ struct TIamDelegationTablet::TTxRequest final
     }
 
     EExecution FinishRevocation(NIceDb::TNiceDb& db, const TFinishRevocationRequest& request, ui64 nowUs) {
+        // Proto2 retains an unrecognized enum as an unknown field. Do not
+        // reinterpret it as an old worker's unspecified classification.
+        const auto& unknown = request.GetReflection()->GetUnknownFields(request);
+        for (int index = 0; index < unknown.field_count(); ++index) {
+            if (unknown.field(index).number() == TFinishRevocationRequest::kRetryReasonFieldNumber) {
+                return Error(INVALID_ARGUMENT, "Unknown revocation retry classification");
+            }
+        }
+        switch (request.GetRetryReason()) {
+            case REVOKE_RETRY_UNSPECIFIED:
+                break;
+            case REVOKE_RETRY_PENDING:
+                if (request.GetClearRevokeOperationId()) {
+                    return Error(INVALID_ARGUMENT, "Pending revocation must retain its operation identity");
+                }
+                [[fallthrough]];
+            case REVOKE_RETRY_FAILURE:
+                if (request.GetOutcome() != REVOKE_RETRY) {
+                    return Error(INVALID_ARGUMENT, "A retry classification requires a retry outcome");
+                }
+                break;
+            default:
+                return Error(INVALID_ARGUMENT, "Unknown revocation retry classification");
+        }
         if ((request.GetOutcome() != REVOKE_SUCCEEDED && request.GetOutcome() != REVOKE_RETRY)
             || request.GetRetryAfterUs() > MaxRetryUs || request.GetRevokeOperationId().size() > 256
             || (request.GetClearRevokeOperationId()
@@ -920,7 +953,18 @@ struct TIamDelegationTablet::TTxRequest final
             record.ClearDueAtUs();
         } else {
             record.SetState(REVOCATION_PENDING);
-            record.SetDueAtUs(nowUs + request.GetRetryAfterUs());
+            TDuration delay = TDuration::MicroSeconds(request.GetRetryAfterUs());
+            if (request.GetRetryReason() == REVOKE_RETRY_FAILURE) {
+                const auto failures = record.GetRevokeConsecutiveFailures();
+                record.SetRevokeConsecutiveFailures(failures == std::numeric_limits<ui32>::max() ? failures : failures + 1);
+                delay = RevocationRetryDelay(record.GetRevokeConsecutiveFailures());
+            } else if (request.GetRetryReason() == REVOKE_RETRY_PENDING) {
+                record.SetRevokeConsecutiveFailures(0);
+                delay = RevocationRetryDelay(0);
+            }
+            // All potentially cold reads have completed. Sample jitter once
+            // for this committed ACK, retaining the original receipt for replay.
+            record.SetDueAtUs(nowUs + delay.MicroSeconds());
         }
         record.SetRevision(record.GetRevision() + 1);
         WriteDelegation(db, record, &previous, &secret);

@@ -9,6 +9,7 @@ SRCS(
 )
 
 PEERDIR(
+    ydb/core/security/iam_delegation/policy
     contrib/libs/googleapis-common-protos
     ydb/core/base
     ydb/core/protos
@@ -31,6 +32,7 @@ RECURSE_FOR_TESTS(
 )
 
 RECURSE(
+    policy
     lifecycle
     tablet
 )

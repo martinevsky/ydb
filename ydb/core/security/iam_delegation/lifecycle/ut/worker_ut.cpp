@@ -233,48 +233,49 @@ void CheckWorkerFailureDetails(ERefusalDelivery delivery) {
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationRecoveryWorker) {
-Y_UNIT_TEST(WorkersDisperseScansBeforeClaimingWithoutReducingMinimumPause) {
-    TWorkerFixture f;
-    SetRandomSeed(55683);
-    THashMap<TString, TVector<TInstant>> claims;
-    auto observe = f.Runtime.AddObserver<TEvIamDelegationTablet::TEvRequest>([&](auto& event) {
-        if (event->GetRecipientRewrite() == f.Tablet.TabletActor()
-            && event->Get()->Record.HasClaimRevocations()) {
-            const auto& request = event->Get()->Record.GetClaimRevocations();
-            UNIT_ASSERT_VALUES_EQUAL(request.GetLimit(), 1);
-            claims[request.GetWorkerId()].push_back(f.Runtime.GetCurrentTime());
+    Y_UNIT_TEST(WorkersDisperseScansBeforeClaimingWithoutReducingMinimumPause) {
+        TWorkerFixture f;
+        SetRandomSeed(55683);
+        Y_DEFER { ResetRandomState(); };
+        THashMap<TString, TVector<TInstant>> claims;
+        auto observe = f.Runtime.AddObserver<TEvIamDelegationTablet::TEvRequest>([&](auto& event) {
+            if (event->GetRecipientRewrite() == f.Tablet.TabletActor()
+                && event->Get()->Record.HasClaimRevocations()) {
+                const auto& request = event->Get()->Record.GetClaimRevocations();
+                UNIT_ASSERT_VALUES_EQUAL(request.GetLimit(), 1);
+                claims[request.GetWorkerId()].push_back(f.Runtime.GetCurrentTime());
+            }
+        });
+        const auto started = f.Runtime.GetCurrentTime();
+        TVector<TActorId> workers;
+        for (ui32 index = 0; index < 32; ++index) {
+            const auto worker = f.Runtime.Register(CreateIamDelegationRecoveryWorker(f.Tablet.TabletId));
+            f.Runtime.EnableScheduleForActor(worker);
+            workers.push_back(worker);
         }
-    });
-    const auto started = f.Runtime.GetCurrentTime();
-    TVector<TActorId> workers;
-    for (ui32 index = 0; index < 32; ++index) {
-        const auto worker = f.Runtime.Register(CreateIamDelegationRecoveryWorker(f.Tablet.TabletId));
-        f.Runtime.EnableScheduleForActor(worker);
-        workers.push_back(worker);
-    }
-    Y_DEFER {
-        for (const auto& worker : workers) {
-            f.Runtime.Send(new IEventHandle(worker, {}, new TEvents::TEvPoison));
+        Y_DEFER {
+            for (const auto& worker : workers) {
+                f.Runtime.Send(new IEventHandle(worker, {}, new TEvents::TEvPoison));
+            }
+        };
+        f.Until([&] {
+            return claims.size() == workers.size()
+                && AllOf(claims, [](const auto& item) { return item.second.size() >= 2; });
+        });
+        TSet<ui64> firstDispatches;
+        for (const auto& [worker, times] : claims) {
+            Y_UNUSED(worker);
+            UNIT_ASSERT(times[0] >= started + TDuration::Seconds(1));
+            UNIT_ASSERT(times[0] < started + TDuration::MilliSeconds(1250));
+            UNIT_ASSERT(times[1] >= times[0] + TDuration::Seconds(1));
+            UNIT_ASSERT(times[1] < times[0] + TDuration::MilliSeconds(1250));
+            firstDispatches.insert((times[0] - started).MicroSeconds());
         }
-    };
-    f.Until([&] {
-        return claims.size() == workers.size()
-            && AllOf(claims, [](const auto& item) { return item.second.size() >= 2; });
-    });
-    TSet<ui64> firstDispatches;
-    for (const auto& [worker, times] : claims) {
-        Y_UNUSED(worker);
-        UNIT_ASSERT(times[0] >= started + TDuration::Seconds(1));
-        UNIT_ASSERT(times[0] < started + TDuration::MilliSeconds(1250));
-        UNIT_ASSERT(times[1] >= times[0] + TDuration::Seconds(1));
-        UNIT_ASSERT(times[1] < times[0] + TDuration::MilliSeconds(1250));
-        firstDispatches.insert((times[0] - started).MicroSeconds());
+        UNIT_ASSERT_C(firstDispatches.size() > 8,
+            "Independent workers still synchronize their initial revocation scans");
+        UNIT_ASSERT_VALUES_EQUAL(f.SubmissionCount, 0);
+        UNIT_ASSERT_VALUES_EQUAL(f.PollCount, 0);
     }
-    UNIT_ASSERT_C(firstDispatches.size() > 8,
-        "Independent workers still synchronize their initial revocation scans");
-    UNIT_ASSERT_VALUES_EQUAL(f.SubmissionCount, 0);
-    UNIT_ASSERT_VALUES_EQUAL(f.PollCount, 0);
-}
 
     Y_UNIT_TEST(RevocationOutcomeHistorySurvivesWorkerAndTabletTakeover) {
         TWorkerFixture f;

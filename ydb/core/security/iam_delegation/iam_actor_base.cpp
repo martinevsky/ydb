@@ -194,7 +194,7 @@ NActors::async<NActors::IEventHandle::TPtr> IamClientRequest(NActors::TActorId c
 
 TBackoff IamCallBackoff(const TIamDelegationSettings& settings) {
     // MaxRetries counts attempts; TBackoff counts retries after the first attempt
-    return TBackoff(settings.MaxRetries > 0 ? settings.MaxRetries - 1 : 0, TDuration::MilliSeconds(200), TDuration::Seconds(10));
+    return TBackoff(settings.MaxRetries > 0 ? settings.MaxRetries - 1 : 0, TRetrySettings::RpcInitialDelay, TRetrySettings::RpcMaxDelay);
 }
 
 } // namespace NKikimr::NIamDelegation

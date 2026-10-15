@@ -140,7 +140,7 @@ NActors::async<typename TResponseEv::TPtr> IamCallWithRetry(const TIamDelegation
             request->Token = token;
             request->RequestId = requestId;
 
-            const auto responseDeadline = Min(deadline, NActors::TActivationContext::Monotonic() + settings.RequestTimeout + TDuration::Seconds(1));
+            const auto responseDeadline = Min(deadline, NActors::TActivationContext::Monotonic() + settings.RequestTimeout + TRetrySettings::RpcResponseSlack);
             auto response = co_await NActors::WithDeadline(responseDeadline, &IamClientRequest, client, request.Release());
             CheckIamCallDeadline(deadline);
             if (!response) {

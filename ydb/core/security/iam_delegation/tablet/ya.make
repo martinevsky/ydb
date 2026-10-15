@@ -1,6 +1,7 @@
 LIBRARY()
 
 PEERDIR(
+    ydb/core/security/iam_delegation/policy
     ydb/core/base
     ydb/core/engine/minikql
     ydb/core/tablet_flat

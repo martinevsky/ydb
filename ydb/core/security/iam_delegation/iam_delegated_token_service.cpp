@@ -199,7 +199,7 @@ private:
             }
         };
 
-        TBackoff errorBackoff(TDuration::Seconds(1), TDuration::Minutes(1));
+        TBackoff errorBackoff(TRetrySettings::InitialDelay, TRetrySettings::MaxDelay);
         for (;;) {
             if (!FindEntry(key)) {
                 co_return;
@@ -224,12 +224,9 @@ private:
                 entry->LastError.clear();
                 entry->ConsecutiveFailures = 0;
                 errorBackoff.Reset();
-                // refresh at half of the lifetime, and at least every MaxTokenCacheLifetime
-                const TInstant refreshAt = Min(now + Min(lifetime / 2, Settings.MaxTokenCacheLifetime), entry->UsableUntil);
-                // A near-boundary token must not cause a busy refresh loop. It may become absent
-                // while IAM is issuing tokens this short, but it is never served past UsableUntil.
-                entry->NextRefreshAt = Max(refreshAt, now + TDuration::Seconds(1));
-                delay = entry->NextRefreshAt - now;
+                const auto target = Min(Min(lifetime / 2, Settings.MaxTokenCacheLifetime), entry->UsableUntil - now);
+                delay = SuccessfulRefreshDelay(target);
+                entry->NextRefreshAt = now + delay;
                 YDB_LOG_DEBUG("Token obtained",
                     {"key", key.ToString()},
                     {"expiresAt", entry->ExpiresAt},

@@ -147,3 +147,27 @@ Contract coverage: external-secret-consumers / "Shared resolution enforces per-c
 Status: planned — no executable case yet; does not contribute to executed counts.
 
 Contract coverage: external-secret-consumers / "Value reads use their own permission" — scenarios "SelectRow-only cold read", "Metadata-only caller".
+
+#### Scenario: Long-lived acquisition rotates platform credentials
+
+- **GIVEN** the real token producer, durable delegation tablet and secret reader with controlled IAM transport.
+- **WHEN** a consumer reads for over one hour while platform credentials rotate before the first healthy refresh.
+- **THEN** autonomous refreshes use the current platform credential, subsequent reads receive current usable tokens, and no creator bearer is retained or sent.
+
+Status: executable source added; first execution pending. This validates local credential selection, not live IAM authorization semantics.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationSecretReader::LongLivedReaderMintsWithRotatedPlatformCredential` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+
+#### Scenario: Shared mint retains independent reader ownership and authorization
+
+- **GIVEN** cancelled, allowed, denied and stale-identity readers sharing one real token producer.
+- **WHEN** one IAM mint completes and abandoned timers subsequently arrive.
+- **THEN** only the allowed reader receives a token, the other readers retain their own authorization and identity results, and cancellation emits no reply or duplicate mint.
+
+Status: executable source added; first execution pending. Controlled schema replies do not establish remote IAM sibling-referrer semantics.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationSecretReader::CancelledReaderLeavesSharedMintAndIndependentAuthorizationIntact` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |

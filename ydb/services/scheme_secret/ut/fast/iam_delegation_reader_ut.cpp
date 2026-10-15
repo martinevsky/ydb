@@ -5,6 +5,10 @@
 #include <ydb/core/security/token_manager/token_manager.h>
 #include <ydb/library/ycloud/api/iam_token_service.h>
 #include <util/random/random.h>
+#include <ydb/core/base/path.h>
+
+#include <deque>
+#include <functional>
 #include <ydb/core/security/iam_delegation/tablet/ut/requests.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 
@@ -195,9 +199,201 @@ struct TReadFixture {
     }
 };
 
+struct TRealTokenProducer {
+    using TCloudToken = NCloud::TEvIamTokenService;
+    TReadFixture& Fixture;
+    TActorId Manager;
+    TActorId Actor;
+    ui32 SubscriptionsSeen = 0;
+    ui32 MintCalls = 0;
+    std::deque<TAutoPtr<IEventHandle>> Mints;
+    std::function<void(const IEventHandle&)> OnMint;
+    TTestActorRuntime::TEventObserverHolder SubscriptionObserver;
+    TTestActorRuntime::TEventObserverHolder MintObserver;
+
+    explicit TRealTokenProducer(TReadFixture& fixture)
+        : Fixture(fixture)
+    {
+        auto& runtime = Fixture.Context.GetRuntime();
+        SubscriptionObserver = runtime.AddObserver<TEvTokenManager::TEvSubscribeUpdateToken>(
+            [&](auto& event) { ++SubscriptionsSeen; event.Reset(); });
+        MintObserver = runtime.AddObserver<TCloudToken::TEvCreateForServiceRequest>([&](auto& event) {
+            ++MintCalls;
+            if (OnMint) {
+                OnMint(*event);
+                event.Reset();
+            } else {
+                Mints.emplace_back(event.Release());
+            }
+        });
+        NIamDelegation::TIamDelegationSettings settings;
+        settings.Config.SetTokenServiceEndpoint("localhost:1");
+        settings.Config.SetSystemTokenName("platform-account");
+        settings.Config.SetEnableSsl(false);
+        Manager = runtime.AllocateEdgeActor();
+        runtime.RegisterService(MakeTokenManagerID(), Manager);
+        Actor = runtime.Register(NIamDelegation::CreateIamDelegatedTokenService(settings));
+        runtime.RegisterService(NIamDelegation::MakeIamDelegatedTokenServiceId(), Actor);
+        Fixture.EnableSchedule(Actor);
+        Fixture.Until([&] { return SubscriptionsSeen == 1; }, TDuration::Seconds(1));
+        UpdateCredential("platform-token-1");
+    }
+
+    void UpdateCredential(const TString& token) {
+        Fixture.Context.GetRuntime().Send(new IEventHandle(Actor, Manager,
+            new TEvTokenManager::TEvUpdateToken("platform-account", token,
+                {TEvTokenManager::TStatus::ECode::SUCCESS, {}})));
+    }
+
+    TAutoPtr<IEventHandle> TakeMint() {
+        Fixture.Until([&] { return !Mints.empty(); });
+        TAutoPtr<IEventHandle> event(Mints.front().Release());
+        Mints.pop_front();
+        return event;
+    }
+
+    void Reply(const IEventHandle& request, const TString& token, TDuration lifetime = TDuration::Minutes(10)) {
+        auto& runtime = Fixture.Context.GetRuntime();
+        auto response = MakeHolder<TCloudToken::TEvCreateForServiceResponse>();
+        response->Response.set_iam_token(token);
+        response->Response.mutable_expires_at()->set_seconds((runtime.GetCurrentTime() + lifetime).Seconds());
+        runtime.Send(new IEventHandle(request.Sender, request.Recipient, response.Release(), 0, request.Cookie));
+    }
+};
+
+
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationSecretReader) {
+    Y_UNIT_TEST(LongLivedReaderMintsWithRotatedPlatformCredential) {
+        TReadFixture fixture;
+        TRealTokenProducer producer(fixture);
+        auto& runtime = fixture.Context.GetRuntime();
+        const auto began = runtime.GetCurrentTime();
+        TString expectedCredential = "platform-token-1";
+        TString latestToken;
+        TVector<TString> usedCredentials;
+        producer.OnMint = [&](const IEventHandle& event) {
+            const auto& request = *event.Get<TRealTokenProducer::TCloudToken::TEvCreateForServiceRequest>();
+            UNIT_ASSERT_VALUES_EQUAL(request.Token, expectedCredential);
+            UNIT_ASSERT_VALUES_EQUAL(request.Request.target_service_account_id(), "service-account-1");
+            UNIT_ASSERT_VALUES_EQUAL(request.Request.service_id(), "ydb");
+            UNIT_ASSERT_VALUES_EQUAL(request.Request.microservice_id(), "data-plane");
+            UNIT_ASSERT(!request.Token.Contains("creator-bearer-sentinel"));
+            usedCredentials.push_back(request.Token);
+            latestToken = TStringBuilder() << "delegated-token-" << producer.MintCalls;
+            producer.Reply(event, latestToken, TDuration::Minutes(12));
+        };
+        // Only schema identity and saved delegation state are passed to the real
+        // reader. The creator's bearer is absent from both the reader and producer.
+        auto first = fixture.FinishRead(fixture.StartRead());
+        UNIT_ASSERT_VALUES_EQUAL(first->Status, Ydb::StatusIds::SUCCESS);
+        UNIT_ASSERT_VALUES_EQUAL(first->Token, latestToken);
+        const auto firstToken = first->Token;
+        for (ui32 use = 0; use < 16; ++use) {
+            if (use == 1) {
+                // Retire the old platform credential before any refresh is due.
+                expectedCredential = "platform-token-2";
+                producer.UpdateCredential(expectedCredential);
+                runtime.SimulateSleep(TDuration::MilliSeconds(1));
+            }
+            runtime.SimulateSleep(TDuration::Minutes(4));
+            const auto response = fixture.FinishRead(fixture.StartRead());
+            UNIT_ASSERT_VALUES_EQUAL_C(response->Status, Ydb::StatusIds::SUCCESS, response->Issues.ToString());
+            UNIT_ASSERT_VALUES_EQUAL(response->Token, latestToken);
+            UNIT_ASSERT(runtime.GetCurrentTime() < response->UsableUntil);
+            UNIT_ASSERT(!response->Issues.ToString().Contains("platform-token-"));
+        }
+        UNIT_ASSERT(runtime.GetCurrentTime() - began >= TDuration::Hours(1));
+        UNIT_ASSERT_VALUES_UNEQUAL(latestToken, firstToken);
+        UNIT_ASSERT_C(producer.MintCalls > 8, "A long-lived consumer did not exercise autonomous refresh");
+        UNIT_ASSERT_VALUES_EQUAL(usedCredentials.front(), "platform-token-1");
+        for (size_t i = 1; i < usedCredentials.size(); ++i) {
+            UNIT_ASSERT_VALUES_EQUAL(usedCredentials[i], "platform-token-2");
+        }
+        UNIT_ASSERT_VALUES_EQUAL(producer.SubscriptionsSeen, 1);
+    }
+
+    Y_UNIT_TEST(CancelledReaderLeavesSharedMintAndIndependentAuthorizationIntact) {
+        TReadFixture fixture;
+        auto& runtime = fixture.Context.GetRuntime();
+        auto other = fixture.Context.Call(StageCreateRequest("create-other", Binding("other-referrer"),
+            "/Root/database/other", "database-incarnation-1", 11)).GetDelegation();
+        other = fixture.Context.Call(BindRequest(other, SecretIdentity(43))).GetDelegation();
+        other = CompleteSetup(fixture.Context, other).GetDelegation();
+        const auto otherBefore = fixture.Context.Call(PromoteRequest(other,
+            GetSecret(fixture.Context, SecretIdentity(43)).GetRevision())).GetDelegation();
+        const TReference otherReference{TTestContext::TabletId, "database-incarnation-1", "create-other", 100, 43};
+        TRealTokenProducer producer(fixture);
+        THashMap<TActorId, ui32> replies;
+        ui32 getCalls = 0;
+        ui32 deniedChecks = 0;
+        auto gets = runtime.AddObserver<NIamDelegation::TEvIamDelegation::TEvGetToken>([&](auto& event) {
+            ++getCalls;
+            UNIT_ASSERT(event->Get()->Key == NIamDelegation::TTokenKey(
+                "service-account-1", "cloud-1", "ydb", "data-plane", "resource-manager.cloud"));
+        });
+        auto responses = runtime.AddObserver<TEvIamDelegationSecretReadResult>([&](auto& event) {
+            ++replies[event->Recipient];
+        });
+        auto checks = runtime.AddObserver<TEvTxProxySchemeCache::TEvNavigateKeySet>([&](auto& event) {
+            if (event->Get()->Request->UserToken->GetUserSID() != "denied-reader") {
+                return;
+            }
+            auto request = std::move(event->Get()->Request);
+            UNIT_ASSERT_VALUES_EQUAL(request->ResultSet.size(), 1);
+            auto& entry = request->ResultSet.front();
+            UNIT_ASSERT(entry.SyncVersion);
+            UNIT_ASSERT_VALUES_EQUAL(entry.Access, ui32(NACLib::SelectRow));
+            UNIT_ASSERT_VALUES_EQUAL(JoinPath(entry.Path), "/Root/database/other");
+            entry.Status = NSchemeCache::TSchemeCacheNavigate::EStatus::AccessDenied;
+            ++deniedChecks;
+            runtime.Send(new IEventHandle(event->Sender, event->Recipient,
+                new TEvTxProxySchemeCache::TEvNavigateKeySetResult(request.Release()), 0, event->Cookie));
+            event.Reset();
+        });
+        const auto start = [&](const TString& path, const TReference& reference, const TString& sid) {
+            const auto edge = runtime.AllocateEdgeActor();
+            const auto actor = runtime.Register(CreateIamDelegationSecretReaderActor(edge, 123, path,
+                "/Root/database", MakeIntrusive<NACLib::TUserToken>(sid, TVector<TString>{}), reference));
+            fixture.EnableSchedule(actor);
+            return std::pair(edge, actor);
+        };
+        const auto cancelled = start("/Root/database/secret", fixture.Reference, "reader");
+        const auto allowed = start("/Root/database/secret", fixture.Reference, "reader");
+        const auto denied = start("/Root/database/other", otherReference, "denied-reader");
+        // The remaining reader receives the first path's schema identity, which must
+        // not authorize the second immutable reference even though the mint is shared.
+        const auto changed = start("/Root/database/other", otherReference, "reader");
+        fixture.Until([&] { return getCalls == 4 && producer.MintCalls == 1; });
+        auto mint = producer.TakeMint();
+        UNIT_ASSERT_VALUES_EQUAL(mint->Get<TRealTokenProducer::TCloudToken::TEvCreateForServiceRequest>()->Token,
+            "platform-token-1");
+        runtime.Send(new IEventHandle(cancelled.second, {}, new TEvents::TEvPoison));
+        runtime.SimulateSleep(TDuration::MilliSeconds(1));
+        producer.Reply(*mint, "shared-token", TDuration::Minutes(20));
+        const auto success = fixture.FinishRead(allowed.first);
+        UNIT_ASSERT_VALUES_EQUAL(success->Status, Ydb::StatusIds::SUCCESS);
+        UNIT_ASSERT_VALUES_EQUAL(success->Token, "shared-token");
+        const auto refused = fixture.FinishRead(denied.first);
+        UNIT_ASSERT_VALUES_EQUAL(refused->Status, Ydb::StatusIds::UNAUTHORIZED);
+        UNIT_ASSERT(refused->Token.empty());
+        const auto stale = fixture.FinishRead(changed.first);
+        UNIT_ASSERT_VALUES_EQUAL(stale->Status, Ydb::StatusIds::NOT_FOUND);
+        UNIT_ASSERT(stale->Token.empty());
+        UNIT_ASSERT_VALUES_EQUAL(deniedChecks, 1);
+        UNIT_ASSERT_VALUES_EQUAL(producer.MintCalls, 1);
+        UNIT_ASSERT_VALUES_EQUAL(getCalls, 4);
+        // Exercise abandoned reader/producer wait timers before the healthy refresh.
+        runtime.SimulateSleep(NIamDelegation::TIamDelegationSettings::MintAttemptTimeout() + TDuration::Seconds(2));
+        UNIT_ASSERT_VALUES_EQUAL(replies[cancelled.first], 0);
+        UNIT_ASSERT_VALUES_EQUAL(replies[allowed.first], 1);
+        UNIT_ASSERT_VALUES_EQUAL(replies[denied.first], 1);
+        UNIT_ASSERT_VALUES_EQUAL(replies[changed.first], 1);
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(fixture.Context, "create-other").SerializeAsString(),
+            otherBefore.SerializeAsString());
+    }
+
     Y_UNIT_TEST(DefaultResolverAndConcurrentReaderWaitThroughRealProducerBackoff) {
         TReadFixture fixture;
         SetRandomSeed(42);
@@ -287,7 +483,7 @@ Y_UNIT_TEST_SUITE(IamDelegationSecretReader) {
         UNIT_ASSERT_VALUES_EQUAL(result->Status, Ydb::StatusIds::UNAVAILABLE);
         UNIT_ASSERT_STRING_CONTAINS(result->Issues.ToString(), "timed out");
         const auto elapsed = fixture.Context.GetRuntime().GetCurrentTime() - started;
-        UNIT_ASSERT_C(elapsed > TDuration::Seconds(246), elapsed);
+        UNIT_ASSERT_C(elapsed > NIamDelegation::TIamDelegationSettings::MintAttemptTimeout(), elapsed);
         UNIT_ASSERT_C(elapsed < TDuration::Minutes(5), elapsed);
         ui32 lateReplies = 0;
         auto replies = fixture.Context.GetRuntime().AddObserver<TEvIamDelegationSecretReadResult>(
@@ -315,7 +511,7 @@ Y_UNIT_TEST_SUITE(IamDelegationSecretReader) {
         auto& runtime = fixture.Context.GetRuntime();
         const auto edge = fixture.StartRead();
         fixture.WaitForHeldMint();
-        runtime.SimulateSleep(TDuration::Seconds(240));
+        runtime.SimulateSleep(NIamDelegation::TIamDelegationSettings::MintAttemptTimeout() - TDuration::Seconds(6));
         ui32 schemaRequests = 0;
         ui32 readerReplies = 0;
         auto schemas = runtime.AddObserver<TEvTxProxySchemeCache::TEvNavigateKeySet>([&](auto& event) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ydb/core/protos/config.pb.h>
+#include <ydb/core/security/iam_delegation/policy/retry.h>
 
 #include <util/datetime/base.h>
 #include <util/generic/string.h>
@@ -35,8 +36,11 @@ struct TIamDelegationSettings {
     // every credential/RPC wait and the maximum retry delays. Consumers must allow
     // this entire budget; deriving it must not sample randomized backoffs.
     static TDuration MintAttemptTimeout() {
-        return TDuration::Seconds(75) + (RequestTimeout * 2 + TDuration::Seconds(14))
-            * Max<ui32>(MaxRetries, 1) + TDuration::Seconds(1);
+        const auto attempts = Max<ui32>(MaxRetries, 1);
+        return TRetrySettings::MaxJitteredDelay(TRetrySettings::MaxDelay)
+            + (RequestTimeout * 2 + TRetrySettings::RpcResponseSlack) * attempts
+            + TRetrySettings::MaxJitteredDelay(TRetrySettings::RpcMaxDelay) * (attempts - 1)
+            + TRetrySettings::CompletionSlack;
     }
 
     static TIamDelegationSettings FromConfig(const NKikimrConfig::TIamConfig& iamConfig);

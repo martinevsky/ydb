@@ -246,3 +246,17 @@ Contract coverage: iam-delegation-revocation / "Revocation retries use standard 
 | --- | --- | --- |
 | `IamDelegationRecoveryWorker::RevocationOutcomeHistorySurvivesWorkerAndTabletTakeover` | [worker_ut.cpp](../../worker_ut.cpp) | `ydb/core/security/iam_delegation/lifecycle/ut` |
 | `IamDelegationRecoveryWorker::FailingRevocationDoesNotHoldAnotherRecordsLease` | [worker_ut.cpp](../../worker_ut.cpp) | `ydb/core/security/iam_delegation/lifecycle/ut` |
+
+#### Scenario: Worker fleets pace before taking leases
+
+- **GIVEN** thirty-two real recovery workers sharing an empty service tablet.
+- **WHEN** their first two scan rounds run with a fixed random seed.
+- **THEN** initial claims are dispersed, each scan waits at least one second, each claim requests one record, and no IAM call occurs.
+
+Status: RED observed at `3aa641c4958`; the standard-backoff implementation awaits GREEN verification.
+
+Contract coverage: iam-delegation-revocation / "Revocation retries use standard backoff and typed reasons".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationRecoveryWorker::WorkersDisperseScansBeforeClaimingWithoutReducingMinimumPause` | [worker_ut.cpp](../../worker_ut.cpp) | `ydb/core/security/iam_delegation/lifecycle/ut` |

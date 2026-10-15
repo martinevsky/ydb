@@ -1,6 +1,8 @@
 #include "worker.h"
 #include "operations.h"
 #include "schema.h"
+#include <ydb/core/security/iam_delegation/policy/retry.h>
+#include <ydb/core/util/backoff.h>
 #include <ydb/core/security/iam_delegation/tablet/public/setup_failure.h>
 
 #include <ydb/core/protos/schemeshard/operations.pb.h>
@@ -60,10 +62,15 @@ public:
 
     void Bootstrap() {
         Become(&TThis::StateWork);
+        TString afterDatabase;
+        THashMap<TString, TString> inventoryCursors;
+        TBackoff scanPacing(TRetrySettings::InitialDelay, TRetrySettings::InitialDelay);
         for (;;) {
+            // Pace before taking a lease; the remote wait never consumes the
+            // delay intended for another record or another worker's scan.
+            co_await AsyncSleepFor(scanPacing.Next());
             co_await Revoke();
-            co_await RecoverInventory();
-            co_await AsyncSleepFor(TDuration::Seconds(1));
+            co_await RecoverInventory(afterDatabase, inventoryCursors);
         }
     }
 
@@ -90,12 +97,27 @@ private:
             auto* ack = finish.MutableFinishRevocation();
             ack->SetOperationId(delegation.GetOperationId());
             *ack->MutableClaim() = delegation.GetClaim();
-            ack->SetOutcome(result.Outcome == EDelegationOperationOutcome::Succeeded ? P::REVOKE_SUCCEEDED : P::REVOKE_RETRY);
-            ack->SetRetryAfterUs(TDuration::Seconds(1).MicroSeconds());
-            if (result.Outcome == EDelegationOperationOutcome::Failed) {
-                // Only a terminal remote operation permits submitting a fresh revoke.
-                ack->SetClearRevokeOperationId(true);
-            } else if (result.OperationId) {
+            ack->SetOutcome(P::REVOKE_RETRY);
+            // Retain the old wire delay for rolling upgrades. New tablets own
+            // the durable streak and compute the delay from RetryReason.
+            ack->SetRetryAfterUs(TRetrySettings::InitialDelay.MicroSeconds());
+            switch (result.Outcome) {
+                case EDelegationOperationOutcome::Succeeded:
+                    ack->SetOutcome(P::REVOKE_SUCCEEDED);
+                    break;
+                case EDelegationOperationOutcome::Accepted:
+                    ack->SetRetryReason(P::REVOKE_RETRY_PENDING);
+                    break;
+                case EDelegationOperationOutcome::Failed:
+                    ack->SetRetryReason(P::REVOKE_RETRY_FAILURE);
+                    // Only a terminal remote operation permits a fresh revoke.
+                    ack->SetClearRevokeOperationId(true);
+                    break;
+                case EDelegationOperationOutcome::Unknown:
+                    ack->SetRetryReason(P::REVOKE_RETRY_FAILURE);
+                    break;
+            }
+            if (result.Outcome != EDelegationOperationOutcome::Failed && result.OperationId) {
                 ack->SetRevokeOperationId(result.OperationId);
             }
             // The tablet rejects late workers by generation, attempt and deadline.
@@ -322,15 +344,15 @@ private:
         }
     }
 
-    async<void> RecoverInventory() {
+    async<void> RecoverInventory(TString& afterDatabase, THashMap<TString, TString>& inventoryCursors) {
         P::TRequest list;
         list.MutableListDatabases()->SetPageSize(1);
-        list.MutableListDatabases()->SetAfterIncarnation(AfterDatabase);
+        list.MutableListDatabases()->SetAfterIncarnation(afterDatabase);
         const auto databases = co_await CallIamDelegationTablet(TabletId, std::move(list));
         if (databases.GetStatus() != P::SUCCESS) {
             co_return;
         }
-        AfterDatabase = databases.GetNextAfterIncarnation();
+        afterDatabase = databases.GetNextAfterIncarnation();
         // One record of one database per turn bounds the work between revocation
         // claims and shares progress among databases regardless of their size.
         for (const auto& database : databases.GetDatabases()) {
@@ -339,7 +361,7 @@ private:
             auto* page = inventory.MutableListInventory();
             page->SetDatabaseIncarnation(incarnation);
             page->SetPageSize(1);
-            if (const auto cursor = InventoryCursors.find(incarnation); cursor != InventoryCursors.end()) {
+            if (const auto cursor = inventoryCursors.find(incarnation); cursor != inventoryCursors.end()) {
                 page->SetAfterOperationId(cursor->second);
             }
             // This is a repeated recovery sweep, not an immutable export. Refresh
@@ -352,9 +374,9 @@ private:
                 co_return; // concurrent mutation: retry this position on its next turn
             }
             if (records.GetNextAfterOperationId()) {
-                InventoryCursors[incarnation] = records.GetNextAfterOperationId();
+                inventoryCursors[incarnation] = records.GetNextAfterOperationId();
             } else {
-                InventoryCursors.erase(incarnation);
+                inventoryCursors.erase(incarnation);
             }
             for (const auto& delegation : records.GetDelegations()) {
                 co_await Reconcile(delegation, database.GetIdentity().GetPath());
@@ -374,8 +396,6 @@ private:
 
     const ui64 TabletId;
     const TString WorkerId;
-    TString AfterDatabase;
-    THashMap<TString, TString> InventoryCursors;
 };
 } // namespace
 
