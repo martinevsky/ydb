@@ -31,11 +31,11 @@ struct TExpectedDelegation {
     EExpectedFailure Failure = EExpectedFailure::Absent;
     ui32 ConsecutiveFailures = 0;
     ERevokeProgress Progress = ERevokeProgress::Failing;
-    TString RevokeOperationId;
-    TMaybe<TQueueWindow> Queued;
+    TString RevokeOperationId = {};
+    TMaybe<TQueueWindow> Queued = {};
     // First observation is accepted only inside the independently recorded
     // transition window; every subsequent operation must retain that instant.
-    TMaybe<ui64> ObservedQueuedAt;
+    TMaybe<ui64> ObservedQueuedAt = {};
 };
 
 struct TRecoveryModel {

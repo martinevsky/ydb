@@ -1668,7 +1668,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         UNIT_ASSERT_STRING_CONTAINS(result.Issues().ToString(), "the user has no IAM token");
         UNIT_ASSERT(!result.Issues().Empty());
         for (const auto& issue : result.Issues()) {
-            UNIT_ASSERT_VALUES_EQUAL(issue.GetSeverity(), NYql::TSeverityIds::S_WARNING);
+            UNIT_ASSERT(issue.GetSeverity() == NYql::TSeverityIds::S_WARNING);
         }
     }
 
