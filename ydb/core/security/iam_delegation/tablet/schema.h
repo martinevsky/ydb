@@ -72,7 +72,14 @@ struct TSchema : NIceDb::Schema {
         using TColumns = TableColumns<DueAtUs, OperationId>;
     };
 
-    using TTables = SchemaTables<Databases, Secrets, Delegations, Referrers, Names, Inventory, Revocations>;
+    struct SigningKeys : Table<8> {
+        struct Id : Column<1, NScheme::NTypeIds::Uint32> {};
+        struct Key : Column<2, NScheme::NTypeIds::String> {};
+        using TKey = TableKey<Id>;
+        using TColumns = TableColumns<Id, Key>;
+    };
+
+    using TTables = SchemaTables<Databases, Secrets, Delegations, Referrers, Names, Inventory, Revocations, SigningKeys>;
 };
 
 } // namespace NKikimr::NIamDelegation

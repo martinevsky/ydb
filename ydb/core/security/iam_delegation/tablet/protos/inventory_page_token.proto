@@ -1,0 +1,13 @@
+syntax = "proto2";
+
+package NKikimrIamDelegation;
+
+import "ydb/core/security/iam_delegation/tablet/protos/iam_delegation.proto";
+
+// Private authenticated payload. Public clients treat the complete token as opaque.
+message TInventoryPageToken {
+    optional uint64 TabletId = 1;
+    optional TDatabaseIdentity Database = 2;
+    optional uint64 InventoryRevision = 3;
+    optional string AfterOperationId = 4;
+}

@@ -10,6 +10,7 @@ PEERDIR(
 )
 
 SRCS(
+    page_token_ut.cpp
     inventory_token_ut.cpp
     cold_scan_ut.cpp
     durability_ut.cpp

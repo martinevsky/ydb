@@ -764,28 +764,75 @@ struct TIamDelegationTablet::TTxRequest final
     }
 
     EExecution ListInventory(NIceDb::TNiceDb& db, const TListInventoryRequest& request) {
-        if (!ValidId(request.GetDatabaseIncarnation()) || !request.GetPageSize() || request.GetPageSize() > MaxPageSize
-            || request.GetAfterOperationId().size() > 256
-            || (!request.GetAfterOperationId().empty() && !request.GetInventoryRevision())) {
-            return Error(INVALID_ARGUMENT, "A bounded page size and revision-bound continuation are required");
+        const auto& unknown = request.GetReflection()->GetUnknownFields(request);
+        for (int index = 0; index < unknown.field_count(); ++index) {
+            if (unknown.field(index).number() == TListInventoryRequest::kPaginationModeFieldNumber) {
+                return Error(INVALID_ARGUMENT, "Unknown inventory pagination mode");
+            }
+        }
+        if (!request.GetPageSize() || request.GetPageSize() > MaxPageSize) {
+            return Error(INVALID_ARGUMENT, "A bounded inventory page size is required");
+        }
+        TString incarnation = request.GetDatabaseIncarnation();
+        TString afterOperationId = request.GetAfterOperationId();
+        ui64 inventoryRevision = request.GetInventoryRevision();
+        std::optional<TInventoryCursor> authenticatedCursor;
+        switch (request.GetPaginationMode()) {
+            case PAGINATION_AUTHENTICATED:
+                if (!ValidPath(request.GetDatabasePath()) || request.HasAfterOperationId()
+                    || request.HasInventoryRevision()) {
+                    return Error(INVALID_ARGUMENT, "Authenticated pagination requires a path and no structured cursor");
+                }
+                if (request.HasContinuationToken()) {
+                    authenticatedCursor = Self->PageTokens->Decode(request.GetContinuationToken());
+                    if (!authenticatedCursor || authenticatedCursor->Database.GetPath() != request.GetDatabasePath()
+                        || (request.HasDatabaseIncarnation()
+                            && incarnation != authenticatedCursor->Database.GetIncarnation())) {
+                        return Error(INVALID_ARGUMENT, "Invalid inventory continuation or database identity");
+                    }
+                    incarnation = authenticatedCursor->Database.GetIncarnation();
+                    afterOperationId = authenticatedCursor->AfterOperationId;
+                    inventoryRevision = authenticatedCursor->InventoryRevision;
+                }
+                break;
+            case PAGINATION_LEGACY:
+            case PAGINATION_STRUCTURED:
+                if (request.HasContinuationToken() || request.HasDatabasePath()) {
+                    return Error(INVALID_ARGUMENT, "Opaque continuations require authenticated pagination");
+                }
+                break;
+            default:
+                return Error(INVALID_ARGUMENT, "Unknown inventory pagination mode");
+        }
+        if (!ValidId(incarnation) || afterOperationId.size() > 256
+            || (!afterOperationId.empty() && !inventoryRevision)) {
+            return Error(INVALID_ARGUMENT, "A database incarnation and revision-bound continuation are required");
         }
         TDatabaseRecord database;
-        if (const auto status = ReadDatabase(db, request.GetDatabaseIncarnation(), database); status != EReadStatus::Ready) {
+        if (const auto status = ReadDatabase(db, incarnation, database); status != EReadStatus::Ready) {
             return ReadError(status, "Database incarnation");
         }
-        if (request.GetInventoryRevision() && request.GetInventoryRevision() != database.GetInventoryRevision()) {
+        const auto& identity = database.GetIdentity();
+        if (request.GetPaginationMode() == PAGINATION_AUTHENTICATED
+            && (identity.GetPath() != request.GetDatabasePath()
+                || (authenticatedCursor
+                    && (identity.GetIncarnation() != authenticatedCursor->Database.GetIncarnation()
+                        || identity.GetDatabaseId() != authenticatedCursor->Database.GetDatabaseId())))) {
+            return Error(INVALID_ARGUMENT, "Inventory continuation does not match the saved database identity");
+        }
+        if (inventoryRevision && inventoryRevision != database.GetInventoryRevision()) {
             return Error(SNAPSHOT_EXPIRED, "Inventory changed; restart enumeration from its first page");
         }
         auto rows = db.Table<TSchema::Inventory>()
-            .GreaterOrEqual(request.GetDatabaseIncarnation(), request.GetAfterOperationId())
-            .LessOrEqual(request.GetDatabaseIncarnation())
+            .GreaterOrEqual(incarnation, afterOperationId)
+            .LessOrEqual(incarnation)
             .Select<TSchema::Inventory::OperationId, TSchema::Inventory::Data>();
         if (!rows.IsReady()) {
             return EExecution::Retry;
         }
         while (!rows.EndOfSet()) {
             const auto operationId = rows.GetValue<TSchema::Inventory::OperationId>();
-            if (operationId != request.GetAfterOperationId()) {
+            if (operationId != afterOperationId) {
                 if (Response->Record.DelegationsSize() == request.GetPageSize()) {
                     Response->Record.SetNextAfterOperationId(Response->Record.GetDelegations(request.GetPageSize() - 1).GetOperationId());
                     break;
@@ -797,6 +844,13 @@ struct TIamDelegationTablet::TTxRequest final
             }
         }
         *Response->Record.MutableDatabase() = database;
+        if (request.GetPaginationMode() == PAGINATION_AUTHENTICATED) {
+            Response->Record.SetPaginationCapability(PAGINATION_CAPABILITY_AUTHENTICATED);
+            if (!Response->Record.GetNextAfterOperationId().empty()) {
+                Response->Record.SetNextPageToken(Self->PageTokens->Encode(database,
+                    Response->Record.GetNextAfterOperationId()));
+            }
+        }
         return EExecution::Complete;
     }
 

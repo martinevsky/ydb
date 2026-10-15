@@ -6,6 +6,41 @@
 
 namespace NKikimr::NIamDelegation {
 
+struct TIamDelegationTablet::TTxInitSigningKey final
+    : NTabletFlatExecutor::TTransactionBase<TIamDelegationTablet>
+{
+    explicit TTxInitSigningKey(TIamDelegationTablet* self)
+        : TTransactionBase(self)
+    {}
+
+    TTxType GetTxType() const override { return static_cast<TTxType>(ETxType::InitSigningKey); }
+
+    bool Execute(TTransactionContext& txc, const TActorContext&) override {
+        NIceDb::TNiceDb db(txc.DB);
+        auto row = db.Table<TSchema::SigningKeys>().Key(1).Select<TSchema::SigningKeys::Key>();
+        if (!row.IsReady()) {
+            return false;
+        }
+        if (row.EndOfSet()) {
+            Key = TInventoryPageTokenCodec::GenerateSigningKey();
+            db.Table<TSchema::SigningKeys>().Key(1).Update(NIceDb::TUpdate<TSchema::SigningKeys::Key>(Key));
+        } else {
+            Key = row.GetValue<TSchema::SigningKeys::Key>();
+        }
+        Y_ABORT_UNLESS(Key.size() == TInventoryPageTokenCodec::KeySize, "Corrupt IAM inventory signing key");
+        return true;
+    }
+
+    void Complete(const TActorContext& ctx) override {
+        Self->PageTokens.emplace(std::move(Key), Self->TabletID());
+        Self->Become(&TIamDelegationTablet::StateWork);
+        Self->SignalTabletActive(ctx);
+    }
+
+private:
+    TString Key;
+};
+
 struct TIamDelegationTablet::TTxInit final
     : NTabletFlatExecutor::TTransactionBase<TIamDelegationTablet>
 {
@@ -22,8 +57,7 @@ struct TIamDelegationTablet::TTxInit final
     }
 
     void Complete(const TActorContext& ctx) override {
-        Self->Become(&TIamDelegationTablet::StateWork);
-        Self->SignalTabletActive(ctx);
+        Self->Execute(new TTxInitSigningKey(Self), ctx);
     }
 };
 

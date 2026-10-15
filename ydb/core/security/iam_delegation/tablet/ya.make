@@ -1,6 +1,8 @@
 LIBRARY()
 
 PEERDIR(
+    contrib/libs/openssl
+    library/cpp/string_utils/base64
     ydb/core/security/iam_delegation/policy
     ydb/core/base
     ydb/core/engine/minikql
@@ -9,6 +11,7 @@ PEERDIR(
 )
 
 SRCS(
+    page_token.cpp
     tablet.cpp
     tx_request.cpp
 )

@@ -232,6 +232,7 @@ PEERDIR(
     ydb/core/security/ldap_auth_provider
     ydb/core/security/sasl
     ydb/library/aclib
+    ydb/library/actors/async
     yql/essentials/types/binary_json
     yql/essentials/types/dynumber
     ydb/library/mkql_proto

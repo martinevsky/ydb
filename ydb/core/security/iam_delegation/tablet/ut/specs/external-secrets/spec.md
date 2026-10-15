@@ -260,7 +260,7 @@ Contract coverage: iam-delegation-revocation / "Revocation retries use standard 
 - **WHEN** continuations are modified, conflicting fields are supplied, database names are reused, or the tablet/runtime is replaced.
 - **THEN** valid tokens retain their original identity and revision; every forged, unsupported or mismatched request fails without mutation; signing keys survive physical reopening; bounded pages enumerate each record once without preloading the inventory.
 
-Status: nine cases produced behavioral RED at `885867ea426`; explicit-empty-field and mixed-known/unknown-mode cases below await their first run. No passing authentication verification is claimed.
+Status: nine cases produced behavioral RED at `885867ea426`; explicit-empty-field and mixed-known/unknown-mode cases produced RED at `271e2c4f288`. The implementation and codec cases below await GREEN verification.
 
 Contract coverage: iam-delegation-inventory / "Administrative export is authorized"; "Authenticated pagination has an explicit protocol mode"; "Inventory pagination is revision-bound and bounded".
 
@@ -277,3 +277,16 @@ Contract coverage: iam-delegation-inventory / "Administrative export is authoriz
 | `IamDelegationColdScans::AuthenticatedPaginationRetriesColdPagesWithoutPreloadingInventory` | [cold_scan_ut.cpp](../../cold_scan_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationInventoryTokens::ExplicitEmptyPaginationFieldsCannotMixProtocols` | [inventory_token_ut.cpp](../../inventory_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationInventoryTokens::KnownAndUnknownPaginationModesCannotBypassValidation` | [inventory_token_ut.cpp](../../inventory_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+
+#### Scenario: Signing binds tablet identity with a shared key
+
+- **GIVEN** codecs with the same key but different tablet IDs and a saved registry identity with an optional alias and unknown fields.
+- **WHEN** a continuation is encoded and verified by each codec.
+- **THEN** only its owning tablet accepts it; an empty optional alias remains valid, and unbounded unknown registry fields are excluded from the bounded token.
+
+Status: executable codec regressions added after tablet behavior RED; first execution pending.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationInventoryTokenCodec::SharedKeyStillBindsTheTabletIdentity` | [page_token_ut.cpp](../../page_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationInventoryTokenCodec::OptionalDatabaseAliasAndUnknownRegistryFieldsDoNotChangeIdentity` | [page_token_ut.cpp](../../page_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |

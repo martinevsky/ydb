@@ -43,3 +43,31 @@ These specifications describe fixture coverage and exact case/source/command map
 Historical recovery and C1 runs used `ydb/core/security/iam_delegation_lifecycle` and `ydb/core/tx/iam_delegation`. Their external evidence remains unchanged. Current reproduction targets are `iam_delegation/ut`, `iam_delegation/lifecycle/ut` and `iam_delegation/tablet/ut` under `ydb/core/security`. The three libraries remain separate; consumer and driver verification follows in Task4.
 
 The durable [verification record](verification.md) records source identity, exact new-path commands/results and pending gates.
+
+## Inventory rollout and cleanup observation
+
+Upgrade the independent IAM delegation tablet before enabling the new inventory
+RPC handlers, then finish the frontend rollout before claiming cluster-wide token
+integrity. New handlers require authenticated capability on every successful page,
+including empty/final pages, and return UNAVAILABLE against an older tablet.
+Existing trusted internal structured cursors remain supported by the new tablet.
+Public unsigned `v1` tokens require restarting enumeration; public `v2` tokens are
+opaque and bind the tablet, immutable database identity, revision and exclusive
+cursor. A mutation between pages requires restarting the scan. Every RPC still
+requires current cluster administrator authorization.
+
+The signing key belongs to the service-owned tablet's durable storage and survives
+restart and disk reopening. Preserve that storage through tenant deletion; local
+tests cannot establish the production placement or live IAM control-plane guarantees.
+A cursor does not transfer cleanup responsibility away from the tablet.
+
+External monitoring can aggregate inventory without service-account label
+cardinality. For example, alert when a recorded `cleanup_queued_at_us` is older
+than an operator-selected age or `revoke_consecutive_failures` exceeds an
+operator-selected count. `staged_at_us` measures intent age, while cleanup age
+starts at the first actionable retirement. Missing historical fields mean unknown;
+`DueAtUs` is scheduling state and must not substitute for either timestamp.
+Clear an alert after authoritative completion or accepted progress according to
+the selected policy. Uncertain setups stay visible with saved operation IDs, but
+must not be revoked until their setup outcome is authoritative. Existing mint
+failure warnings/counters remain relevant while a usable cached token is served.

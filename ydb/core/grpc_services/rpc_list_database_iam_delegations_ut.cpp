@@ -574,6 +574,49 @@ Y_UNIT_TEST_SUITE(ListDatabaseIamDelegations) {
         UNIT_ASSERT_VALUES_EQUAL(f.Response().operation().status(), Ydb::StatusIds::UNAVAILABLE);
         UNIT_ASSERT_VALUES_EQUAL(f.RequestCount, 100);
     }
+
+    Y_UNIT_TEST(InventoryDeadlineClosesChildAndIgnoresLateReply) {
+        TFixture f;
+        f.Start("old-incarnation");
+        const auto request = f.Request();
+        ui32 childStops = 0;
+        auto stops = f.Runtime.AddObserver<TEvents::TEvPoison>([&](auto& event) {
+            if (event->Recipient == request->Recipient) {
+                ++childStops;
+            }
+        });
+        const auto started = f.Runtime.GetCurrentTime();
+        const auto response = f.Response();
+        UNIT_ASSERT_VALUES_EQUAL(response.operation().status(), Ydb::StatusIds::UNAVAILABLE);
+        UNIT_ASSERT_VALUES_EQUAL(f.Runtime.GetCurrentTime() - started, TDuration::Seconds(30));
+        f.Until([&] { return childStops == 1; });
+        f.Reply(*request, f.Inventory());
+        f.Runtime.SimulateSleep(TDuration::Seconds(1));
+        UNIT_ASSERT_VALUES_EQUAL(f.Response().SerializeAsString(), response.SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(f.RequestCount, 1);
+        UNIT_ASSERT_VALUES_EQUAL(childStops, 1);
+    }
+
+    Y_UNIT_TEST(ClientDepartureCancelsOwnedInventoryWait) {
+        TFixture f;
+        f.Start("old-incarnation");
+        const auto request = f.Request();
+        ui32 childStops = 0;
+        auto stops = f.Runtime.AddObserver<TEvents::TEvPoison>([&](auto& event) {
+            if (event->Recipient == request->Recipient) {
+                ++childStops;
+            }
+        });
+        f.Runtime.Send(new IEventHandle(request->Sender, {}, new TRpcServices::TEvForgetOperation));
+        const auto response = f.Response();
+        UNIT_ASSERT_VALUES_EQUAL(response.operation().status(), Ydb::StatusIds::INTERNAL_ERROR);
+        f.Until([&] { return childStops == 1; });
+        f.Reply(*request, f.Inventory());
+        f.Runtime.SimulateSleep(TDuration::Seconds(31));
+        UNIT_ASSERT_VALUES_EQUAL(f.Response().SerializeAsString(), response.SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(f.RequestCount, 1);
+        UNIT_ASSERT_VALUES_EQUAL(childStops, 1);
+    }
 }
 
 } // namespace NKikimr::NGRpcService
