@@ -267,10 +267,12 @@ public:
         NThreading::TFuture<TGenericResult> Future;
     };
 
-    TRunning Start(TIamDelegationSecretOperation op, bool alter = false) {
+    TRunning Start(TIamDelegationSecretOperation op) {
         auto future = op.Promise.GetFuture();
-        const auto actor = Runtime.Register(alter ? CreateIamDelegationSecretAlterer(std::move(op))
-            : CreateIamDelegationSecretCreator(std::move(op)));
+        const auto type = op.Request->Record.GetTransaction().GetModifyScheme().GetOperationType();
+        UNIT_ASSERT(type == NKikimrSchemeOp::ESchemeOpCreateSecret || type == NKikimrSchemeOp::ESchemeOpAlterSecret);
+        const auto actor = Runtime.Register(type == NKikimrSchemeOp::ESchemeOpAlterSecret
+            ? CreateIamDelegationSecretAlterer(std::move(op)) : CreateIamDelegationSecretCreator(std::move(op)));
         Runtime.EnableScheduleForActor(actor);
         return {actor, future};
     }
@@ -388,7 +390,7 @@ void CheckNoopAlterPreservesPending(P::ESetupState outcome, TDuration age = TDur
     f.RebootTablet();
     const auto before = f.Delegation(pending.GetOperationId());
     const auto activeBefore = f.Delegation(currentId).GetDelegation();
-    const auto result = f.Finish(f.Start(f.Operation(true), true));
+    const auto result = f.Finish(f.Start(f.Operation(true)));
     UNIT_ASSERT_C(result.Success(), result.Issues().ToString());
     const auto after = f.Delegation(pending.GetOperationId());
     UNIT_ASSERT_VALUES_EQUAL(after.GetDelegation().SerializeAsString(), before.GetDelegation().SerializeAsString());
@@ -422,7 +424,7 @@ void CheckWorkerOwnedRefusal(ERefusalDelivery delivery, ERefusalReload reload) {
         }
         return EAction::PROCESS;
     };
-    const auto altering = f.Start(f.Operation(true, "account-2"), true);
+    const auto altering = f.Start(f.Operation(true, "account-2"));
     coordinator = altering.Actor;
     f.Until([&] { return bool(heldStage); });
     const auto worker = f.StartWorker();
@@ -474,7 +476,7 @@ void CheckCoordinatorOwnedRefusal(ERefusalDelivery delivery) {
     TOrchestratorFixture f;
     const auto currentId = f.Create();
     const auto current = f.Delegation(currentId).GetDelegation();
-    const auto altering = f.Start(f.Operation(true, "account-2"), true);
+    const auto altering = f.Start(f.Operation(true, "account-2"));
     auto request = f.Take(f.Submissions);
     const auto pendingId = request->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->RequestId;
     if (delivery == ERefusalDelivery::Poll) {
@@ -519,8 +521,10 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
     const NKqp::TEvDescribeSecretsResponse::TSecretReference reference{
         TOrchestratorFixture::TabletId, initial.GetDatabaseIncarnation(), creatingId,
         initial.GetSecret().GetPathOwnerId(), initial.GetSecret().GetPathLocalId()};
+    const auto reader = MakeIntrusiveConst<NACLib::TUserToken>("provider-reader", TVector<TString>{});
+    f.SetAccess("secret", reader->GetUserSID(), NACLib::SelectRow);
     const auto provider = NSecret::CreateRefreshingSecretCredentialsProviderFactory(
-        f.Runtime.GetActorSystem(0), "/Root/secret", "/Root", reference, f.Bob,
+        f.Runtime.GetActorSystem(0), "/Root/secret", "/Root", reference, reader,
         NSecret::EBearerPrefix::None)->CreateProvider();
     const auto acquire = [&] {
         auto result = provider->GetAuthInfoAsync();
@@ -550,7 +554,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         return EAction::PROCESS;
     };
     UNIT_ASSERT_VALUES_EQUAL(acquire().GetValue(), "refreshed-account-2-token");
-    f.SetAccess("secret", "bob@" BUILTIN_ACL_DOMAIN, 0, NACLib::SelectRow);
+    f.SetAccess("secret", reader->GetUserSID(), 0, NACLib::SelectRow);
     const auto denied = acquire();
     UNIT_ASSERT(denied.HasException());
     UNIT_ASSERT_EXCEPTION(denied.GetValue(), std::exception);
@@ -596,7 +600,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         UNIT_ASSERT_VALUES_EQUAL(f.Delegation(id).GetDelegation().GetBinding().GetCloudId(), "selected-cloud");
         UNIT_ASSERT(!TString(f.Delegation(id).GetDelegation().SerializeAsString()).Contains("creator-bearer-for-test"));
 
-        const auto altering = f.Start(f.Operation(true, "account-2", {}), true);
+        const auto altering = f.Start(f.Operation(true, "account-2", {}));
         setup = f.Take(f.Submissions);
         UNIT_ASSERT_VALUES_EQUAL(setup->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->Binding.CloudId, "selected-cloud");
         f.ReplyIam(*setup, EDelegationOperationOutcome::Succeeded);
@@ -655,8 +659,20 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         f.Create();
         const auto reader = MakeIntrusiveConst<NACLib::TUserToken>("select-only", TVector<TString>{});
         const auto describer = MakeIntrusiveConst<NACLib::TUserToken>("describe-only", TVector<TString>{});
-        f.SetAccess("Root", reader->GetUserSID(), NACLib::SelectRow);
-        f.SetAccess("Root", describer->GetUserSID(), NACLib::DescribeSchema);
+        // Secret ACLs interrupt parent inheritance by default. Establish the
+        // rights on the secret itself and verify the effective ACL before reading.
+        f.SetAccess("secret", reader->GetUserSID(), NACLib::SelectRow, NACLib::DescribeSchema);
+        f.SetAccess("secret", describer->GetUserSID(), NACLib::DescribeSchema, NACLib::SelectRow);
+        const auto self = f.Describe().GetPathDescription().GetSelf();
+        NACLib::TSecurityObject target(self.GetOwner(), false);
+        UNIT_ASSERT(target.MutableACL()->ParseFromString(self.GetEffectiveACL()));
+        UNIT_ASSERT_VALUES_UNEQUAL(self.GetOwner(), reader->GetUserSID());
+        UNIT_ASSERT(target.CheckAccess(NACLib::SelectRow, *reader));
+        UNIT_ASSERT(!target.CheckAccess(NACLib::DescribeSchema, *reader));
+        UNIT_ASSERT(!target.CheckAccess(NACLib::SelectRow, *describer));
+        UNIT_ASSERT(target.CheckAccess(NACLib::DescribeSchema, *describer));
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe("secret", reader, false).GetStatus(), NKikimrScheme::StatusAccessDenied);
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe("secret", describer, false).GetStatus(), NKikimrScheme::StatusSuccess);
         const auto value = f.Read("secret", reader);
         UNIT_ASSERT_VALUES_EQUAL(value->Status, Ydb::StatusIds::SUCCESS);
         UNIT_ASSERT_VALUES_EQUAL(value->Token, "token-for-account-1");
@@ -668,6 +684,10 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
     Y_UNIT_TEST(SelectRowRevocationWhileMintHeldPreventsValueReturn) {
         TOrchestratorFixture f;
         f.Create();
+        const auto reader = MakeIntrusiveConst<NACLib::TUserToken>("revoked-reader", TVector<TString>{});
+        f.SetAccess("secret", reader->GetUserSID(), NACLib::SelectRow);
+        UNIT_ASSERT_VALUES_EQUAL(f.Read("secret", reader)->Status, Ydb::StatusIds::SUCCESS);
+        f.MintKeys.clear();
         TAutoPtr<IEventHandle> held;
         f.Intercept = [&](auto& event) {
             if (event->GetTypeRewrite() == TEvIamDelegation::TEvGetToken::EventType) {
@@ -677,13 +697,15 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
             }
             return EAction::PROCESS;
         };
-        const auto read = f.StartRead();
+        const auto read = f.StartRead("secret", reader);
         f.Until([&] { return bool(held); });
-        f.SetAccess("secret", f.Bob->GetUserSID(), 0, NACLib::SelectRow);
+        f.SetAccess("secret", reader->GetUserSID(), 0, NACLib::SelectRow);
         f.Intercept = {};
-        f.Runtime.Send(held.Release());
+        // Re-enter mailbox dispatch so the external-token boundary observer
+        // replies. Direct Send would deliver to its inert edge actor instead.
+        f.Runtime.Send(held.Release(), 0, true);
         const auto denied = f.FinishRead(read);
-        UNIT_ASSERT_VALUES_EQUAL(denied->Status, Ydb::StatusIds::UNAUTHORIZED);
+        UNIT_ASSERT_VALUES_EQUAL_C(denied->Status, Ydb::StatusIds::UNAUTHORIZED, denied->Issues.ToString());
         UNIT_ASSERT(denied->Token.empty());
         UNIT_ASSERT_VALUES_EQUAL(f.MintKeys.size(), 1);
     }
@@ -764,7 +786,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
             }
             return EAction::PROCESS;
         };
-        const auto altering = f.Start(f.Operation(true, "account-2"), true);
+        const auto altering = f.Start(f.Operation(true, "account-2"));
         coordinator = altering.Actor;
         f.Until([&] { return bool(heldStage); });
         f.Intercept = {};
@@ -864,7 +886,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         UNIT_ASSERT_VALUES_EQUAL(read->Token, "token-for-account-1");
         UNIT_ASSERT_VALUES_EQUAL(f.MintKeys.back().ServiceId, "saved-ydb-service");
 
-        const auto altering = f.Start(f.Operation(true, "account-2"), true);
+        const auto altering = f.Start(f.Operation(true, "account-2"));
         submit = f.Take(f.Submissions);
         const TString alterId = submit->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->RequestId;
         UNIT_ASSERT_VALUES_UNEQUAL(alterId, createId);
@@ -910,7 +932,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         UNIT_ASSERT_VALUES_EQUAL(f.Describe("secret", editor).GetStatus(), NKikimrScheme::StatusAccessDenied);
         UNIT_ASSERT_VALUES_EQUAL(f.Describe("secret", editor, false).GetStatus(), NKikimrScheme::StatusAccessDenied);
         f.AutoReply = true;
-        const auto result = f.Finish(f.Start(f.Operation(true, "account-2"), true));
+        const auto result = f.Finish(f.Start(f.Operation(true, "account-2")));
         UNIT_ASSERT_C(result.Success(), result.Issues().ToString());
         const auto secret = f.Delegation(createId).GetSecret();
         UNIT_ASSERT_VALUES_UNEQUAL(secret.GetCurrentOperationId(), previous);
@@ -937,7 +959,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
             f.Commands.clear();
             auto op = f.Operation(true, "account-2");
             op.SuccessOnNotExist = true; // a hidden denial must not look like a missing IF EXISTS target
-            const auto result = f.Finish(f.Start(std::move(op), true));
+            const auto result = f.Finish(f.Start(std::move(op)));
             UNIT_ASSERT(!result.Success());
             UNIT_ASSERT_C(result.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::UNAUTHORIZED), result.Issues().ToString());
             UNIT_ASSERT(f.Commands.empty());
@@ -967,7 +989,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
                 }
                 return EAction::PROCESS;
             };
-            const auto altering = f.Start(f.Operation(true, account), true);
+            const auto altering = f.Start(f.Operation(true, account));
             f.Until([&] { return bool(held); });
             UNIT_ASSERT_VALUES_UNEQUAL(held->Get<TEvTxUserProxy::TEvProposeTransaction>()->Record.GetUserToken(), "");
             f.SetAccess("secret", editor->GetUserSID(), 0, NACLib::AlterSchema);
@@ -995,7 +1017,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
             }
             return EAction::PROCESS;
         };
-        const auto altering = f.Start(f.Operation(true, "account-2"), true);
+        const auto altering = f.Start(f.Operation(true, "account-2"));
         orchestrator = altering.Actor;
         f.Until([&] { return bool(held); });
         f.Drop();
@@ -1129,7 +1151,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
     Y_UNIT_TEST(FailedAlterKeepsCurrentReadableAndAllowsAnotherReplacement) {
         TOrchestratorFixture f;
         const auto original = f.Create();
-        const auto replacing = f.Start(f.Operation(true, "refused-account"), true);
+        const auto replacing = f.Start(f.Operation(true, "refused-account"));
         auto submit = f.Take(f.Submissions);
         const TString failed = submit->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->RequestId;
         f.ReplyIam(*submit, EDelegationOperationOutcome::Failed);
@@ -1139,7 +1161,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         UNIT_ASSERT_VALUES_EQUAL(state.GetSecret().GetCurrentOperationId(), original);
         UNIT_ASSERT_VALUES_EQUAL(state.GetSecret().GetPendingOperationId(), "");
         UNIT_ASSERT_VALUES_EQUAL(f.Read()->Token, "token-for-account-1");
-        const auto retry = f.Start(f.Operation(true, "account-2"), true);
+        const auto retry = f.Start(f.Operation(true, "account-2"));
         submit = f.Take(f.Submissions);
         f.ReplyIam(*submit, EDelegationOperationOutcome::Succeeded);
         UNIT_ASSERT(f.Finish(retry).Success());
@@ -1546,7 +1568,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
                 }
                 return EAction::PROCESS;
             };
-            const auto altering = f.Start(f.Operation(true, account), true);
+            const auto altering = f.Start(f.Operation(true, account));
             f.Until([&] { return bool(held); });
             f.Drop();
             UNIT_ASSERT(f.Scheme([](auto& scheme) {
@@ -1591,10 +1613,10 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         op.Request->Record.MutableTransaction()->MutableModifyScheme()->SetFailOnExist(false);
         op.FailedOnAlreadyExists = false;
         UNIT_ASSERT(f.Finish(f.Start(std::move(op))).Success());
-        UNIT_ASSERT(f.Finish(f.Start(f.Operation(true), true)).Success());
+        UNIT_ASSERT(f.Finish(f.Start(f.Operation(true))).Success());
         op = f.Operation(true, "ignored-account", "cloud-1", "absent");
         op.SuccessOnNotExist = true;
-        UNIT_ASSERT(f.Finish(f.Start(std::move(op), true)).Success());
+        UNIT_ASSERT(f.Finish(f.Start(std::move(op))).Success());
         UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
         UNIT_ASSERT(f.RevokeBindings.empty());
         UNIT_ASSERT_VALUES_EQUAL(f.Delegation(id).GetSecret().SerializeAsString(), previous.SerializeAsString());
@@ -1626,7 +1648,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         f.Until([&] { return bool(heldDrop); });
         UNIT_ASSERT_VALUES_EQUAL(f.Describe().GetPathDescription().GetSecretDescription().GetVersion(), 0);
 
-        const auto altering = f.Start(f.Operation(true, "account-2"), true);
+        const auto altering = f.Start(f.Operation(true, "account-2"));
         submit = f.Take(f.Submissions);
         UNIT_ASSERT_VALUES_EQUAL(f.Describe().GetPathDescription().GetSecretDescription().GetVersion(), 1);
         bool dropRejected = false;
@@ -1914,7 +1936,12 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
             if (event->GetTypeRewrite() == TEvIamDelegation::TEvSubmitDelegationOperation::EventType) {
                 const auto& request = *event->Get<TEvIamDelegation::TEvSubmitDelegationOperation>();
                 UNIT_ASSERT(request.Kind == EDelegationOperationKind::Revoke);
-                UNIT_ASSERT(request.RequestId == savedActive || request.RequestId == savedAccepted);
+                UNIT_ASSERT_C(request.RequestId == savedActive || request.RequestId == savedAccepted,
+                    "Unexpected cleanup: " << request.RequestId << "; active=" << savedActive
+                    << "; accepted=" << savedAccepted << "; unknown=" << savedUnknown
+                    << "; undispatched=" << savedUndispatched << "; new=" << savedNew
+                    << "; replacement=" << replacementSchema.ShortDebugString()
+                    << "; saved=" << before.at(request.RequestId).ShortDebugString());
                 UNIT_ASSERT_VALUES_UNEQUAL(request.Binding.ReferrerId, before.at(savedNew).GetBinding().GetReferrerId());
                 ++revokeCalls;
                 TDelegationOperationResult result;
@@ -2033,7 +2060,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         };
         // Position the clock at delivery of the exact state the guard consumes,
         // after all reboot/pipe recovery and asynchronous authorization work.
-        const auto early = f.Start(f.Operation(true, "account-3"), true);
+        const auto early = f.Start(f.Operation(true, "account-3"));
         coordinator = early.Actor;
         const auto denied = f.Finish(early);
         UNIT_ASSERT(denied.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::PRECONDITION_FAILED));
@@ -2045,7 +2072,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
 
         decisionTime = deadline;
-        const auto admitted = f.Start(f.Operation(true, "account-3"), true);
+        const auto admitted = f.Start(f.Operation(true, "account-3"));
         coordinator = admitted.Actor;
         auto setup = f.Take(f.Submissions);
         UNIT_ASSERT_VALUES_EQUAL(observedDecisions, 2);
