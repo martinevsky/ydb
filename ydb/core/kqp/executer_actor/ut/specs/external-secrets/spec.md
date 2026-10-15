@@ -209,3 +209,24 @@ Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain th
 | Executable case | Test source | Command target |
 | --- | --- | --- |
 | `KqpIamDelegationSecretOrchestrator::LegacyWorkerRefusalKeepsGenericFallbackAfterRestart` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+
+#### Scenario: Authorization, discovery and later reads
+
+- **GIVEN** real schema operations, the independent tablet and controlled IAM transport.
+- **WHEN** permissions, cloud discovery, active bindings or IAM availability change.
+- **THEN** metadata remains independent of minting, each value read rechecks authorization and identity, and durable cleanup survives an outage.
+
+Status: executable Task 8 regressions added; compilation and first execution pending. No behavior failure or passing result is claimed.
+
+Contract coverage: external-secret-schema; external-secret-consumers.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `KqpIamDelegationSecretOrchestrator::BuiltinSubjectWithSchemaRightsCannotStageDelegation` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::CloudLookupForwardsCallerCredentialAndAlterRetainsChosenCloud` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::ConfiguredCloudLookupFailureWithoutDatabaseCloudNeverStages` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::DropCommitsDuringRevokeOutageAndWorkerLaterDrainsCleanup` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::MetadataRemainsAvailableDuringIamOutageWithoutMint` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::SelectRowRevocationWhileMintHeldPreventsValueReturn` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::ValueAccessNeedsSelectRowWithoutDescribeSchema` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |

@@ -167,7 +167,7 @@ Contract coverage: iam-delegation-inventory / "Administrative export is authoriz
 - **WHEN** an administrator enumerates across pages or evaluates configured age/failure thresholds.
 - **THEN** the RPC forwards authenticated tokens without rediscovery, refuses unsupported capability and unsigned v1 tokens, exports each same-account referrer separately, preserves unknown age, and exposes progress/recovery without changing cleanup ownership.
 
-Status: eight behavior regressions failed at `271e2c4f288`, with eleven existing/control cases passing. The implementation awaits GREEN verification. The source mappings below also cover the authorization, enumeration and authenticated-continuation scenarios above.
+Status: eight behavior regressions failed at `271e2c4f288`, with eleven existing/control cases passing. All mapped cases passed at `ac2c2d3e0b3` in `task7-green-buildfix-parallel100` (feature-filtered RPC target: 30/30 GOOD). The source mappings below also cover the authorization, enumeration and authenticated-continuation scenarios above.
 
 Contract coverage: iam-delegation-inventory / "Administrative export is authorized"; "Authenticated pagination has an explicit protocol mode"; "Inventory pagination is revision-bound and bounded"; iam-delegation-revocation / "Outstanding cleanup is operator-visible".
 
@@ -190,7 +190,7 @@ Contract coverage: iam-delegation-inventory / "Administrative export is authoriz
 - **WHEN** its thirty-second deadline expires or the client departs, followed by a late tablet response.
 - **THEN** the child is stopped once, the RPC completes once through its existing status contract, and no further inventory request is sent.
 
-Status: executable preservation cases added for the coroutine conversion; first execution pending.
+Status: both ownership preservation cases passed at `ac2c2d3e0b3`; feature-filtered RPC target: 30/30 GOOD.
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |

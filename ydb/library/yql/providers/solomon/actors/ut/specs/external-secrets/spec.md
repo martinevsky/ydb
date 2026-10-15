@@ -49,3 +49,18 @@ Executable mapping (status: implemented; execution per verification record):
 | Executable case | Test source | Command target |
 | --- | --- | --- |
 | `SolomonAsynchronousCredentials::DeniedCredentialsRestoreBackpressureAndNeverSendHttp` | [dq_solomon_async_credentials_ut.cpp:97](../../dq_solomon_async_credentials_ut.cpp#L97) | `ydb/library/yql/providers/solomon/actors/ut` |
+
+#### Scenario: Later batches acquire current credentials
+
+- **GIVEN** one real Solomon writer with controlled HTTP transport.
+- **WHEN** a later batch follows credential rotation or authorization denial.
+- **THEN** the batch uses current credentials or fails without reusing the earlier token.
+
+Status: executable Task 8 regressions added; compilation and first execution pending. No behavior failure or passing result is claimed.
+
+Contract coverage: external-secret-consumers / Credentials are acquired for new external requests.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `SolomonAsynchronousCredentials::LaterAuthorizationDenialNeverReusesThePreviousBatchToken` | [dq_solomon_async_credentials_ut.cpp](../../dq_solomon_async_credentials_ut.cpp) | `ydb/library/yql/providers/solomon/actors/ut` |
+| `SolomonAsynchronousCredentials::LaterBatchesUseCurrentCredentialsOnTheSameWriter` | [dq_solomon_async_credentials_ut.cpp](../../dq_solomon_async_credentials_ut.cpp) | `ydb/library/yql/providers/solomon/actors/ut` |

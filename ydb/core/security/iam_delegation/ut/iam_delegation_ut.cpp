@@ -210,12 +210,16 @@ Y_UNIT_TEST_SUITE(IamDelegationService) {
     Y_UNIT_TEST(OperationErrorIsMapped) {
         TFixture f;
         f.ServiceControlMock.OperationErrorCount = 1;
-        ExpectError(f.Setup(), Ydb::StatusIds::UNAUTHORIZED, "injected operation error");
+        const auto direct = f.Setup();
+        ExpectError(direct, Ydb::StatusIds::UNAUTHORIZED);
+        UNIT_ASSERT(!direct.Issues.ToOneLineString().Contains("injected operation error"));
         UNIT_ASSERT_VALUES_EQUAL(f.OperationMock.GetCalls.load(), 0u);
 
         f.ServiceControlMock.NotDoneCount = 1;
         f.OperationMock.OperationError = "user is not allowed to delegate";
-        ExpectError(f.Setup(), Ydb::StatusIds::UNAUTHORIZED, "user is not allowed to delegate");
+        const auto polled = f.Setup();
+        ExpectError(polled, Ydb::StatusIds::UNAUTHORIZED);
+        UNIT_ASSERT(!polled.Issues.ToOneLineString().Contains("user is not allowed to delegate"));
         UNIT_ASSERT_VALUES_EQUAL(f.OperationMock.GetCalls.load(), 1u);
     }
 
@@ -226,14 +230,16 @@ Y_UNIT_TEST_SUITE(IamDelegationService) {
         f.ServiceControlMock.FailStatus = grpc::StatusCode::FAILED_PRECONDITION;
         f.ServiceControlMock.FailureType = "BAD_SERVICE_ACCOUNT_CLOUD";
         auto result = f.Setup();
-        ExpectError(result, Ydb::StatusIds::BAD_REQUEST, "BAD_SERVICE_ACCOUNT_CLOUD (injected BAD_SERVICE_ACCOUNT_CLOUD)");
+        ExpectError(result, Ydb::StatusIds::BAD_REQUEST, "RESOURCE");
+        UNIT_ASSERT(!result.Issues.ToOneLineString().Contains("injected BAD_SERVICE_ACCOUNT_CLOUD"));
         UNIT_ASSERT_STRING_CONTAINS(result.Issues.ToOneLineString(), "set RESOURCE to the cloud of the service account");
         UNIT_ASSERT_VALUES_EQUAL(f.ServiceControlMock.SetupCalls(), 1u);
 
         f.ServiceControlMock.OperationErrorCount = 1;
         f.ServiceControlMock.FailureType = "SERVICE_NOT_ENABLED";
         result = f.Setup();
-        ExpectError(result, Ydb::StatusIds::UNAUTHORIZED, "injected operation error; SERVICE_NOT_ENABLED");
+        ExpectError(result, Ydb::StatusIds::UNAUTHORIZED, "YDB service is not enabled");
+        UNIT_ASSERT(!result.Issues.ToOneLineString().Contains("injected operation error"));
         UNIT_ASSERT_STRING_CONTAINS(result.Issues.ToOneLineString(), "YDB service is not enabled");
     }
 
@@ -263,7 +269,9 @@ Y_UNIT_TEST_SUITE(IamDelegationService) {
         }) {
             f.ServiceControlMock.FailStatus = grpcStatus;
             f.ServiceControlMock.FailCount = 1;
-            ExpectError(f.Setup(), expected, "injected failure");
+            const auto result = f.Setup();
+            ExpectError(result, expected);
+            UNIT_ASSERT(!result.Issues.ToOneLineString().Contains("injected failure"));
             expectedCalls += 1;
             UNIT_ASSERT_VALUES_EQUAL_C(f.ServiceControlMock.SetupCalls(), expectedCalls, "status " << grpcStatus);
         }
@@ -292,8 +300,9 @@ Y_UNIT_TEST_SUITE(IamDelegationService) {
 
     Y_UNIT_TEST(SystemTokenFailure) {
         TFixture f;
-        ExpectError(f.Setup(f.StartDelegationService("metadata is down"), f.Spec()),
-            Ydb::StatusIds::UNAVAILABLE, "metadata is down");
+        const auto result = f.Setup(f.StartDelegationService("metadata is down"), f.Spec());
+        ExpectError(result, Ydb::StatusIds::UNAVAILABLE, "system service account token");
+        UNIT_ASSERT(!result.Issues.ToOneLineString().Contains("metadata is down"));
         UNIT_ASSERT_VALUES_EQUAL(f.ServiceControlMock.SetupCalls(), 0u);
     }
 

@@ -1,5 +1,6 @@
 #include <ydb/services/scheme_secret/iam_delegation_reader.h>
 #include <ydb/services/scheme_secret/service.h>
+#include <ydb/services/scheme_secret/secret_credentials.h>
 #include <ydb/core/base/iam_delegation.h>
 #include <ydb/core/security/iam_delegation/iam_delegated_token_service.h>
 #include <ydb/core/security/token_manager/token_manager.h>
@@ -265,6 +266,116 @@ struct TRealTokenProducer {
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationSecretReader) {
+    Y_UNIT_TEST(ProviderSchemaTimeoutReleasesCoalescedCallsAndFencesLateReply) {
+        TReadFixture fixture;
+        auto& runtime = fixture.Context.GetRuntime();
+        runtime.GetAppData(0).FeatureFlags.SetEnableIamDelegationSecrets(true);
+        fixture.UsableUntil = Max(TInstant::Now(), runtime.GetCurrentTime()) + TDuration::Hours(1);
+        auto timers = runtime.SetScheduledEventFilter([](auto&, auto&, auto, auto&) { return false; });
+        Y_DEFER { runtime.SetScheduledEventFilter(std::move(timers)); };
+        const auto resolver = runtime.Register(new TDescribeSchemaSecretsService());
+        runtime.RegisterService(MakeDescribeSchemaSecretServiceId(runtime.GetNodeId()), resolver);
+        auto provider = CreateRefreshingSecretCredentialsProviderFactory(runtime.GetActorSystem(0),
+            "/Root/database/secret", "/Root/database", fixture.Reference,
+            MakeIntrusive<NACLib::TUserToken>("reader", TVector<TString>{"readers"}),
+            EBearerPrefix::None)->CreateProvider();
+        THolder<IEventHandle> delayed;
+        ui32 navigations = 0;
+        auto navigation = runtime.AddObserver<TEvTxProxySchemeCache::TEvNavigateKeySetResult>([&](auto& event) {
+            if (++navigations == 1) {
+                delayed.Reset(event.Release());
+            }
+        });
+        auto first = provider->GetAuthInfoAsync();
+        auto concurrent = provider->GetAuthInfoAsync();
+        fixture.Until([&] { return bool(delayed); });
+        runtime.SimulateSleep(TDuration::Seconds(31));
+        UNIT_ASSERT_C(first.HasException(), "A stalled schema phase must release the shared provider wait");
+        UNIT_ASSERT(concurrent.HasException());
+
+        fixture.HoldMint = true;
+        auto newer = provider->GetAuthInfoAsync();
+        fixture.Until([&] { return bool(fixture.HeldRecipient); });
+        const auto mints = fixture.MintCalls;
+        runtime.Send(delayed.Release(), 0, true);
+        runtime.SimulateSleep(TDuration::Seconds(1));
+        UNIT_ASSERT(!newer.HasValue());
+        UNIT_ASSERT(!newer.HasException());
+        UNIT_ASSERT_VALUES_EQUAL_C(fixture.MintCalls, mints,
+            "A timed-out request must not restart acquisition after its late schema reply");
+        fixture.ReleaseMint();
+        fixture.Until([&] { return newer.HasValue() || newer.HasException(); });
+        UNIT_ASSERT_VALUES_EQUAL(newer.GetValue(), "token-for-service-account-1");
+    }
+
+    Y_UNIT_TEST(PathResolverTimesOutInitialNavigationAndDiscardsLateResponse) {
+        TReadFixture fixture;
+        auto& runtime = fixture.Context.GetRuntime();
+        THolder<IEventHandle> delayed;
+        auto navigation = runtime.AddObserver<TEvTxProxySchemeCache::TEvNavigateKeySetResult>([&](auto& event) {
+            UNIT_ASSERT(!delayed);
+            delayed.Reset(event.Release());
+        });
+        auto resolved = fixture.StartThroughService();
+        fixture.Until([&] { return bool(delayed); });
+        runtime.SimulateSleep(TDuration::Seconds(31));
+        UNIT_ASSERT_C(resolved.HasValue(), "The initial path lookup needs a finite schema-phase deadline");
+        UNIT_ASSERT_VALUES_EQUAL(resolved.GetValue().Status, Ydb::StatusIds::UNAVAILABLE);
+        UNIT_ASSERT_VALUES_EQUAL(fixture.MintCalls, 0);
+        navigation.Remove();
+        runtime.Send(delayed.Release(), 0, true);
+        runtime.SimulateSleep(TDuration::Seconds(1));
+        UNIT_ASSERT_VALUES_EQUAL(fixture.MintCalls, 0);
+    }
+
+    Y_UNIT_TEST(MissingResolverReleasesCoalescedProviderCalls) {
+        TReadFixture fixture;
+        auto& runtime = fixture.Context.GetRuntime();
+        auto timers = runtime.SetScheduledEventFilter([](auto&, auto&, auto, auto&) { return false; });
+        Y_DEFER { runtime.SetScheduledEventFilter(std::move(timers)); };
+        // TReadFixture registers schema and IAM boundaries, but no path resolver.
+        auto provider = CreateRefreshingSecretCredentialsProviderFactory(runtime.GetActorSystem(0),
+            "/Root/database/secret", "/Root/database", fixture.Reference,
+            MakeIntrusive<NACLib::TUserToken>("reader", TVector<TString>{}),
+            EBearerPrefix::None)->CreateProvider();
+        auto first = provider->GetAuthInfoAsync();
+        auto concurrent = provider->GetAuthInfoAsync();
+        runtime.SimulateSleep(TDuration::Seconds(1));
+        UNIT_ASSERT_C(first.HasException(), "A missing resolver must not leave the provider pending");
+        UNIT_ASSERT(concurrent.HasException());
+        UNIT_ASSERT_VALUES_EQUAL(fixture.MintCalls, 0);
+    }
+
+    Y_UNIT_TEST(ResolverShutdownReleasesCoalescedProviderCalls) {
+        TReadFixture fixture;
+        auto& runtime = fixture.Context.GetRuntime();
+        auto timers = runtime.SetScheduledEventFilter([](auto&, auto&, auto, auto&) { return false; });
+        Y_DEFER { runtime.SetScheduledEventFilter(std::move(timers)); };
+        const auto resolver = runtime.Register(new TDescribeSchemaSecretsService());
+        runtime.RegisterService(MakeDescribeSchemaSecretServiceId(runtime.GetNodeId()), resolver);
+        auto provider = CreateRefreshingSecretCredentialsProviderFactory(runtime.GetActorSystem(0),
+            "/Root/database/secret", "/Root/database", fixture.Reference,
+            MakeIntrusive<NACLib::TUserToken>("reader", TVector<TString>{}),
+            EBearerPrefix::None)->CreateProvider();
+        THolder<IEventHandle> delayed;
+        auto navigation = runtime.AddObserver<TEvTxProxySchemeCache::TEvNavigateKeySetResult>([&](auto& event) {
+            UNIT_ASSERT(!delayed);
+            delayed.Reset(event.Release());
+        });
+        auto first = provider->GetAuthInfoAsync();
+        auto concurrent = provider->GetAuthInfoAsync();
+        fixture.Until([&] { return bool(delayed); });
+        runtime.Send(new IEventHandle(resolver, {}, new TEvents::TEvPoison));
+        runtime.SimulateSleep(TDuration::Seconds(1));
+        UNIT_ASSERT_C(first.HasException(), "Resolver shutdown must complete its owned promises");
+        UNIT_ASSERT(concurrent.HasException());
+        navigation.Remove();
+        runtime.Send(delayed.Release(), 0, true);
+        runtime.SimulateSleep(TDuration::Seconds(1));
+        UNIT_ASSERT_VALUES_EQUAL(fixture.MintCalls, 0);
+    }
+
+
     Y_UNIT_TEST(LongLivedReaderMintsWithRotatedPlatformCredential) {
         TReadFixture fixture;
         TRealTokenProducer producer(fixture);

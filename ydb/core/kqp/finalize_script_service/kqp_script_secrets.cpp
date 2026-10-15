@@ -160,8 +160,11 @@ private:
 
 IActor* CreateScriptSecretsResolverActor(const TActorId& replyTo,
     TIntrusiveConstPtr<NACLib::TUserToken> userToken, TString database,
-    std::vector<TString> secretNames, std::vector<NKqpProto::TKqpExternalSink> sinks)
+    std::vector<TString> secretNames, std::vector<NKqpProto::TKqpExternalSink> sinks,
+    std::optional<TInstant> deadline)
 {
+    // Interface scaffold for the deadline regression; behavior is not implemented yet.
+    Y_UNUSED(deadline);
     return new TScriptSecretsResolver(replyTo, std::move(userToken), std::move(database),
         std::move(secretNames), std::move(sinks));
 }

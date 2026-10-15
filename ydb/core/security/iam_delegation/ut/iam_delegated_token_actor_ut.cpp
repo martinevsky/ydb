@@ -10,6 +10,9 @@
 #include <ydb/library/ycloud/api/iam_token_service.h>
 
 #include <library/cpp/testing/unittest/registar.h>
+#include <library/cpp/logger/stream.h>
+#include <google/rpc/error_details.pb.h>
+#include <util/stream/str.h>
 
 #include <util/generic/set.h>
 #include <util/generic/scope.h>
@@ -59,6 +62,7 @@ struct TFixture {
         STFUNC(StateWork) { Y_UNUSED(ev); }
     };
 
+    TStringStream Log; // Must outlive the runtime and its logger.
     TTestActorRuntime Runtime;
     TActorId Sender;
     TActorId Manager;
@@ -74,12 +78,20 @@ struct TFixture {
         TInstant ExpiresAt;
         TInstant UsableUntil;
         Ydb::StatusIds::StatusCode Status;
+        TString Issues;
         bool IsSuccess() const { return Status == Ydb::StatusIds::SUCCESS; }
     };
     std::deque<std::pair<TTokenResult, ui64>> Results;
 
-    TFixture() {
+    enum class ELogCapture { Disabled, Enabled };
+    explicit TFixture(ELogCapture capture = ELogCapture::Disabled) {
+        if (capture == ELogCapture::Enabled) {
+            Runtime.SetLogBackend(TAutoPtr<TLogBackend>(new TStreamWithContextLogBackend(&Log)));
+        }
         Runtime.Initialize(TAppPrepare().Unwrap());
+        if (capture == ELogCapture::Enabled) {
+            Runtime.SetLogPriority(NKikimrServices::IAM_DELEGATION, NLog::PRI_DEBUG);
+        }
         Runtime.SetScheduledEventFilter([](auto&, auto&, auto, auto&) { return false; });
         Sender = Runtime.Register(new TRecipient());
         Manager = Runtime.AllocateEdgeActor();
@@ -105,7 +117,7 @@ struct TFixture {
                     return EAction::DROP;
                 case TEvIamDelegation::TEvGetTokenResult::EventType: {
                     const auto& result = *ev->Get<TEvIamDelegation::TEvGetTokenResult>();
-                    Results.emplace_back(TTokenResult{result.Token, result.ExpiresAt, result.UsableUntil, result.Status}, ev->Cookie);
+                    Results.emplace_back(TTokenResult{result.Token, result.ExpiresAt, result.UsableUntil, result.Status, result.Issues.ToOneLineString()}, ev->Cookie);
                     return EAction::DROP;
                 }
             }
@@ -211,6 +223,100 @@ struct TFixture {
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegatedTokenActor) {
+
+    // These use the actual logger backend and result issues. Sentinels in
+    // controlled remote replies do not claim that live IAM echoes credentials.
+    Y_UNIT_TEST(SuccessfulMintDiagnosticsExcludePlatformAndMintedCredentials) {
+        TFixture f(TFixture::ELogCapture::Enabled);
+        f.Update("platform-credential-sentinel-success");
+        f.Get();
+        auto mint = f.Mint();
+        UNIT_ASSERT_VALUES_EQUAL(mint->Get<TCloudToken::TEvCreateForServiceRequest>()->Token,
+            "platform-credential-sentinel-success");
+        f.Reply(*mint, TDuration::Minutes(20), "minted-credential-sentinel-success");
+        const auto result = f.Result();
+        UNIT_ASSERT_VALUES_EQUAL(result.Token, "minted-credential-sentinel-success");
+        f.Until([&] { return f.Log.Str().Contains("Token obtained"); });
+        for (const auto sentinel : {"platform-credential-sentinel-success", "minted-credential-sentinel-success"}) {
+            UNIT_ASSERT(!result.Issues.Contains(sentinel));
+            UNIT_ASSERT(!f.Log.Str().Contains(sentinel));
+        }
+    }
+
+    Y_UNIT_TEST(FailedMintPreservesStatusAndSafeHintWithoutRemoteCredentials) {
+        TFixture f(TFixture::ELogCapture::Enabled);
+        f.Update("platform-credential-sentinel-refused");
+        f.Get();
+        auto mint = f.Mint();
+        auto response = MakeHolder<TCloudToken::TEvCreateForServiceResponse>();
+        response->Status.GRpcStatusCode = grpc::StatusCode::PERMISSION_DENIED;
+        response->Status.Msg = "platform-credential-sentinel-refused";
+        google::rpc::Status details;
+        details.set_code(grpc::StatusCode::PERMISSION_DENIED);
+        details.set_message("platform-credential-sentinel-refused");
+        google::rpc::PreconditionFailure reasons;
+        auto* reason = reasons.add_violations();
+        reason->set_type("BAD_SERVICE_ACCOUNT_CLOUD");
+        reason->set_subject("credential-sentinel-subject");
+        reason->set_description("credential-sentinel-description");
+        reason = reasons.add_violations();
+        reason->set_type("credential-sentinel-unknown-type");
+        details.add_details()->PackFrom(reasons);
+        response->Status.Details = details.SerializeAsString();
+        f.Runtime.Send(new IEventHandle(mint->Sender, mint->Recipient, response.Release(), 0, mint->Cookie));
+        const auto result = f.Result();
+        UNIT_ASSERT_VALUES_EQUAL(result.Status, Ydb::StatusIds::UNAUTHORIZED);
+        UNIT_ASSERT(result.Token.empty());
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues, "RESOURCE");
+        f.Until([&] { return f.Log.Str().Contains("Cannot obtain token"); });
+        for (const auto sentinel : {"platform-credential-sentinel-refused", "credential-sentinel-subject",
+                "credential-sentinel-description", "credential-sentinel-unknown-type"}) {
+            UNIT_ASSERT(!result.Issues.Contains(sentinel));
+            UNIT_ASSERT(!f.Log.Str().Contains(sentinel));
+        }
+    }
+
+    Y_UNIT_TEST(RetryableMintWarningsRemainVisibleWhileCacheServesWithoutCredentials) {
+        TFixture f(TFixture::ELogCapture::Enabled);
+        f.InitialToken();
+        auto mint = f.Refresh();
+        // Fail all attempts of this refresh. The real producer must keep its
+        // still-usable cache and expose the degraded state through its warning.
+        for (ui32 attempt = 0; attempt < TIamDelegationSettings::MaxRetries; ++attempt) {
+            if (attempt) {
+                mint = f.Mint();
+            }
+            auto response = MakeHolder<TCloudToken::TEvCreateForServiceResponse>();
+            response->Status.GRpcStatusCode = grpc::StatusCode::UNAVAILABLE;
+            response->Status.Msg = "system-token delegated-token retryable-credential-sentinel";
+            f.Runtime.Send(new IEventHandle(mint->Sender, mint->Recipient, response.Release(), 0, mint->Cookie));
+        }
+        f.Until([&] { return f.Log.Str().Contains("Cannot obtain token"); });
+        UNIT_ASSERT(f.Log.Str().Contains("IAM call failed with a retryable error"));
+        f.Get(2);
+        const auto result = f.Result(2);
+        UNIT_ASSERT_VALUES_EQUAL(result.Token, "delegated-token");
+        for (const auto sentinel : {"system-token", "delegated-token", "retryable-credential-sentinel"}) {
+            UNIT_ASSERT(!result.Issues.Contains(sentinel));
+            UNIT_ASSERT(!f.Log.Str().Contains(sentinel));
+        }
+    }
+
+    Y_UNIT_TEST(TokenManagerFailureDiagnosticsExcludeCredentialMaterial) {
+        TFixture f(TFixture::ELogCapture::Enabled);
+        f.Runtime.Send(new IEventHandle(f.Service, f.Manager, new TEvTokenManager::TEvUpdateToken(
+            "system-account", {}, {TEvTokenManager::TStatus::ECode::ERROR, "manager-credential-sentinel"})));
+        f.Get();
+        const auto result = f.Result();
+        UNIT_ASSERT_VALUES_EQUAL(result.Status, Ydb::StatusIds::UNAVAILABLE);
+        UNIT_ASSERT(result.Token.empty());
+        UNIT_ASSERT(!result.Issues.empty());
+        f.Until([&] { return f.Log.Str().Contains("Cannot obtain token"); });
+        UNIT_ASSERT(!result.Issues.Contains("manager-credential-sentinel"));
+        UNIT_ASSERT(!f.Log.Str().Contains("manager-credential-sentinel"));
+        UNIT_ASSERT(f.Mints.empty());
+    }
+
     Y_UNIT_TEST(SuccessfulRefreshesAreDispersedAcrossEntriesAndNodes) {
         SetRandomSeed(314159);
         Y_DEFER { ResetRandomState(); };

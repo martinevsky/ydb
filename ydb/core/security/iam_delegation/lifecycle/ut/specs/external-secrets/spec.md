@@ -260,3 +260,17 @@ Contract coverage: iam-delegation-revocation / "Revocation retries use standard 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
 | `IamDelegationRecoveryWorker::WorkersDisperseScansBeforeClaimingWithoutReducingMinimumPause` | [worker_ut.cpp](../../worker_ut.cpp) | `ydb/core/security/iam_delegation/lifecycle/ut` |
+
+#### Scenario: Coroutine cancellation closes the tablet client
+
+- **GIVEN** a real tablet client with its response held.
+- **WHEN** the awaiting caller is terminated before the transport timeout.
+- **THEN** its child is stopped immediately and a late response emits no result.
+
+Status: executable Task 8 regressions added; compilation and first execution pending. No behavior failure or passing result is claimed.
+
+Contract coverage: external-secret-consumers / Acquisition state belongs to its coroutine.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationTabletClient::CancellingCoroutineClosesItsTabletClientBeforeTimeout` | [client_ut.cpp](../../client_ut.cpp) | `ydb/core/security/iam_delegation/lifecycle/ut` |

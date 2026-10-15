@@ -1,3 +1,4 @@
+#include <ydb/services/scheme_secret/secret_credentials.h>
 #include <ydb/core/kqp/executer_actor/kqp_iam_delegation_secret_orchestrator.h>
 #include <ydb/core/kqp/gateway/actors/scheme.h>
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
@@ -10,6 +11,8 @@
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/services/scheme_secret/iam_delegation_reader.h>
+#include <ydb/library/ycloud/api/service_account_service.h>
+#include <ydb/library/ycloud/api/folder_service.h>
 
 #include <util/string/ascii.h>
 
@@ -307,18 +310,28 @@ public:
         return worker;
     }
 
-    THolder<NSecret::TEvIamDelegationSecretReadResult> Read(const TString& name = "secret") {
+    TActorId StartRead(const TString& name = "secret", TIntrusiveConstPtr<NACLib::TUserToken> token = {}) {
         const auto schema = Describe(name);
         UNIT_ASSERT_VALUES_EQUAL(schema.GetStatus(), NKikimrScheme::StatusSuccess);
         const auto& path = schema.GetPathDescription();
         const auto& ref = path.GetSecretDescription().GetIamDelegation();
         const auto edge = Runtime.AllocateEdgeActor();
         Runtime.Register(NSecret::CreateIamDelegationSecretReaderActor(edge, 991, "/Root/" + name,
-            "/Root", Bob, {ref.GetTabletId(), ref.GetDatabaseIncarnation(), ref.GetCreateOperationId(),
+            "/Root", token ? std::move(token) : Bob, {ref.GetTabletId(), ref.GetDatabaseIncarnation(), ref.GetCreateOperationId(),
                 path.GetSelf().GetSchemeshardId(), path.GetSelf().GetPathId()}));
+        return edge;
+    }
+
+    THolder<NSecret::TEvIamDelegationSecretReadResult> FinishRead(const TActorId& edge) {
         auto result = Runtime.GrabEdgeEvent<NSecret::TEvIamDelegationSecretReadResult>(edge);
         UNIT_ASSERT_VALUES_EQUAL(result->Cookie, 991);
         return result->Release();
+    }
+
+    THolder<NSecret::TEvIamDelegationSecretReadResult> Read(const TString& name = "secret",
+        TIntrusiveConstPtr<NACLib::TUserToken> token = {})
+    {
+        return FinishRead(StartRead(name, std::move(token)));
     }
 
     void Drop(const TString& name = "secret") {
@@ -486,6 +499,234 @@ void CheckCoordinatorOwnedRefusal(ERefusalDelivery delivery) {
 } // namespace
 
 Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
+Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
+    TOrchestratorFixture f;
+    const auto creating = f.Start(f.Operation());
+    auto request = f.Take(f.Submissions);
+    const auto creatingId = request->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->RequestId;
+    f.ReplyIam(*request, EDelegationOperationOutcome::Succeeded);
+    UNIT_ASSERT(f.Finish(creating).Success());
+    const auto initial = f.Delegation(creatingId).GetDelegation();
+    const NKqp::TEvDescribeSecretsResponse::TSecretReference reference{
+        TOrchestratorFixture::TabletId, initial.GetDatabaseIncarnation(), creatingId,
+        initial.GetSecret().GetPathOwnerId(), initial.GetSecret().GetPathLocalId()};
+    const auto provider = NSecret::CreateRefreshingSecretCredentialsProviderFactory(
+        f.Runtime.GetActorSystem(0), "/Root/secret", "/Root", reference, f.Bob,
+        NSecret::EBearerPrefix::None)->CreateProvider();
+    const auto acquire = [&] {
+        auto result = provider->GetAuthInfoAsync();
+        f.Until([&] { return result.HasValue() || result.HasException(); });
+        return result;
+    };
+    UNIT_ASSERT_VALUES_EQUAL(acquire().GetValue(), "token-for-account-1");
+    const auto altering = f.Start(f.Operation(true, "account-2"));
+    request = f.Take(f.Submissions);
+    f.ReplyIam(*request, EDelegationOperationOutcome::Succeeded);
+    UNIT_ASSERT(f.Finish(altering).Success());
+    UNIT_ASSERT_VALUES_EQUAL(acquire().GetValue(), "token-for-account-2");
+    // A later producer result for the same account must also be read through
+    // the same provider instance, without retaining its previous credential.
+    f.Intercept = [&](auto& event) {
+        if (event->GetTypeRewrite() == TEvIamDelegation::TEvGetToken::EventType) {
+            const auto& key = event->template Get<TEvIamDelegation::TEvGetToken>()->Key;
+            UNIT_ASSERT_VALUES_EQUAL(key.ServiceAccountId, "account-2");
+            auto reply = MakeHolder<TEvIamDelegation::TEvGetTokenResult>();
+            reply->Key = key;
+            reply->Token = "refreshed-account-2-token";
+            reply->UsableUntil = f.Runtime.GetCurrentTime() + TDuration::Hours(1);
+            reply->ExpiresAt = reply->UsableUntil + TDuration::Minutes(5);
+            f.Runtime.Send(new IEventHandle(event->Sender, f.TokenService, reply.Release(), 0, event->Cookie));
+            return EAction::DROP;
+        }
+        return EAction::PROCESS;
+    };
+    UNIT_ASSERT_VALUES_EQUAL(acquire().GetValue(), "refreshed-account-2-token");
+    f.SetAccess("secret", "bob@" BUILTIN_ACL_DOMAIN, 0, NACLib::SelectRow);
+    const auto denied = acquire();
+    UNIT_ASSERT(denied.HasException());
+    UNIT_ASSERT_EXCEPTION(denied.GetValue(), std::exception);
+}
+
+
+    Y_UNIT_TEST(CloudLookupForwardsCallerCredentialAndAlterRetainsChosenCloud) {
+        TOrchestratorFixture f;
+        f.Bob = MakeIntrusiveConst<NACLib::TUserToken>("creator-bearer-for-test",
+            "bob@" BUILTIN_ACL_DOMAIN, TVector<TString>{});
+        ui32 accountCalls = 0;
+        ui32 folderCalls = 0;
+        f.Intercept = [&](auto& event) {
+            if (event->GetTypeRewrite() == NCloud::TEvServiceAccountService::TEvGetServiceAccountRequest::EventType) {
+                ++accountCalls;
+                const auto& request = *event->template Get<NCloud::TEvServiceAccountService::TEvGetServiceAccountRequest>();
+                UNIT_ASSERT_VALUES_EQUAL(request.Token, "creator-bearer-for-test");
+                UNIT_ASSERT_VALUES_EQUAL(request.Request.service_account_id(), "account-1");
+                auto reply = MakeHolder<NCloud::TEvServiceAccountService::TEvGetServiceAccountResponse>();
+                reply->Response.set_folder_id("selected-folder");
+                f.Runtime.Send(new IEventHandle(event->Sender, event->Recipient, reply.Release(), 0, event->Cookie));
+                return EAction::DROP;
+            }
+            if (event->GetTypeRewrite() == NCloud::TEvFolderService::TEvResolveFoldersRequest::EventType) {
+                ++folderCalls;
+                const auto& request = *event->template Get<NCloud::TEvFolderService::TEvResolveFoldersRequest>();
+                UNIT_ASSERT_VALUES_EQUAL(request.Token, "creator-bearer-for-test");
+                auto reply = MakeHolder<NCloud::TEvFolderService::TEvResolveFoldersResponse>();
+                auto* folder = reply->Response.add_resolved_folders();
+                folder->set_id("selected-folder");
+                folder->set_cloud_id("selected-cloud");
+                f.Runtime.Send(new IEventHandle(event->Sender, event->Recipient, reply.Release(), 0, event->Cookie));
+                return EAction::DROP;
+            }
+            return EAction::PROCESS;
+        };
+        const auto creating = f.Start(f.Operation(false, "account-1", {}));
+        auto setup = f.Take(f.Submissions);
+        const auto id = setup->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->RequestId;
+        UNIT_ASSERT_VALUES_EQUAL(setup->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->Binding.CloudId, "selected-cloud");
+        f.ReplyIam(*setup, EDelegationOperationOutcome::Succeeded);
+        UNIT_ASSERT(f.Finish(creating).Success());
+        UNIT_ASSERT_VALUES_EQUAL(f.Delegation(id).GetDelegation().GetBinding().GetCloudId(), "selected-cloud");
+        UNIT_ASSERT(!TString(f.Delegation(id).GetDelegation().SerializeAsString()).Contains("creator-bearer-for-test"));
+
+        const auto altering = f.Start(f.Operation(true, "account-2", {}), true);
+        setup = f.Take(f.Submissions);
+        UNIT_ASSERT_VALUES_EQUAL(setup->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->Binding.CloudId, "selected-cloud");
+        f.ReplyIam(*setup, EDelegationOperationOutcome::Succeeded);
+        UNIT_ASSERT(f.Finish(altering).Success());
+        UNIT_ASSERT_VALUES_EQUAL(accountCalls, 1);
+        UNIT_ASSERT_VALUES_EQUAL(folderCalls, 1);
+        const auto current = f.Delegation(id).GetSecret().GetCurrentOperationId();
+        UNIT_ASSERT_VALUES_EQUAL(f.Delegation(current).GetDelegation().GetBinding().GetCloudId(), "selected-cloud");
+    }
+
+    Y_UNIT_TEST(ConfiguredCloudLookupFailureWithoutDatabaseCloudNeverStages) {
+        TOrchestratorFixture f;
+        f.Bob = MakeIntrusiveConst<NACLib::TUserToken>("creator-bearer-for-test",
+            "bob@" BUILTIN_ACL_DOMAIN, TVector<TString>{});
+        ui32 lookups = 0;
+        f.Intercept = [&](auto& event) {
+            if (event->GetTypeRewrite() != NCloud::TEvServiceAccountService::TEvGetServiceAccountRequest::EventType) {
+                return EAction::PROCESS;
+            }
+            ++lookups;
+            UNIT_ASSERT_VALUES_EQUAL(event->template Get<NCloud::TEvServiceAccountService::TEvGetServiceAccountRequest>()->Token,
+                "creator-bearer-for-test");
+            auto reply = MakeHolder<NCloud::TEvServiceAccountService::TEvGetServiceAccountResponse>();
+            reply->Status.GRpcStatusCode = grpc::StatusCode::PERMISSION_DENIED;
+            reply->Status.Msg = "lookup denied";
+            f.Runtime.Send(new IEventHandle(event->Sender, event->Recipient, reply.Release(), 0, event->Cookie));
+            return EAction::DROP;
+        };
+        const auto result = f.Finish(f.Start(f.Operation(false, "account-1", {})));
+        UNIT_ASSERT(!result.Success());
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues().ToString(), "specify RESOURCE explicitly");
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues().ToString(), "has no cloud_id attribute");
+        UNIT_ASSERT_VALUES_EQUAL(lookups, 1);
+        UNIT_ASSERT(f.Commands.empty());
+        UNIT_ASSERT(f.SetupBindings.empty());
+        UNIT_ASSERT(f.MintKeys.empty());
+    }
+
+
+    Y_UNIT_TEST(BuiltinSubjectWithSchemaRightsCannotStageDelegation) {
+        TOrchestratorFixture f;
+        // Bob already has ordinary schema rights. A different cloud domain
+        // makes this identity local rather than a cloud delegation subject.
+        f.Runtime.GetAppData(0).AuthConfig.SetAccessServiceDomain("as");
+        const auto result = f.Finish(f.Start(f.Operation()));
+        UNIT_ASSERT(!result.Success());
+        UNIT_ASSERT(result.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::BAD_REQUEST));
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues().ToString(), "not a cloud subject");
+        UNIT_ASSERT(f.Commands.empty());
+        UNIT_ASSERT(f.SetupBindings.empty());
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe().GetStatus(), NKikimrScheme::StatusPathDoesNotExist);
+    }
+
+    Y_UNIT_TEST(ValueAccessNeedsSelectRowWithoutDescribeSchema) {
+        TOrchestratorFixture f;
+        f.Create();
+        const auto reader = MakeIntrusiveConst<NACLib::TUserToken>("select-only", TVector<TString>{});
+        const auto describer = MakeIntrusiveConst<NACLib::TUserToken>("describe-only", TVector<TString>{});
+        f.SetAccess("Root", reader->GetUserSID(), NACLib::SelectRow);
+        f.SetAccess("Root", describer->GetUserSID(), NACLib::DescribeSchema);
+        const auto value = f.Read("secret", reader);
+        UNIT_ASSERT_VALUES_EQUAL(value->Status, Ydb::StatusIds::SUCCESS);
+        UNIT_ASSERT_VALUES_EQUAL(value->Token, "token-for-account-1");
+        const auto denied = f.Read("secret", describer);
+        UNIT_ASSERT_VALUES_UNEQUAL(denied->Status, Ydb::StatusIds::SUCCESS);
+        UNIT_ASSERT(denied->Token.empty());
+    }
+
+    Y_UNIT_TEST(SelectRowRevocationWhileMintHeldPreventsValueReturn) {
+        TOrchestratorFixture f;
+        f.Create();
+        TAutoPtr<IEventHandle> held;
+        f.Intercept = [&](auto& event) {
+            if (event->GetTypeRewrite() == TEvIamDelegation::TEvGetToken::EventType) {
+                UNIT_ASSERT(!held);
+                held.Reset(event.Release());
+                return EAction::DROP;
+            }
+            return EAction::PROCESS;
+        };
+        const auto read = f.StartRead();
+        f.Until([&] { return bool(held); });
+        f.SetAccess("secret", f.Bob->GetUserSID(), 0, NACLib::SelectRow);
+        f.Intercept = {};
+        f.Runtime.Send(held.Release());
+        const auto denied = f.FinishRead(read);
+        UNIT_ASSERT_VALUES_EQUAL(denied->Status, Ydb::StatusIds::UNAUTHORIZED);
+        UNIT_ASSERT(denied->Token.empty());
+        UNIT_ASSERT_VALUES_EQUAL(f.MintKeys.size(), 1);
+    }
+
+    Y_UNIT_TEST(MetadataRemainsAvailableDuringIamOutageWithoutMint) {
+        TOrchestratorFixture f;
+        f.Create();
+        ui32 remoteCalls = 0;
+        f.Intercept = [&](auto& event) {
+            const auto type = event->GetTypeRewrite();
+            if (type == TEvIamDelegation::TEvSubmitDelegationOperation::EventType
+                || type == TEvIamDelegation::TEvPollDelegationOperation::EventType
+                || type == TEvIamDelegation::TEvGetToken::EventType) {
+                ++remoteCalls;
+                return EAction::DROP;
+            }
+            return EAction::PROCESS;
+        };
+        const auto described = f.Describe("secret", f.Bob, false);
+        UNIT_ASSERT_VALUES_EQUAL(described.GetStatus(), NKikimrScheme::StatusSuccess);
+        UNIT_ASSERT(described.GetPathDescription().GetSecretDescription().HasIamDelegation());
+        UNIT_ASSERT(!described.GetPathDescription().GetSecretDescription().HasValue());
+        UNIT_ASSERT_VALUES_EQUAL(remoteCalls, 0);
+        UNIT_ASSERT(f.MintKeys.empty());
+    }
+
+    Y_UNIT_TEST(DropCommitsDuringRevokeOutageAndWorkerLaterDrainsCleanup) {
+        TOrchestratorFixture f;
+        const auto id = f.Create();
+        f.Drop();
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe().GetStatus(), NKikimrScheme::StatusPathDoesNotExist);
+        const auto worker = f.StartWorker();
+        auto revoke = f.Take(f.Submissions);
+        UNIT_ASSERT(revoke->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->Kind
+            == EDelegationOperationKind::Revoke);
+        f.ReplyIam(*revoke, EDelegationOperationOutcome::Unknown);
+        f.Until([&] { return f.ObservedDelegations[id].GetState() == P::REVOCATION_PENDING
+            && f.ObservedDelegations[id].GetRevokeConsecutiveFailures() == 1; });
+        f.Runtime.Send(new IEventHandle(worker, {}, new TEvents::TEvPoison));
+        f.RebootTablet();
+        const auto retained = f.Delegation(id).GetDelegation();
+        UNIT_ASSERT_VALUES_EQUAL(retained.GetState(), P::REVOCATION_PENDING);
+        UNIT_ASSERT(retained.HasCleanupQueuedAtUs());
+        f.Runtime.UpdateCurrentTime(Max(f.Runtime.GetCurrentTime(), TInstant::MicroSeconds(retained.GetDueAtUs())));
+        const auto replacement = f.StartWorker();
+        revoke = f.Take(f.Submissions);
+        f.ReplyIam(*revoke, EDelegationOperationOutcome::Succeeded);
+        f.Until([&] { return f.ObservedDelegations[id].GetState() == P::REVOKED; });
+        UNIT_ASSERT_VALUES_EQUAL(f.Delegation(id).GetDelegation().GetCleanupQueuedAtUs(), retained.GetCleanupQueuedAtUs());
+        f.Runtime.Send(new IEventHandle(replacement, {}, new TEvents::TEvPoison));
+    }
+
     Y_UNIT_TEST(CoordinatorOwnedSubmissionRefusalPersistsSafeDetails) {
         CheckCoordinatorOwnedRefusal(ERefusalDelivery::Submission);
     }
@@ -1416,6 +1657,10 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
         UNIT_ASSERT_C(result.Success(), result.Issues().ToString());
         UNIT_ASSERT_STRING_CONTAINS(result.Issues().ToString(), "RESOURCE database-cloud was taken from the database");
         UNIT_ASSERT_STRING_CONTAINS(result.Issues().ToString(), "the user has no IAM token");
+        UNIT_ASSERT(!result.Issues().Empty());
+        for (const auto& issue : result.Issues()) {
+            UNIT_ASSERT_VALUES_EQUAL(issue.GetSeverity(), NYql::TSeverityIds::S_WARNING);
+        }
     }
 
     Y_UNIT_TEST(DescribeTimeoutFailsBeforeStagingOrIam) {

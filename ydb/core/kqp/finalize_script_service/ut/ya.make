@@ -8,6 +8,7 @@ SRCS(
 )
 
 PEERDIR(
+    ydb/core/security/iam_delegation
     ydb/core/security/iam_delegation/tablet
     ydb/core/testlib/default
     ydb/services/scheme_secret

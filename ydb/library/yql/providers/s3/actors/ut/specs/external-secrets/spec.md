@@ -158,3 +158,18 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 Status: planned — no executable case yet; does not contribute to executed counts. Existing callback-based cancellation evidence above is preserved; it does not claim the coroutine refactor has run.
 
 Contract coverage: external-secret-s3-cancellation / "Credential waits use coroutine-owned operation state" — scenario "Cancellation while the credential coroutine is suspended".
+
+#### Scenario: Later ranges acquire current credentials
+
+- **GIVEN** one real Parquet reader with controlled range transport.
+- **WHEN** a later range follows credential rotation or authorization denial.
+- **THEN** the range uses current credentials or fails without reusing the earlier token.
+
+Status: executable Task 8 regressions added; compilation and first execution pending. No behavior failure or passing result is claimed.
+
+Contract coverage: external-secret-consumers / Credentials are acquired for new external requests.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `TS3ParquetFooter::LaterParquetAuthorizationDenialNeverReusesEarlierToken` | [yql_s3_read_actor_ut.cpp](../../yql_s3_read_actor_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
+| `TS3ParquetFooter::LaterParquetRangesUseNewCredentialsWithoutRestartingReader` | [yql_s3_read_actor_ut.cpp](../../yql_s3_read_actor_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |

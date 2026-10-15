@@ -32,6 +32,8 @@ public:
     TString Body;
     bool HoldChunks = false;
     ui32 RangeCalls = 0;
+    TVector<TString> Tokens;
+    std::function<void()> OnRange;
     std::vector<std::function<void()>> PendingChunks;
 
     void Upload(TString, THeaders, TString, TOnResult, bool, TRetryPolicy::TPtr, IHttpRequestContext::TPtr) override {
@@ -42,8 +44,17 @@ public:
         UNIT_FAIL("unexpected delete");
     }
 
-    void Download(TString, THeaders, size_t offset, size_t size, TOnResult callback, TString, TRetryPolicy::TPtr, IHttpRequestContext::TPtr) override {
+    void Download(TString, THeaders headers, size_t offset, size_t size, TOnResult callback, TString, TRetryPolicy::TPtr, IHttpRequestContext::TPtr) override {
         ++RangeCalls;
+        for (const auto& header : headers.Fields) {
+            constexpr TStringBuf prefix = "X-YaCloud-SubjectToken:";
+            if (header.StartsWith(prefix)) {
+                Tokens.emplace_back(header.substr(prefix.size()));
+            }
+        }
+        if (OnRange) {
+            OnRange();
+        }
         UNIT_ASSERT_C(offset <= Body.size() && size <= Body.size() - offset, "invalid HTTP range " << offset << "+" << size);
         auto reply = [this, offset, size, callback = std::move(callback)] {
             callback(TResult(TContent(Body.substr(offset, size), 206)));
@@ -440,6 +451,64 @@ Y_UNIT_TEST_SUITE(S3ExternalSecretCancellation) {
 }
 
 Y_UNIT_TEST_SUITE(TS3ParquetFooter) {
+
+    // New range requests in one real reader must reacquire credentials. Held
+    // HTTP responses/retries are a different lifetime and are not relabeled.
+    Y_UNIT_TEST(LaterParquetRangesUseNewCredentialsWithoutRestartingReader) {
+        TParquetReader reader;
+        auto gateway = std::make_shared<TParquetGateway>();
+        gateway->Body = MakeParquet(3);
+        auto credentials = std::make_shared<NTests::TAsyncCredentialsFactory>();
+        gateway->OnRange = [credentials] { credentials->State->Held = true; };
+        auto source = ParquetSource();
+        source.SetToken("test-credentials");
+        reader.Start(gateway, std::move(source), 200_MB, credentials);
+        reader.Pump();
+        for (ui32 round = 0; round < 20 && !reader.Result.Finished && reader.Result.Errors.empty(); ++round) {
+            UNIT_ASSERT(!credentials->State->Pending.empty());
+            const auto before = gateway->Tokens.size();
+            const TString token = round == 0 ? "original-token"
+                : round == 1 ? "altered-binding-token" : "refreshed-token";
+            credentials->Release(std::string(token));
+            reader.Pump();
+            UNIT_ASSERT(gateway->Tokens.size() > before);
+            for (size_t index = before; index < gateway->Tokens.size(); ++index) {
+                UNIT_ASSERT_VALUES_EQUAL(gateway->Tokens[index], token);
+            }
+        }
+        UNIT_ASSERT_C(reader.Result.Errors.empty(), reader.Result.Issues);
+        UNIT_ASSERT(reader.Result.Finished);
+        UNIT_ASSERT_VALUES_EQUAL(reader.Result.Rows, 3);
+        UNIT_ASSERT(std::find(gateway->Tokens.begin(), gateway->Tokens.end(), "altered-binding-token") != gateway->Tokens.end());
+        UNIT_ASSERT(std::find(gateway->Tokens.begin(), gateway->Tokens.end(), "refreshed-token") != gateway->Tokens.end());
+        UNIT_ASSERT_VALUES_EQUAL(credentials->State->Calls, gateway->RangeCalls);
+    }
+
+    Y_UNIT_TEST(LaterParquetAuthorizationDenialNeverReusesEarlierToken) {
+        TParquetReader reader;
+        auto gateway = std::make_shared<TParquetGateway>();
+        gateway->Body = MakeParquet(3);
+        auto credentials = std::make_shared<NTests::TAsyncCredentialsFactory>();
+        gateway->OnRange = [credentials] { credentials->State->Held = true; };
+        auto source = ParquetSource();
+        source.SetToken("test-credentials");
+        reader.Start(gateway, std::move(source), 200_MB, credentials);
+        reader.Pump();
+        credentials->Release("first-range-token");
+        reader.Pump();
+        UNIT_ASSERT(gateway->RangeCalls > 0);
+        UNIT_ASSERT(!reader.Result.Finished);
+        UNIT_ASSERT(!credentials->State->Pending.empty());
+        const auto authorizedRanges = gateway->RangeCalls;
+        credentials->Fail();
+        reader.ReadToEnd();
+        UNIT_ASSERT(!reader.Result.Errors.empty());
+        UNIT_ASSERT_VALUES_EQUAL(gateway->RangeCalls, authorizedRanges);
+        for (const auto& token : gateway->Tokens) {
+            UNIT_ASSERT_VALUES_EQUAL(token, "first-range-token");
+        }
+    }
+
     Y_UNIT_TEST(ParquetRangesAwaitCredentialsWithoutBlockingActor) {
         TParquetReader reader;
         auto gateway = std::make_shared<TParquetGateway>();

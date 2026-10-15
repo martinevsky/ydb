@@ -1,3 +1,4 @@
+#include <ydb/library/actors/core/hfunc.h>
 #include <ydb/core/security/iam_delegation/lifecycle/client.h>
 #include <ydb/core/security/iam_delegation/lifecycle/operations.h>
 #include <ydb/core/security/iam_delegation/tablet/ut/requests.h>
@@ -25,7 +26,83 @@ private:
 };
 } // namespace
 
+class TTabletCaller final : public NActors::TActorBootstrapped<TTabletCaller> {
+public:
+    explicit TTabletCaller(NActors::TActorId recipient) : Recipient(recipient) {}
+
+    void Bootstrap() {
+        Become(&TThis::StateWork);
+        auto reply = co_await CallIamDelegationTablet(TTestContext::TabletId, ListDatabasesRequest());
+        auto event = MakeHolder<TEvIamDelegationTablet::TEvResponse>();
+        event->Record = std::move(reply);
+        Send(Recipient, event.Release());
+        PassAway();
+    }
+
+    STRICT_STFUNC(StateWork,
+        IgnoreFunc(TEvIamDelegationTablet::TEvResponse);
+        cFunc(NActors::TEvents::TEvPoison::EventType, PassAway);
+    )
+
+private:
+    const NActors::TActorId Recipient;
+};
+
+
 Y_UNIT_TEST_SUITE(IamDelegationTabletClient) {
+    Y_UNIT_TEST(CancellingCoroutineClosesItsTabletClientBeforeTimeout) {
+        TTestContext ctx;
+        ctx.Call(RegisterRequest(DatabaseIdentity()));
+        auto& runtime = ctx.GetRuntime();
+        const auto edge = runtime.AllocateEdgeActor();
+        TActorId caller;
+        TActorId client;
+        TAutoPtr<IEventHandle> heldReply;
+        ui32 returnedResults = 0;
+        ui32 undeliveredProbes = 0;
+        auto requests = runtime.AddObserver<TEvIamDelegationTablet::TEvRequest>([&](auto& event) {
+            if (event->Sender == caller) {
+                UNIT_ASSERT(!client);
+                client = event->GetRecipientRewrite();
+                runtime.EnableScheduleForActor(client);
+            }
+        });
+        auto responses = runtime.AddObserver<TEvIamDelegationTablet::TEvResponse>([&](auto& event) {
+            if (event->GetRecipientRewrite() == client && !heldReply) {
+                heldReply.Reset(event.Release());
+            } else if (event->GetRecipientRewrite() == edge) {
+                ++returnedResults;
+                event.Reset();
+            }
+        });
+        constexpr ui64 probeCookie = 7755;
+        auto undelivered = runtime.AddObserver<NActors::TEvents::TEvUndelivered>([&](auto& event) {
+            if (event->GetRecipientRewrite() == edge && event->Cookie == probeCookie) {
+                ++undeliveredProbes;
+                event.Reset();
+            }
+        });
+        caller = runtime.Register(new TTabletCaller(edge));
+        runtime.EnableScheduleForActor(caller);
+        TDispatchOptions options;
+        options.CustomFinalCondition = [&] { return bool(heldReply); };
+        runtime.DispatchEvents(options, TDuration::Seconds(1));
+        UNIT_ASSERT(heldReply);
+        UNIT_ASSERT(client);
+        runtime.Send(new IEventHandle(caller, {}, new NActors::TEvents::TEvPoison));
+        runtime.SimulateSleep(TDuration::MilliSeconds(1));
+        auto probe = MakeHolder<TEvIamDelegationTablet::TEvRequest>();
+        probe->Record = ListDatabasesRequest();
+        runtime.Send(new IEventHandle(client, edge, probe.Release(), IEventHandle::FlagTrackDelivery, probeCookie));
+        runtime.SimulateSleep(TDuration::MilliSeconds(1));
+        UNIT_ASSERT_VALUES_EQUAL_C(undeliveredProbes, 1,
+            "The cancelled coroutine left its tablet client alive until the 30-second timeout");
+        runtime.Send(heldReply.Release());
+        runtime.SimulateSleep(TDuration::Seconds(31));
+        UNIT_ASSERT_VALUES_EQUAL(returnedResults, 0);
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListDatabasesRequest()).DatabasesSize(), 1);
+    }
+
     Y_UNIT_TEST(MissingLocalIamServiceProvesSubmitWasNotDispatched) {
         TTestContext ctx;
         const auto edge = ctx.GetRuntime().AllocateEdgeActor();

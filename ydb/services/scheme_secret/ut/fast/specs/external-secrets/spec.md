@@ -154,7 +154,7 @@ Contract coverage: external-secret-consumers / "Value reads use their own permis
 - **WHEN** a consumer reads for over one hour while platform credentials rotate before the first healthy refresh.
 - **THEN** autonomous refreshes use the current platform credential, subsequent reads receive current usable tokens, and no creator bearer is retained or sent.
 
-Status: executable source added; first execution pending. This validates local credential selection, not live IAM authorization semantics.
+Status: passed at `271e2c4f288` in the full fast target (44/44 GOOD). This validates local credential selection, not live IAM authorization semantics.
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
@@ -166,8 +166,25 @@ Status: executable source added; first execution pending. This validates local c
 - **WHEN** one IAM mint completes and abandoned timers subsequently arrive.
 - **THEN** only the allowed reader receives a token, the other readers retain their own authorization and identity results, and cancellation emits no reply or duplicate mint.
 
-Status: executable source added; first execution pending. Controlled schema replies do not establish remote IAM sibling-referrer semantics.
+Status: passed at `271e2c4f288` in the full fast target (44/44 GOOD). Controlled schema replies do not establish remote IAM sibling-referrer semantics.
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
 | `IamDelegationSecretReader::CancelledReaderLeavesSharedMintAndIndependentAuthorizationIntact` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+
+#### Scenario: Resolver lifetime bounds coalesced provider calls
+
+- **GIVEN** coalesced provider calls awaiting initial schema navigation or a resolver service.
+- **WHEN** the service is absent, shuts down, or navigation exceeds its deadline and later replies.
+- **THEN** all callers complete with failure, a subsequent attempt is independent, and late replies cannot complete newer work.
+
+Status: executable Task 8 regressions added; compilation and first execution pending. No behavior failure or passing result is claimed.
+
+Contract coverage: external-secret-consumers / Acquisition state belongs to its coroutine.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationSecretReader::MissingResolverReleasesCoalescedProviderCalls` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::PathResolverTimesOutInitialNavigationAndDiscardsLateResponse` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::ProviderSchemaTimeoutReleasesCoalescedCallsAndFencesLateReply` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::ResolverShutdownReleasesCoalescedProviderCalls` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |

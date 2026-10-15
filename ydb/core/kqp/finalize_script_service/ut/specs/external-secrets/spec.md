@@ -64,3 +64,23 @@ Executable mapping (status: implemented; execution per verification record):
 | `ScriptExternalEffectSecrets::LegacyPlainSecretEffectsRemainSupported` | [kqp_script_secrets_ut.cpp:166](../../kqp_script_secrets_ut.cpp#L166) | `ydb/core/kqp/finalize_script_service/ut` |
 | `ScriptExternalEffectSecrets::UnusedDelegatedSourceDoesNotRequireAnEffectPin` | [kqp_script_secrets_ut.cpp:184](../../kqp_script_secrets_ut.cpp#L184) | `ydb/core/kqp/finalize_script_service/ut` |
 | `ScriptExternalEffectSecrets::NoAuthAndNoSecretEffectsDoNotRequireStructuredJson` | [kqp_script_secrets_ut.cpp:193](../../kqp_script_secrets_ut.cpp#L193) | `ydb/core/kqp/finalize_script_service/ut` |
+
+#### Scenario: Finalizer deadline and independent persisted identities
+
+- **GIVEN** persisted sink pins, real secret acquisition and the actual finalizer with controlled metadata boundaries.
+- **WHEN** one path is recreated, a configured deadline expires, or the real producer enters a backoff longer than sixty seconds.
+- **THEN** each pin remains independent, the caller budget reaches acquisition, and completion cancels owned waits without accepting late results.
+
+Status: executable Task 8 regressions added; compilation and first execution pending. No behavior failure or passing result is claimed.
+
+Contract coverage: external-secret-consumers.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `ScriptExternalEffectSecrets::ConfiguredFinalizerBudgetReachesSecretAcquisition` | [kqp_script_secrets_ut.cpp](../../kqp_script_secrets_ut.cpp) | `ydb/core/kqp/finalize_script_service/ut` |
+| `ScriptExternalEffectSecrets::ConfiguredFinalizerWaitsThroughRealProducerBackoff` | [kqp_script_secrets_ut.cpp](../../kqp_script_secrets_ut.cpp) | `ydb/core/kqp/finalize_script_service/ut` |
+| `ScriptExternalEffectSecrets::ExplicitShortDeadlineCancelsResolutionAndIgnoresLateToken` | [kqp_script_secrets_ut.cpp](../../kqp_script_secrets_ut.cpp) | `ydb/core/kqp/finalize_script_service/ut` |
+| `ScriptExternalEffectSecrets::FinalizerTimeoutCancelsPendingSecretAcquisition` | [kqp_script_secrets_ut.cpp](../../kqp_script_secrets_ut.cpp) | `ydb/core/kqp/finalize_script_service/ut` |
+| `ScriptExternalEffectSecrets::TwoPersistedPinsKeepIndependentIdentityAfterOnePathIsRecreated` | [kqp_script_secrets_ut.cpp](../../kqp_script_secrets_ut.cpp) | `ydb/core/kqp/finalize_script_service/ut` |
+
+Fixture boundary: the parent deadline cases inject completed metadata and stop at preparation/final-metadata boundaries; they do not execute a live S3 commit or metadata database transaction. The producer-backoff case runs the real producer with controlled IAM replies and its actual standard backoff.

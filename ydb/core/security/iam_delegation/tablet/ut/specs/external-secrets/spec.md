@@ -260,7 +260,7 @@ Contract coverage: iam-delegation-revocation / "Revocation retries use standard 
 - **WHEN** continuations are modified, conflicting fields are supplied, database names are reused, or the tablet/runtime is replaced.
 - **THEN** valid tokens retain their original identity and revision; every forged, unsupported or mismatched request fails without mutation; signing keys survive physical reopening; bounded pages enumerate each record once without preloading the inventory.
 
-Status: nine cases produced behavioral RED at `885867ea426`; explicit-empty-field and mixed-known/unknown-mode cases produced RED at `271e2c4f288`. The implementation and codec cases below await GREEN verification.
+Status: nine cases produced behavioral RED at `885867ea426`; explicit-empty-field and mixed-known/unknown-mode cases produced RED at `271e2c4f288`. All mapped cases passed at `ac2c2d3e0b3` in `task7-green-buildfix-parallel100` (tablet target: 120/120 GOOD).
 
 Contract coverage: iam-delegation-inventory / "Administrative export is authorized"; "Authenticated pagination has an explicit protocol mode"; "Inventory pagination is revision-bound and bounded".
 
@@ -284,7 +284,7 @@ Contract coverage: iam-delegation-inventory / "Administrative export is authoriz
 - **WHEN** a continuation is encoded and verified by each codec.
 - **THEN** only its owning tablet accepts it; an empty optional alias remains valid, and unbounded unknown registry fields are excluded from the bounded token.
 
-Status: executable codec regressions added after tablet behavior RED; first execution pending.
+Status: both codec regressions passed at `ac2c2d3e0b3`; full tablet target: 120/120 GOOD.
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |

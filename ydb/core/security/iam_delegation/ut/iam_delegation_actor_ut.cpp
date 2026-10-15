@@ -576,7 +576,73 @@ Y_UNIT_TEST_SUITE(IamDelegationActor) {
     }
 }
 
+enum class EOperationDiagnosticSurface { SubmissionTransport, PollTransport, CompletedOperation };
+
+void CheckOperationDiagnostics(EOperationDiagnosticSurface surface) {
+    TFixture f;
+    f.Update();
+    google::rpc::Status error;
+    error.set_code(grpc::StatusCode::PERMISSION_DENIED);
+    error.set_message("credential-diagnostic-sentinel raw error");
+    google::rpc::PreconditionFailure details;
+    auto* known = details.add_violations();
+    known->set_type("BAD_SERVICE_ACCOUNT_CLOUD");
+    known->set_description("credential-diagnostic-sentinel known description");
+    auto* unknown = details.add_violations();
+    unknown->set_type("credential-diagnostic-sentinel unknown type");
+    unknown->set_description("credential-diagnostic-sentinel unknown description");
+    error.add_details()->PackFrom(details);
+    if (surface == EOperationDiagnosticSurface::SubmissionTransport) {
+        f.Submit();
+        auto request = f.Take(f.Setups);
+        auto reply = MakeHolder<TControl::TEvSetupDelegationResponse>();
+        reply->Status.GRpcStatusCode = grpc::StatusCode::PERMISSION_DENIED;
+        reply->Status.Msg = error.message();
+        reply->Status.Details = error.SerializeAsString();
+        f.Runtime.Send(new IEventHandle(request->Sender, request->Recipient, reply.Release(), 0, request->Cookie));
+    } else {
+        f.Poll("saved-operation");
+        auto request = f.Take(f.Polls);
+        auto reply = MakeHolder<TOperation::TEvGetOperationResponse>();
+        if (surface == EOperationDiagnosticSurface::PollTransport) {
+            reply->Status.GRpcStatusCode = grpc::StatusCode::PERMISSION_DENIED;
+            reply->Status.Msg = error.message();
+            reply->Status.Details = error.SerializeAsString();
+        } else {
+            reply->Response.set_id("saved-operation");
+            reply->Response.set_done(true);
+            *reply->Response.mutable_error() = error;
+        }
+        f.Runtime.Send(new IEventHandle(request->Sender, request->Recipient, reply.Release(), 0, request->Cookie));
+    }
+    const auto result = f.OperationResult(surface == EOperationDiagnosticSurface::PollTransport
+        ? EDelegationOperationOutcome::Unknown : EDelegationOperationOutcome::Failed);
+    UNIT_ASSERT_VALUES_EQUAL(result.Status, Ydb::StatusIds::UNAUTHORIZED);
+    if (surface != EOperationDiagnosticSurface::SubmissionTransport) {
+        UNIT_ASSERT_VALUES_EQUAL(result.OperationId, "saved-operation");
+    }
+    const auto rendered = result.Issues.ToOneLineString();
+    UNIT_ASSERT_C(!rendered.Contains("credential-diagnostic-sentinel"), rendered);
+    UNIT_ASSERT_STRING_CONTAINS(rendered, "RESOURCE");
+    UNIT_ASSERT(rendered.size() < 1024);
+    UNIT_ASSERT(f.Setups.empty());
+    UNIT_ASSERT(f.Revokes.empty());
+}
+
+
 Y_UNIT_TEST_SUITE(IamDelegationRecovery) {
+    Y_UNIT_TEST(SubmissionIssuesRetainSafeHintWithoutRawTransportDiagnostics) {
+        CheckOperationDiagnostics(EOperationDiagnosticSurface::SubmissionTransport);
+    }
+
+    Y_UNIT_TEST(PollTransportIssuesStayRedactedWithoutResolvingUncertainty) {
+        CheckOperationDiagnostics(EOperationDiagnosticSurface::PollTransport);
+    }
+
+    Y_UNIT_TEST(CompletedOperationIssuesExcludeRawMessageAndDescriptions) {
+        CheckOperationDiagnostics(EOperationDiagnosticSurface::CompletedOperation);
+    }
+
     Y_UNIT_TEST(SubmissionRefusalExtractsOnlyBoundedSafeReasons) {
         CheckSafeFailureReasons(EFailureDelivery::SubmissionStatus);
     }

@@ -224,3 +224,23 @@ Contract coverage: iam-delegated-token-acquisition / "Refresh scheduling is disp
 | `IamDelegatedTokenActor::NearBoundaryRefreshRemainsPacedAndNeverServesExpiredToken` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
 | `IamDelegatedTokenActor::SuccessfulMintResetsFailureBackoffBeforeNextFailure` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
 | `IamDelegatedTokenActor::IdleEntryStopsBackgroundMintingAndNextDemandStartsImmediately` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+
+#### Scenario: Credential material is excluded from diagnostic channels
+
+- **GIVEN** real IAM actors with controlled transport and token-manager diagnostics containing credential sentinels.
+- **WHEN** minting, operation submission or polling succeeds, retries or fails.
+- **THEN** status and safe hints remain observable while issues and logs exclude credential material; uncertain operation outcomes remain uncertain.
+
+Status: executable Task 8 regressions added; compilation and first execution pending. No behavior failure or passing result is claimed.
+
+Contract coverage: iam-delegated-token-acquisition; iam-delegation-revocation.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegatedTokenActor::FailedMintPreservesStatusAndSafeHintWithoutRemoteCredentials` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::RetryableMintWarningsRemainVisibleWhileCacheServesWithoutCredentials` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::SuccessfulMintDiagnosticsExcludePlatformAndMintedCredentials` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::TokenManagerFailureDiagnosticsExcludeCredentialMaterial` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegationRecovery::CompletedOperationIssuesExcludeRawMessageAndDescriptions` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegationRecovery::PollTransportIssuesStayRedactedWithoutResolvingUncertainty` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegationRecovery::SubmissionIssuesRetainSafeHintWithoutRawTransportDiagnostics` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
