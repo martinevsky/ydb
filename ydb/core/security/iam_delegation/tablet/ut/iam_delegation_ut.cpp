@@ -5,6 +5,36 @@
 namespace NKikimr::NIamDelegation::NTests {
 
 Y_UNIT_TEST_SUITE(IamDelegationTablet) {
+    Y_UNIT_TEST(DisabledAdmissionRejectsNewStageButAllowsExactReplay) {
+        TTestContext ctx;
+        ctx.Call(RegisterRequest(DatabaseIdentity()));
+        const auto request = StageCreateRequest();
+        const auto admitted = ctx.Call(request).GetDelegation();
+        ctx.GetRuntime().GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(false);
+        ctx.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(request).GetDelegation().SerializeAsString(), admitted.SerializeAsString());
+        auto conflict = request;
+        conflict.MutableStage()->MutableBinding()->SetCloudId("another-cloud");
+        ctx.Call(conflict, NProto::CONFLICT);
+        ctx.Call(StageCreateRequest("new-create", Binding("new-referrer"),
+            "/Root/database/new-secret", "database-incarnation-1", 11), NProto::PRECONDITION_FAILED);
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListRequest()).DelegationsSize(), 1);
+
+        // Previously admitted work can still bind, finish setup, promote and retire.
+        const auto bound = ctx.Call(BindRequest(admitted));
+        const auto setup = CompleteSetup(ctx, bound.GetDelegation());
+        ctx.Call(PromoteRequest(setup.GetDelegation(), GetSecret(ctx).GetRevision()));
+        const auto current = GetSecret(ctx);
+        ctx.Call(StageAlterRequest(current, "new-alter", Binding("alter-referrer")),
+            NProto::PRECONDITION_FAILED);
+        UNIT_ASSERT_VALUES_EQUAL(GetSecret(ctx).SerializeAsString(), current.SerializeAsString());
+        ctx.Call(DropRequest(current));
+        const auto claimed = ctx.Call(ClaimRequest());
+        UNIT_ASSERT_VALUES_EQUAL(claimed.DelegationsSize(), 1);
+        ctx.Call(FinishRequest(claimed.GetDelegations(0)));
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, admitted.GetOperationId()).GetState(), NProto::REVOKED);
+    }
+
     Y_UNIT_TEST(IntentPathsMustStayWithinCanonicalDatabase) {
         TTestContext ctx;
         for (const TString path : {"/", "/Root/A/", "/Root//A", "/Root/../A"}) {

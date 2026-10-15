@@ -29,6 +29,7 @@ public:
             }
         });
         SetupTabletServices(Runtime, nullptr, false, std::move(storage));
+        Runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
         const auto bootstrapper = CreateTestBootstrapper(
             Runtime,
             CreateTestTabletInfo(TabletId, TTabletTypes::IamDelegation),

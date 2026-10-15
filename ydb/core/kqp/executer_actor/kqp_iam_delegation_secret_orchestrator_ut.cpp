@@ -723,6 +723,7 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
         const auto creating = f.Start(f.Operation());
         UNIT_ASSERT(!f.Finish(creating).Success());
         UNIT_ASSERT(!staged.GetOperationId().empty());
+        f.Runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(false);
         f.Intercept = {};
         f.RebootTablet();
         f.AutoReply = true;
@@ -758,6 +759,57 @@ Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
         const auto after = f.Describe().GetPathDescription().GetSelf();
         UNIT_ASSERT_VALUES_EQUAL(after.GetPathId(), before.GetPathId());
         UNIT_ASSERT_VALUES_EQUAL(after.GetCreateTxId(), txId);
+        UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
+    }
+
+    Y_UNIT_TEST(AdmissionDisabledAfterStageStillRecoversCreate) {
+        TOrchestratorFixture f;
+        TAutoPtr<IEventHandle> original;
+        f.Intercept = [&](auto& event) {
+            if (!original && event->GetTypeRewrite() == NSchemeShard::TEvSchemeShard::TEvModifySchemeTransaction::EventType) {
+                const auto& request = event->template Get<NSchemeShard::TEvSchemeShard::TEvModifySchemeTransaction>()->Record;
+                if (request.TransactionSize() == 1 && request.GetTransaction(0).GetCreateSecret().HasIamDelegationReference()) {
+                    original = event.Release();
+                    return EAction::DROP;
+                }
+            }
+            return EAction::PROCESS;
+        };
+        const auto creating = f.Start(f.Operation());
+        f.Until([&] { return bool(original); });
+        const auto request = original->Get<NSchemeShard::TEvSchemeShard::TEvModifySchemeTransaction>()->Record;
+        const auto operationId = request.GetTransaction(0).GetCreateSecret().GetIamDelegationReference().GetCreateOperationId();
+        f.Runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(false);
+        f.Intercept = {};
+        f.RebootTablet();
+        f.AutoReply = true;
+        f.Runtime.Send(original.Release());
+        const auto result = f.Finish(creating);
+        UNIT_ASSERT_C(result.Success(), result.Issues().ToString());
+        f.StartWorker();
+        f.Until([&] { return f.ObservedDelegations[operationId].GetState() == P::ACTIVE; });
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe().GetPathDescription().GetSelf().GetCreateTxId(), request.GetTxId());
+        UNIT_ASSERT_VALUES_EQUAL(f.Read()->Token, "token-for-account-1");
+        UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
+    }
+
+    Y_UNIT_TEST(DisabledAdmissionRejectsFreshSqlMutations) {
+        TOrchestratorFixture f;
+        const auto id = f.Create();
+        const auto before = f.Delegation(id);
+        f.Runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(false);
+        for (const TString sql : {
+            "CREATE SECRET another WITH (SOURCE = 'YC_IAM_DELEGATION', SERVICE_ACCOUNT_ID = 'account-2', RESOURCE = 'cloud-1');",
+            "ALTER SECRET secret WITH (SERVICE_ACCOUNT_ID = 'account-2');",
+            "CREATE OR REPLACE SECRET secret WITH (SOURCE = 'YC_IAM_DELEGATION', SERVICE_ACCOUNT_ID = 'account-2', RESOURCE = 'cloud-1');"}) {
+            const auto result = f.Kikimr.RunCall([&] {
+                auto client = f.Kikimr.GetQueryClient(NYdb::NQuery::TClientSettings().AuthToken("bob@" BUILTIN_ACL_DOMAIN));
+                return client.ExecuteQuery(sql, NYdb::NQuery::TTxControl::NoTx()).GetValueSync();
+            });
+            UNIT_ASSERT_C(!result.IsSuccess(), sql);
+            UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), NYdb::EStatus::PRECONDITION_FAILED);
+        }
+        UNIT_ASSERT_VALUES_EQUAL(f.Delegation(id).GetSecret().SerializeAsString(), before.GetSecret().SerializeAsString());
         UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
     }
 

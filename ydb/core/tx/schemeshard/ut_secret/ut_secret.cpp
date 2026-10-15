@@ -188,8 +188,9 @@ Y_UNIT_TEST_SUITE(TSchemeShardSecretTest) {
             DatabaseIncarnation: "database-1"
             CreateOperationId: "create-1"
         })";
-        TestCreateSecret(runtime, ++txId, "/MyRoot", "Name: \"external\" " + reference,
-            {{EStatus::StatusPreconditionFailed, "IAM delegation secrets are disabled"}});
+        // The tablet admits grants. SchemeShard must finish an already admitted
+        // immutable schema shell even after new grant admission is disabled.
+        TestCreateSecret(runtime, ++txId, "/MyRoot", "Name: \"admitted\" " + reference);
         env.TestWaitNotification(runtime, txId);
 
         runtime.GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(true);
