@@ -81,7 +81,10 @@ Y_UNIT_TEST_SUITE(AsynchronousCredentialOwnership) {
             }
             // Async outputs are invoked directly by compute actors. RunCall
             // supplies a distinct caller activation for this same boundary.
-            runtime.RunCall([&] { consumer->WaitForCredentials(); });
+            runtime.RunCall([&] {
+                consumer->WaitForCredentials();
+                return consumer->SelfId();
+            });
             UNIT_ASSERT_VALUES_EQUAL(state->Started, 1);
             if (completion == ECompletion::AfterCall) {
                 promise.SetValue("owned-token");

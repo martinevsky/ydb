@@ -1883,7 +1883,8 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         const auto result = f.Finish(f.Start(f.Operation()));
         UNIT_ASSERT(!result.Success());
         UNIT_ASSERT_C(result.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::UNAVAILABLE), result.Issues().ToString());
-        UNIT_ASSERT_STRING_CONTAINS(result.Issues().ToString(), "/Root/secret");
+        // Parent ACL and identity are the first metadata boundary for CREATE.
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues().ToString(), "Cannot describe /Root");
         UNIT_ASSERT_VALUES_EQUAL(dropped, 1);
         UNIT_ASSERT(f.SetupBindings.empty());
         UNIT_ASSERT(f.Commands.empty());

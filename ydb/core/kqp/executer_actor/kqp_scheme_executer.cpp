@@ -803,7 +803,7 @@ public:
         const auto operationType = ev->Record.GetTransaction().GetModifyScheme().GetOperationType();
 
         auto promise = NewPromise<IKqpGateway::TGenericResult>();
-        RegisterWithSameMailbox(createOrchestrator({
+        IamDelegationOrchestratorId = RegisterWithSameMailbox(createOrchestrator({
             .Request = std::move(ev),
             .Database = Database,
             .UserToken = UserToken,
@@ -1227,6 +1227,9 @@ public:
     }
 
     void PassAway() override {
+        if (IamDelegationOrchestratorId) {
+            Send(IamDelegationOrchestratorId, new TEvents::TEvPoison);
+        }
         if (SchemePipeActorId_) {
             NTabletPipe::CloseClient(this->SelfId(), SchemePipeActorId_);
         }
@@ -1634,6 +1637,7 @@ private:
     const TInstant Deadline;
     TString KillSessionId;
     TActorId AnalyzeActorId;
+    TActorId IamDelegationOrchestratorId;
 };
 
 } // namespace

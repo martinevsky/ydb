@@ -249,18 +249,18 @@ protected:
         co_return std::move(result.ResultSet.front());
     }
 
-    async<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr> DescribeForAuthorizedCreateRequest(TString path) {
+    async<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr> DescribeCreateMetadataRequest(TString path) {
         auto request = MakeHolder<TEvTxUserProxy::TEvNavigate>();
         request->Record.SetDatabaseName(Op.Database);
         request->Record.MutableDescribePath()->SetPath(path);
         co_return co_await ActorRequest<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult>(MakeTxProxyID(), request.Release());
     }
 
-    // Internal metadata is read only after CreateTable has been checked on the
-    // parent. Plain CREATE has no DescribeSchema requirement on the target or
-    // parent. The authenticated schema proposal rechecks ACL and path identity.
-    async<TExistingSecret> DescribeForAuthorizedCreate(TString path) {
-        const auto reply = co_await WithTimeout(Op.Timeouts.Navigate, &TDelegationSecretActorBase::DescribeForAuthorizedCreateRequest, this, path);
+    // CREATE reads metadata internally and checks the parent's effective ACL
+    // before returning an existence result or admitting lifecycle work.
+    // The authenticated schema proposal rechecks ACL and path identity.
+    async<TExistingSecret> DescribeCreateMetadata(TString path) {
+        const auto reply = co_await WithTimeout(Op.Timeouts.Navigate, &TDelegationSecretActorBase::DescribeCreateMetadataRequest, this, path);
         if (!reply) {
             throw TOrchestrationError(Ydb::StatusIds::UNAVAILABLE) << "Cannot describe " << path;
         }
@@ -278,6 +278,23 @@ protected:
         result.IsSecret = result.Self.GetPathType() == NKikimrSchemeOp::EPathTypeSecret;
         result.Description = record.GetPathDescription().GetSecretDescription();
         co_return result;
+    }
+
+    async<TExistingSecret> DescribeCreateParent(TString path) {
+        auto parent = co_await DescribeCreateMetadata(path);
+        if (!parent.Exists || !parent.Self.GetCreateFinished()) {
+            throw TOrchestrationError(Ydb::StatusIds::UNAVAILABLE) << "Cannot resolve completed secret parent";
+        }
+        // Check the committed ACL from the same metadata as the saved parent
+        // fence. SchemeBoard can still be publishing a just-committed ACL grant.
+        NACLib::TSecurityObject permissions(parent.Self.GetOwner(), true);
+        if (!permissions.MutableACL()->ParseFromString(parent.Self.GetEffectiveACL())) {
+            throw TOrchestrationError(Ydb::StatusIds::INTERNAL_ERROR) << "Cannot read secret parent permissions";
+        }
+        if (!Op.UserToken || !permissions.CheckAccess(NACLib::CreateTable, *Op.UserToken)) {
+            throw TOrchestrationError(Ydb::StatusIds::UNAUTHORIZED) << "Access denied to " << path;
+        }
+        co_return parent;
     }
 
     // Internal existence check only: the reply's metadata must never authorize
@@ -670,11 +687,12 @@ protected:
         const TString name = op.GetName();
         const TString path = SecretPath(name);
         TExistingSecret existing;
+        TExistingSecret parent;
         if (ModifyScheme().GetReplaceIfExists()) {
             existing = co_await NavigateSecretForAlter(path);
         } else {
-            co_await Authorize(RequestTemplate.GetTransaction().GetModifyScheme().GetWorkingDir(), NACLib::CreateTable);
-            existing = co_await DescribeForAuthorizedCreate(path);
+            parent = co_await DescribeCreateParent(TString(ExtractParent(path)));
+            existing = co_await DescribeCreateMetadata(path);
         }
         if (existing.Exists) {
             if (ModifyScheme().GetReplaceIfExists()) {
@@ -686,7 +704,7 @@ protected:
             throw TOrchestrationError(Ydb::StatusIds::ALREADY_EXISTS) << "Path already exists: " << path;
         }
         if (ModifyScheme().GetReplaceIfExists()) {
-            co_await Authorize(RequestTemplate.GetTransaction().GetModifyScheme().GetWorkingDir(), NACLib::CreateTable);
+            parent = co_await DescribeCreateParent(TString(ExtractParent(path)));
         }
         const TString subject = ResolveSubjectId();
         const auto settings = DelegationSettings();
@@ -708,10 +726,6 @@ protected:
         }
         const auto key = database.DomainInfo->DomainKey;
         const TString incarnation = TStringBuilder() << key.OwnerId << ':' << key.LocalPathId;
-        const auto parent = co_await DescribeForAuthorizedCreate(TString(ExtractParent(path)));
-        if (!parent.Exists || !parent.Self.GetCreateFinished()) {
-            throw TOrchestrationError(Ydb::StatusIds::UNAVAILABLE) << "Cannot resolve completed secret parent";
-        }
         const bool ifNotExists = !ModifyScheme().GetFailOnExist() && !ModifyScheme().GetReplaceIfExists();
         P::TRequest registration;
         auto* identity = registration.MutableRegisterDatabase()->MutableIdentity();

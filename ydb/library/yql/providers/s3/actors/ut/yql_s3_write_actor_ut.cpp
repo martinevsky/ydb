@@ -20,7 +20,7 @@ public:
         if (url.EndsWith("?uploads")) {
             ++Creates;
             if (OnInitiated) OnInitiated();
-            callback(TResult(TContent("<InitiateMultipartUploadResult><UploadId>held-upload</UploadId></InitiateMultipartUploadResult>", 200)));
+            callback(TResult(TContent(R"(<InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><UploadId>held-upload</UploadId></InitiateMultipartUploadResult>)", 200)));
         } else if (url.Contains("?partNumber=")) {
             ++Parts;
         } else {
@@ -47,9 +47,13 @@ class TS3Writer {
 public:
     struct TCallbacks : IDqComputeActorAsyncOutput::ICallbacks {
         ui32 Errors = 0;
+        TString Issues;
         bool Finished = false;
         void ResumeExecution(EResumeSource) override {}
-        void OnAsyncOutputError(ui64, const TIssues&, NDqProto::StatusIds::StatusCode) override { ++Errors; }
+        void OnAsyncOutputError(ui64, const TIssues& issues, NDqProto::StatusIds::StatusCode) override {
+            ++Errors;
+            Issues = issues.ToString();
+        }
         void OnAsyncOutputStateSaved(TSinkState&&, ui64, const NDqProto::TCheckpoint&) override {}
         void OnAsyncOutputStateCommitted(ui64, const NDqProto::TCheckpoint&) override {}
         void OnAsyncOutputFinished(ui64) override { Finished = true; }
@@ -117,6 +121,7 @@ Y_UNIT_TEST_SUITE(S3WriterAsynchronousCredentials) {
         writer.Credentials->Release("initial-token");
         writer.Pump();
         UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Creates, 1);
+        UNIT_ASSERT_C(writer.Callbacks.Errors == 0, writer.Callbacks.Issues);
         UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Parts, 1);
         const auto calls = writer.Credentials->State->Calls;
         writer.Credentials->State->Held = true;
@@ -142,6 +147,7 @@ Y_UNIT_TEST_SUITE(S3WriterAsynchronousCredentials) {
         writer.Credentials->Release("initial-token");
         writer.Pump();
         UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Creates, 1);
+        UNIT_ASSERT_C(writer.Callbacks.Errors == 0, writer.Callbacks.Issues);
         UNIT_ASSERT_VALUES_EQUAL(writer.Credentials->State->Calls, 2);
         UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Parts, 0);
         writer.Stop();
