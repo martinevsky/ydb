@@ -1,6 +1,6 @@
 #pragma once
 
-#include "protos/iam_delegation.pb.h"
+#include <ydb/core/security/iam_delegation/tablet/protos/iam_delegation.pb.h>
 
 #include <util/generic/strbuf.h>
 #include <util/generic/string.h>

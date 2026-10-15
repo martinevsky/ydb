@@ -7,6 +7,7 @@ PEERDIR(
     ydb/core/base
     ydb/core/engine/minikql
     ydb/core/tablet_flat
+    ydb/core/security/iam_delegation/tablet/protos
     ydb/core/security/iam_delegation/tablet/public
 )
 

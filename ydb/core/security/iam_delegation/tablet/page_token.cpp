@@ -1,5 +1,5 @@
 #include "page_token.h"
-#include "protos/inventory_page_token.pb.h"
+#include <ydb/core/security/iam_delegation/tablet/protos/inventory_page_token.pb.h>
 
 #include <ydb/core/base/path.h>
 

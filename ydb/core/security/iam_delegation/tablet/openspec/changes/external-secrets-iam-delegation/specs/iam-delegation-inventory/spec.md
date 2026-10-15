@@ -18,7 +18,7 @@ Inventory SHALL include active, pending, unknown-setup and revoking delegation i
 - **THEN** the shell retains a recovery inventory entry until it is dropped or a replacement is promoted.
 
 ### Requirement: Database incarnations are explicit
-Database registration SHALL retain immutable incarnation and external aliases independently of current schema existence. A known database with empty inventory MUST be distinguishable from an unknown database. A first-page request without an explicit incarnation SHALL discover a unique retained path match through the bounded registry scan. If multiple retained incarnations match the path, the request MUST identify the intended incarnation explicitly. An authenticated continuation SHALL retain the incarnation selected by its first page without repeating discovery.
+Registration SHALL retain immutable database incarnations and aliases after schema deletion. Known empty inventory MUST remain distinguishable from an unknown database. Bounded first-page discovery SHALL select a unique retained path match; ambiguous matches MUST require an explicit incarnation. Authenticated continuations SHALL retain their first page's incarnation without rediscovery.
 
 #### Scenario: Reused database path
 - **WHEN** an administrator requests cleanup information for a deleted database whose path now names another database
