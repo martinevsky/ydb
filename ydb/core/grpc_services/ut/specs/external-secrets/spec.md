@@ -143,12 +143,22 @@ Status: planned — no executable case yet; does not contribute to executed coun
 
 Contract coverage: iam-delegation-inventory / "Inventory is authoritative beyond schema lifetime" — scenario "Multiple delegations use one account".
 
-#### Scenario: Deletion export and handoff protocol
+#### Scenario: Inventory after tenant deletion preserves ownership
 
-- **GIVEN** a settled incarnation whose export includes an uncertain setup with a saved operation identifier.
-- **WHEN** the control plane exports, records durably and requests the handoff, or an unauthorized caller attempts settling or handoff, or setup races an export.
-- **THEN** the uncertain record travels with its identifier and unsafe-revocation label, the handoff request confirms durable receipt, unauthorized settling/handoff is rejected, and a pre-settlement export makes no completeness claim.
+- **GIVEN** a deleted incarnation whose inventory includes an uncertain setup with a saved operation identifier.
+- **WHEN** an authorized caller lists it while cleanup continues, loses the response or repeats enumeration.
+- **THEN** the saved binding, operation identifier and unsafe-revocation warning remain visible and cleanup responsibility stays with the tablet.
 
 Status: planned — no executable case yet; does not contribute to executed counts.
 
-Contract coverage: iam-delegation-inventory / "Deletion handoff exports the durable outbox" — scenario "Control plane takes over cleanup"; "Uncertain exports carry their resolution constraint" — scenario "Uncertain setup is handed off"; "Handoff requires durable receipt and equal authorization" — scenarios "Handoff without administrative authorization", "Control plane loses an unpersisted export"; "Settling is authorized and reversible before handoff" — scenario "Settling requested without administrative authorization"; "Listing is observational" — scenario "Concurrent setup during export".
+Contract coverage: iam-delegation-inventory / "Tablet cleanup ownership survives database deletion" — scenarios "Tenant disappears with cleanup outstanding", "Inventory response is lost during deletion"; "Uncertain exports carry their resolution constraint" — scenario "Uncertain setup is listed after deletion"; "Listing is observational" — scenario "Concurrent setup during export".
+
+#### Scenario: Authenticated continuations survive identity reuse and storage reopening
+
+- **GIVEN** an authenticated continuation with its original incarnation and a durable signing key.
+- **WHEN** payload/tag fields are altered, the path is reused, storage reopens, or a mixed-version tablet lacks authenticated mode.
+- **THEN** valid continuations retain the signed identity, tampering is rejected, keys survive reopening, and unsupported mode fails closed; omitted/zero public page size still means 100.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-inventory / "Administrative export is authorized" — scenarios "Continuation payload is modified", "Database path is reused between pages"; "Authenticated pagination has an explicit protocol mode" — scenario "Tablet lacks authenticated pagination support"; "Inventory pagination is revision-bound and bounded" — scenario "Public page size uses the default".

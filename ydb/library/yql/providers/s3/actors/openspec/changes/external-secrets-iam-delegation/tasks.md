@@ -13,3 +13,8 @@ Restored baseline: `c68a9f3b2cafbdee3c6a3f870cb002166dda3dd7`. Cross-mailbox hoo
 ## 2. Specification placement
 
 - [x] 2.1 Validate this local OpenSpec change and its links, and review the relocation; verify strict validation and preservation of every requirement/scenario from the reviewed specification.
+
+## 3. Coroutine credential follow-up (not yet implemented)
+
+- [ ] 3.1 Use coroutine-owned state for feature credential waits and typed cancellation/dispatch modes; keep callback-only gateway adapters at the boundary.
+- [ ] 3.2 Preserve mutex-protected cross-thread hook publication/consumption and exactly-once hook invocation; verify suspended-coroutine cancellation and late credentials.

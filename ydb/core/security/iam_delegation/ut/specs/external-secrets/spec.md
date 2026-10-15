@@ -123,7 +123,7 @@ Contract coverage: iam-delegated-token-acquisition / "Served tokens have strictl
 
 - **GIVEN** entries first minted together and a near-boundary token.
 - **WHEN** refreshes are scheduled.
-- **THEN** long-lived entries refresh at half-life, a near-boundary refresh is paced within the usable deadline, and simultaneous populations disperse.
+- **THEN** first demand mints immediately, subsequent healthy refreshes disperse within their target using the standard helper, and subsecond usability keeps one-second pacing without serving past the deadline.
 
 Status: planned — no executable case yet; does not contribute to executed counts.
 
@@ -168,3 +168,13 @@ Contract coverage: iam-delegated-token-acquisition / "Degraded minting is operat
 Status: planned — no executable case yet; does not contribute to executed counts.
 
 Contract coverage: iam-delegated-token-acquisition / "Minting uses platform credentials and the saved binding" (no-credential-material clause); "Transient failures preserve usable cached tokens" — scenario "Retryable failure with an empty cache".
+
+#### Scenario: Producer coroutine owns waits and retry state
+
+- **GIVEN** an owned producer coroutine suspended on IAM or standard backoff with several readers.
+- **WHEN** one reader cancels, or the producer owner stops and late replies arrive.
+- **THEN** a surviving reader can still complete while the producer lives; stopping the producer releases waits and cannot publish a late result or retain a stale cache-entry reference.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegated-token-acquisition / "Refresh operation state belongs to its coroutine" — scenario "Producer stops with a mint outstanding"; "Caller policy and cancellation remain effective" — scenario "One concurrent caller cancels".

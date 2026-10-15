@@ -10,9 +10,9 @@ Authoritative contracts: [consumers](../../../../../../../../services/scheme_sec
 
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/library/yql/providers/solomon/actors/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
 
-Source baseline: `67a530cc28eb2269e75fe0b83f2bacf73a1cbe2a`, including C1 product commit `8795e8bd1b186fc53051e5dd79126d9347a0e1b3`. A later change moved these files to their current paths without changing their content; source hashes and the post-relocation results are recorded in the [durable verification record](../../../../../../../../core/security/iam_delegation/docs/external-secrets/verification.md).
+Source baseline: `67a530cc28eb2269e75fe0b83f2bacf73a1cbe2a`, including C1 product commit `8795e8bd1b186fc53051e5dd79126d9347a0e1b3`. This component received coverage documentation only during the security relocation; historical source/evidence limits are recorded in the [durable verification record](../../../../../../../../core/security/iam_delegation/docs/external-secrets/verification.md).
 
-Status: **implemented and verified at the post-relocation run**: the three relocated targets completed 166/166 GOOD with exact exits 0 at the new paths, with a source-equivalence check recorded in the verification record. They were not re-executed at the final-integration revision `66189ce6`; the record documents them as not additional required reruns. Planned scenarios have no executable case and do not contribute to executed counts.
+Status: **historical executable coverage; no new execution claimed here**. The 166/166 post-relocation result covers only the three security targets, not this executable. Use the linked verification record for the actual historical commands and revisions. Planned scenarios have no executable case and do not contribute to executed counts.
 
 Fixture boundary: TAsyncWriter drives the real Solomon write actor with asynchronous credentials, counted HTTP requests and callback/free-space observation. HTTP and credential responses are controlled; no live Solomon service is used.
 

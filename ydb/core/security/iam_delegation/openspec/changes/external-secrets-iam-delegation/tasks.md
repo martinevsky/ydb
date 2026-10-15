@@ -13,3 +13,9 @@ Restored baseline: `c68a9f3b2cafbdee3c6a3f870cb002166dda3dd7`. The complete-atte
 ## 2. Specification placement
 
 - [x] 2.1 Validate this local OpenSpec change and its links, and review the relocation; verify strict validation and preservation of every requirement/scenario from the reviewed specification.
+
+## 3. Coroutine and scheduling follow-up (not yet implemented)
+
+- [ ] 3.1 Keep refresh/IAM-operation temporary state in owned co_await coroutines and use typed operation/outcome enums; verify cancellation and late replies.
+- [ ] 3.2 Reuse standard TBackoff for failures and bounded healthy-refresh dispersion, with immediate first mint and a safe minimum-pacing gap for subsecond usability.
+- [ ] 3.3 Derive producer/reader timeout bounds from shared retry policy and test original-bearer expiry, idle eviction, shared waiters and credential-free diagnostics.

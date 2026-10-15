@@ -148,3 +148,13 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 | Executable case | Test source | Command target |
 | --- | --- | --- |
 | `S3ExternalSecretCancellation::StreamingReadStillCompletes` | [yql_s3_read_actor_ut.cpp:427](../../yql_s3_read_actor_ut.cpp#L427) | `ydb/library/yql/providers/s3/actors/ut` |
+
+#### Scenario: Suspended credential coroutine is cancelled
+
+- **GIVEN** a feature-owned credential coroutine with a held result and callback-only gateway adapter.
+- **WHEN** cancellation releases the wait and credentials or gateway callbacks arrive late.
+- **THEN** no new download starts, destroyed operation state is not resumed, and an existing hook remains protected by synchronized exactly-once cancellation.
+
+Status: planned — no executable case yet; does not contribute to executed counts. Existing callback-based cancellation evidence above is preserved; it does not claim the coroutine refactor has run.
+
+Contract coverage: external-secret-s3-cancellation / "Credential waits use coroutine-owned operation state" — scenario "Cancellation while the credential coroutine is suspended".

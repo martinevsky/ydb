@@ -32,6 +32,19 @@ A secret created without SOURCE SHALL retain its existing stored-value behavior.
 - **WHEN** CREATE IF NOT EXISTS finds an existing secret, or ALTER changes no delegation attribute
 - **THEN** the statement completes without any IAM setup dispatch or lifecycle mutation.
 
+#### Scenario: No-op ALTER has a pending replacement
+- **WHEN** an authorized ALTER equals the active account/cloud binding while a different replacement is pending
+- **THEN** it completes after authenticated schema execution without retiring the pending operation, changing lifecycle revisions or dispatching IAM
+- **AND** this applies to not-started, successful-awaiting-promotion and young or expired unknown pending setup.
+
+### Requirement: DDL asynchronous state belongs to the coordinator coroutine
+Schema/tablet/IAM coordination SHALL use `NActors::async` and `co_await`/`co_return`, keeping request context, fences, deadlines and intermediate replies in its coroutine frame. Create/alter operation modes and setup outcomes SHALL be typed enums rather than Boolean control parameters. Cancellation MUST disarm pending waits without losing already committed lifecycle work or dispatching setup again.
+
+#### Scenario: Late response after coordinator cancellation
+- **WHEN** a coordinator is cancelled with a schema or IAM reply outstanding
+- **THEN** its coroutine cannot return a second result or resume an obsolete phase
+- **AND** recovery uses the durable intent and original identities.
+
 ### Requirement: Operation-specific DDL authorization
 ALTER of a delegation secret SHALL require AlterSchema and any rights needed for requested attributes, without adding DescribeSchema or SelectRow as prerequisites. CREATE OR REPLACE of an existing secret SHALL enforce both parent creation rights and target alteration rights. Authorization failure MUST precede lifecycle mutation or IAM setup.
 
@@ -93,6 +106,10 @@ Setup MUST fail with the IAM error when the account is not delegable in the bind
 - **WHEN** ALTER retains the existing binding's cloud and IAM denies delegation because the new account is not delegable there
 - **THEN** setup fails and the current active binding is preserved.
 
+#### Scenario: Recovery owns the terminal refusal
+- **WHEN** a recovery worker persists the IAM refusal before the original statement resumes
+- **THEN** the statement returns that recorded mapped status and credential-free issues rather than substituting a generic availability error.
+
 ### Requirement: Metadata is independent of token health
 Public secret description SHALL expose the source and non-secret delegation metadata without returning a minted IAM token. Referencing an existing secret during object creation or query planning MUST NOT require successful minting. Compilation and explanation MUST NOT dispatch IAM setup.
 
@@ -102,8 +119,13 @@ Public secret description SHALL expose the source and non-secret delegation meta
 - **AND** a later value acquisition reports the relevant token error.
 
 ### Requirement: Admission and cleanup have separate lifetimes
-New delegation secrets SHALL require the feature's admission flag and configured delegation services. Admission SHALL gate setup for intents created while admission is disabled, including replacements on existing secrets; completing or retiring an intent admitted while admission was enabled SHALL NOT depend on the current admission state. Disabling admission MUST NOT erase durable state, prevent ordinary DROP, or disable cleanup of previously admitted work.
+New CREATE/replacement Stage SHALL require enabled admission and configured services. Exact Stage replay and completing or safely retiring an admitted intent, including its immutable schema shell, MUST remain possible after admission is disabled. Disabling admission MUST NOT erase durable state, block ordinary DROP or stop cleanup. A schema reference alone MUST NOT authorize setup or token serving.
 
 #### Scenario: Disable feature after creation
 - **WHEN** admission is disabled after a delegation secret exists
 - **THEN** new admission is rejected while DROP and recovery of existing cleanup work remain possible.
+
+#### Scenario: Admission is disabled between Stage and schema submission
+- **WHEN** CREATE Stage commits, admission is disabled and the original or recovered schema submission subsequently runs
+- **THEN** the admitted intent can complete or safely retire under its saved parent/database fences
+- **AND** fresh CREATE and binding-changing replacement intents remain rejected.

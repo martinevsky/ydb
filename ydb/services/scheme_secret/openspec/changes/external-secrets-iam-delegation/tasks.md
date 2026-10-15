@@ -14,3 +14,9 @@ Restored baseline: `c68a9f3b2cafbdee3c6a3f870cb002166dda3dd7`. Reader timing is 
 ## 2. Specification placement
 
 - [x] 2.1 Validate this local OpenSpec change and its links, and review the relocation; verify strict validation and preservation of every requirement/scenario from the reviewed specification.
+
+## 3. Coroutine acquisition follow-up (not yet implemented)
+
+- [ ] 3.1 Refactor feature-owned asynchronous acquisition into co_await coroutines with operation-local caller/identity/deadline state and typed modes.
+- [ ] 3.2 Keep shared producer/provider state separate; verify cancellation releases only one acquisition and late replies cannot return credentials.
+- [ ] 3.3 Cover per-caller ACLs, multiple persisted identities, token expiry during revalidation and later requests after ALTER or ACL loss.

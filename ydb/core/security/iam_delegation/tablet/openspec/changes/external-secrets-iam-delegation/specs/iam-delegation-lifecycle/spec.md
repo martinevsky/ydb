@@ -20,6 +20,21 @@ All delegation lifecycle, setup-outcome and cleanup-queue state SHALL be owned b
 - **WHEN** a tenant's schema service is unavailable, replaced or deleted
 - **THEN** no delegation intent, setup outcome or cleanup obligation is lost or needs reconstruction from schema state.
 
+### Requirement: Asynchronous coordination keeps operation state in coroutines
+Async lifecycle clients, DDL coordinators and recovery workers SHALL use `NActors::async` with `co_await`/`co_return`. Per-operation requests, identities/revisions, deadlines, replies and retry state SHALL stay in the coroutine frame. Shared caches MAY stay in actor members; authoritative state MUST stay in the independent tablet. Storage transactions MUST remain synchronous, with no coroutine suspension or IAM calls.
+
+#### Scenario: Coordinator is cancelled while awaiting a reply
+- **WHEN** a coordinator is cancelled while its coroutine awaits storage, schema or IAM
+- **THEN** its waits are disarmed and late replies cannot resume a completed operation or emit a second result
+- **AND** already committed intent and cleanup responsibility remain recoverable from the tablet.
+
+### Requirement: Modes and outcomes use typed enums
+Operation kind, lifecycle outcome, retry reason and pagination mode SHALL use scoped C++ enums or protobuf enums rather than Boolean control arguments or combinations of phase flags. Existing compatible wire fields MAY be adapted at the transport boundary; their meanings MUST be converted to typed decisions before orchestration. Ordinary Boolean predicates are unaffected.
+
+#### Scenario: Pending operation differs from failed operation
+- **WHEN** coordination receives a typed pending, failed or unknown IAM outcome
+- **THEN** its explicit outcome determines polling, retry and operation-identifier retention without an ambiguous success or retry Boolean.
+
 ### Requirement: Immutable identities and idempotent mutations
 Each database incarnation and bound secret SHALL use immutable identities rather than path names alone. An operation SHALL retain its original IAM binding and unique referrer. Replaying the same operation MUST preserve its identity; changed replays and stale revisions MUST be rejected without partial mutation.
 
@@ -52,6 +67,13 @@ ALTER SHALL preserve the current active binding until a replacement setup succee
 - **THEN** recovery sees either the previous active binding or the new binding together with durable predecessor cleanup
 - **AND** it never observes a committed promotion that forgot the predecessor.
 
+### Requirement: Terminal setup failures retain their diagnostics
+A known terminal IAM refusal SHALL persist its mapped status and bounded credential-free issues with the setup outcome. A coordinator recovering a result produced by another worker SHALL return those recorded diagnostics and preserve the current active binding. Legacy records without diagnostics MAY return an explicit generic failure; missing diagnostics MUST NOT change a known failure into an unknown setup outcome.
+
+#### Scenario: Recovery records refusal before the coordinator resumes
+- **WHEN** a recovery worker wins setup dispatch, commits a terminal IAM refusal and the original coordinator resumes after reply loss or restart
+- **THEN** the coordinator reports the recorded IAM status and issues without repeating setup or replacing the active binding.
+
 ### Requirement: Unknown setup is not a failed setup
 A setup whose outcome is uncertain SHALL remain visible and ineligible for revocation while it could still grant access. A saved IAM operation identifier SHALL be used to recover the outcome. Without an authoritative replay or lookup contract, absence of that identifier MUST NOT authorize blind setup replay or timeout-based revocation.
 
@@ -65,10 +87,10 @@ A setup whose outcome is uncertain SHALL remain visible and ineligible for revoc
 - **THEN** recovery polls that operation and records its definitive result before promotion or cleanup.
 
 ### Requirement: Retiring pending work preserves responsibility
-An unresolved pending replacement SHALL block another replacement strictly before the ten-minute pending guard elapses, measured from its durable staging timestamp and surviving tablet restart; at the guard boundary retirement is permitted. Once retirement is permitted, detaching it MUST preserve its cleanup responsibility and the active binding. A late outcome MUST affect only the retired operation and MUST NOT clear or promote a newer pending replacement.
+Binding-changing replacements SHALL be blocked while unresolved pending work is younger than ten minutes, using its durable staging timestamp across restart; retirement is allowed at equality. A no-op ALTER MUST preserve pending work without applying this guard. Detachment SHALL retain cleanup responsibility and the active binding; late outcomes MUST affect only their original operation, never a newer pending replacement.
 
 #### Scenario: Replacement attempted during the pending guard
-- **WHEN** an ALTER targets a secret whose pending replacement is unresolved and younger than the ten-minute guard
+- **WHEN** a binding-changing ALTER targets a secret whose pending replacement is unresolved and younger than the ten-minute guard
 - **THEN** the ALTER is rejected without touching the active binding, the pending slot or cleanup state.
 
 #### Scenario: Late success after pending replacement is retired
@@ -94,7 +116,7 @@ Committed lifecycle state SHALL survive tablet restart and reopening the same on
 - **THEN** recovered active, pending and cleanup identities agree with an independent state model and no unresolved responsibility is lost.
 
 ### Requirement: Stuck lifecycle work is operator-visible
-Unresolved setups and pending replacements persisting beyond a deployment-set age SHALL be exposed through operator-observable state. Thresholds MUST be configurable rather than fixed by this contract.
+Unresolved setups and pending replacements persisting beyond a deployment-set age SHALL be exposed through operator-observable state using their durable staging timestamp. Thresholds MUST be configurable rather than fixed by this contract and MAY be evaluated by external monitoring. Reporting degradation MUST NOT resolve uncertainty, retire work or release cleanup responsibility.
 
 #### Scenario: Unknown setup ages past its threshold
 - **WHEN** an intent remains unresolved longer than the configured age threshold

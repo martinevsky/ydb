@@ -71,7 +71,9 @@ Workers use saved bindings and wait for authoritative IAM completion or absence.
 
 Database registration preserves incarnations and aliases, including known empty databases. Discovery scans repeat to find registrations behind a prior cursor. Inventory continuations bind incarnation, revision and exclusive cursor; mutation returns `SNAPSHOT_EXPIRED`. Page sizes are 1–1000, and nonfinal pages are full to preserve short-page termination behavior.
 
-The CMS handler authenticates administrators before using the trusted tablet protocol. Post-deletion/reused-path requests identify an incarnation explicitly. Listing is observational; the deletion control plane must stop admission and settle its cleanup boundary separately. Reconstructing inventory from live schema or pretending pagination holds an immutable snapshot was rejected.
+The CMS handler authenticates administrators before using the trusted tablet protocol. A fresh post-deletion/reused-path request identifies an incarnation explicitly; an authenticated continuation retains its first page's incarnation before fresh path resolution. Public omitted/zero page size keeps the default 100, while the tablet API requires 1–1000. Authenticated and trusted structured pagination use typed modes/capabilities; a public handler fails closed if the tablet cannot support authenticated continuations.
+
+Listing is observational and never transfers cleanup ownership. The service-owned tablet retains and drains cleanup after tenant deletion; no external settlement, receipt or ownership-transfer state machine is required. Unknown setups stay visible with their saved operation IDs and an explicit unsafe-until-authoritative-outcome warning. Reconstructing inventory from live schema or pretending pagination freezes concurrent work was rejected.
 
 ### 6. DDL metadata lookup uses the operation's permission
 
@@ -83,11 +85,13 @@ Continuing to use public Describe as a prerequisite was rejected because an auth
 
 ### 7. Token minting is shared, proactive and phase-bounded
 
-The node cache key contains account, cloud and saved service/microservice/resource-type identity. One refresh loop serves concurrent demand. Successful tokens are usable only before `expiry - 5 minutes`; refresh is normally scheduled at half-life, capped by one hour and the usable deadline, with minimum pacing for near-boundary tokens. Idle entries expire after ten minutes when no waiter needs the next result. Transient failures preserve a still-usable token; authoritative permission-denied/not-found invalidates it.
+The node cache key contains account, cloud and saved service/microservice/resource-type identity. One refresh coroutine serves concurrent demand. The first demanded mint starts immediately. Subsequent healthy refreshes use bounded standard-helper dispersion by the half-life/hourly/usable target; retry delays reuse `NKikimr::TBackoff`. The one-second minimum pacing interval may leave a safe gap for subsecond usable time, but tokens are never served at or after `expiry - 5 minutes`. Idle entries expire after ten minutes when no waiter needs the next result. Transient failures preserve a still-usable token; authoritative permission-denied/not-found invalidates it.
 
 The producer already bounds a next-attempt wait using maximum backoff plus credential/RPC retries. The current calculation is `75s + (2 * 10s + 14s) * 5 + 1s = 246s`. The reader shares this definition and adds one second of delivery allowance, for a 247-second token phase. Thirty-second storage/schema deadlines remain phase-specific, so stale phase timers cannot cut short a legitimate token wait. Caller retry policy and terminal status propagation remain unchanged.
 
 Increasing one untagged whole-reader timeout was rejected because it would also prolong unrelated storage waits and would not identify stale timers. Reimplementing the producer's random backoff in a test was rejected; the regression drives actual IAM transport failures through the real producer and advances simulated time.
+
+The follow-up SHALL derive this budget from the same configured bounds used by the standard backoff constructors, replacing independently embedded numeric allowances. The current calculation above remains historical implementation evidence until that refactor is tested.
 
 ### 8. Consumers re-resolve and synchronize asynchronous cancellation
 
@@ -96,6 +100,18 @@ Credential providers retain the secret reference and verified caller identity. N
 S3 download hook publication and consumption must share synchronization. The pre-dispatch cancellation flag remains available while credentials resolve; a hook returned after cancellation is invoked immediately, exactly once, outside the lock. Shared ownership covers continuation lifetime but cannot substitute for synchronization.
 
 The deterministic regression uses real asynchronous decoding and separate mailboxes: gateway callbacks can make the decoder cancel before the gateway returns its hook. An independently scheduled error recipient establishes that ordering without deadlocking the blocked parent mailbox. Reentrant/concurrent tests exercise the actual production cancellation mechanism. Sleep-based race-frequency tests and a copied model were rejected.
+
+### 9. Coroutines own temporary operation state; enums express decisions
+
+Use the existing `NActors::async` facilities with `co_await`/`co_return` for feature-owned asynchronous DDL, lifecycle transport, setup/poll/revoke, minting, secret resolution and consumer credential waits. Keep each operation's request context, expected identities/revisions, deadlines, awaited replies and temporary backoff in its coroutine frame. Do not duplicate the operation's phase in actor members or a callback-driven state machine. Actor handlers may route events into awaiters, and callback-only external transports may have small adapters.
+
+Keep long-lived shared caches, producer ownership and waiter notification state in their shared owner. Keep authoritative intents, outcomes, failure history, cleanup age and replay receipts in tablet storage; a coroutine frame never substitutes for durable state. Cancellation disarms waits and prevents late replies from resuming a completed operation. Flat-executor Execute/Complete methods stay synchronous, with no `co_await` or IAM side effects. Existing S3 hook publication still requires its mutex across mailboxes/threads.
+
+Use scoped C++ enums and protobuf enums for operation kinds, outcomes, retry reasons, pagination modes/capabilities and semantic cancellation actions. Boolean predicates remain ordinary predicates; legacy wire Booleans are converted at transport boundaries where compatibility requires retaining them. In particular, authenticated-pagination request/capability are enum values, not new Boolean flags.
+
+Revocation maps Succeeded to completion, Accepted to pending progress/reset failure streak, and Failed/Unknown to failure backoff. Unknown retains a known operation ID for polling; only a definitive failure permits clearing it. The coroutine reconstructs standard `TBackoff` from durable record history, finishes its claim with a due time, then waits without holding the lease. Standard jitter is bounded but individual samples need not grow strictly.
+
+These follow-up requirements are acceptance targets, not claims that all existing callback paths have already been refactored or that new regressions have run. Component task lists and test-owned scenarios remain unchecked/planned until implementation and verification.
 
 ## Validation mapping
 
@@ -126,4 +142,4 @@ The restored baseline had 411 passing selected tests across 13 suites and 357 re
 2. Keep admission disabled until configuration and the relevant deterministic suites are verified. No schema-only toggle provisions storage.
 3. Enable delegation-secret admission. Ordinary stored secrets keep their wire/value behavior; new delegation metadata is explicitly typed.
 4. On rollback, disable new admission while retaining compatible readers, DROP and recovery for existing references. Do not remove the tablet or treat a configuration change as migration.
-5. Coordinate database deletion with administrative inventory and the secret referrer type. Live IAM/control-plane deployment validation is an operational follow-up; the local test suite uses controlled external responses and does not establish undocumented IAM guarantees.
+5. Preserve the service-owned tablet and recovery during managed database deletion. Administrative inventory retains the secret referrer type and uncertainty warning without transferring ownership. Production placement and live IAM validation remain operational follow-ups; controlled tests do not establish undocumented remote guarantees.

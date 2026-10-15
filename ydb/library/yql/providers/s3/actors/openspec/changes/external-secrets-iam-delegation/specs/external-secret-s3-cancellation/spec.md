@@ -6,6 +6,14 @@ Keep asynchronous S3 reads cancellable while credentials resolve and while decod
 
 ## ADDED Requirements
 
+### Requirement: Credential waits use coroutine-owned operation state
+Feature-owned asynchronous credential waits SHALL use `co_await`/`co_return` with request and intermediate result state retained in the coroutine frame. Callback-only gateway APIs MAY be adapted at their boundary. Coroutine cancellation SHALL own cleanup of its waits; cross-thread hook publication and consumption MUST still use the existing shared synchronization. Semantic cancellation and dispatch modes SHALL use typed enums rather than Boolean control arguments.
+
+#### Scenario: Cancellation while the credential coroutine is suspended
+- **WHEN** the read is cancelled while its credential coroutine is suspended and the credential result subsequently arrives
+- **THEN** the operation cannot dispatch a download or resume destroyed state
+- **AND** any already dispatched download hook remains subject to exactly-once synchronized cancellation.
+
 ### Requirement: Cancellation before dispatch prevents a new download
 If an S3 read is cancelled while asynchronous credentials are unresolved, it SHALL NOT start a download when those credentials later arrive. Shared asynchronous state MUST remain valid until outstanding continuations finish.
 

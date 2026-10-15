@@ -67,12 +67,32 @@ Workers SHALL report successful cleanup only after the IAM revoke operation comp
 - **THEN** cleanup remains outstanding and recovery retains the operation identifier when available.
 
 #### Scenario: Retry delay grows with failures
-- **WHEN** a record's revocation fails retryably twice
-- **THEN** its second due time is later than its first, within the bounded maximum.
+- **WHEN** a record's revocation repeatedly fails retryably
+- **THEN** its retry windows follow standard bounded backoff growth with jitter
+- **AND** individual random samples need not increase strictly and the initial base delay may repeat.
 
 #### Scenario: Backlog drains without synchronized calls
 - **WHEN** many records become due together
 - **THEN** their revoke dispatches are dispersed rather than simultaneous.
+
+### Requirement: Revocation retries use standard backoff and typed reasons
+Workers SHALL reuse `NKikimr::TBackoff` from `ydb/core/util/backoff.h` for retries and dispersion, keeping its temporary state in the coroutine frame and per-record failure history/due time in the tablet. Retry reasons SHALL be typed enums distinguishing pending progress from failure. Backoff waits MUST NOT consume a claimed lease; exact ACK replay MUST NOT advance history or due time again.
+
+#### Scenario: Retry backoff survives worker takeover
+- **WHEN** a worker finishes a retry ACK and is replaced before its stored due time
+- **THEN** the new coroutine reconstructs standard backoff from durable history without claiming early
+- **AND** replaying the committed ACK does not advance the history or due time again.
+
+### Requirement: Revoke outcomes preserve remote operation identity
+Succeeded SHALL complete cleanup; Accepted SHALL reset the consecutive failure streak while retaining pending work. Failed and Unknown SHALL advance the streak. Unknown MUST retain any saved operation identifier for polling rather than resubmitting; only a definitive failure permits clearing it.
+
+#### Scenario: Unknown poll retains operation and failure history
+- **WHEN** polling a saved revoke operation fails uncertainly and another worker later takes over
+- **THEN** the failure streak and due time survive, the saved operation is polled rather than resubmitted, and the next retry follows the standard backoff policy.
+
+#### Scenario: Accepted operation makes progress
+- **WHEN** IAM confirms that a revoke operation is accepted but still pending
+- **THEN** the operation identifier is retained for polling, the failure streak resets and cleanup remains outstanding.
 
 ### Requirement: Uncertain setup is excluded from cleanup claims
 An unresolved setup that could still grant access SHALL remain outside the revocation claim queue. Retirement or lease expiry MUST NOT convert uncertainty into a definitive setup result.
@@ -83,7 +103,7 @@ An unresolved setup that could still grant access SHALL remain outside the revoc
 - **AND** it was not claimed for revocation before that success became authoritative.
 
 ### Requirement: Outstanding cleanup is operator-visible
-Cleanup work outstanding beyond a deployment-set age and records with repeated retryable failures SHALL be exposed through operator-observable state, with thresholds left to configuration.
+Cleanup work outstanding beyond a deployment-set age and records with repeated retryable failures SHALL be exposed through operator-observable state, with thresholds left to configuration, including external monitoring. Age SHALL use the first durable cleanup-queued timestamp rather than a changing retry due time; missing historical timestamps SHALL be reported as unknown. Claims and restarts MUST NOT reset the durable failure history or original cleanup age.
 
 #### Scenario: Revocation repeatedly fails
 - **WHEN** a record's revocation keeps failing retryably past the configured age

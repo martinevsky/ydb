@@ -94,7 +94,7 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** noops, EXPLAIN or SQL CREATE/ALTER/DROP run.
 - **THEN** noops and EXPLAIN avoid lifecycle/IAM writes; real SQL reaches the tablet and reader.
 
-Contract coverage: external-secret-schema / "Stored-secret compatibility" — scenarios "No-op statement dispatches nothing", "Existing stored value", "Missing ALTER IF EXISTS" (NoopsNeedNoIamConfigurationOrLifecycleMutation); "Metadata is independent of token health" — scenario "IAM is unavailable during metadata access" (no-dispatch half: EXPLAIN and noops need no IAM configuration); "Delegation source syntax" — scenario "Create a delegation secret" (happy-path half via SqlCreateAlterAndDrop).
+Contract coverage: external-secret-schema / "Stored-secret compatibility" — scenarios "No-op statement dispatches nothing", "Missing ALTER IF EXISTS" (NoopsNeedNoIamConfigurationOrLifecycleMutation); "Metadata is independent of token health" — scenario "IAM is unavailable during metadata access" (no-dispatch half: EXPLAIN and noops need no IAM configuration); "Delegation source syntax" — scenario "Create a delegation secret" (happy-path half via SqlCreateAlterAndDrop). This delegation fixture does not establish the separate "Existing stored value" scenario.
 
 Executable mapping (status: implemented; execution per verification record):
 
@@ -142,4 +142,24 @@ Contract coverage: iam-delegation-revocation / "DROP ends schema access independ
 
 Status: planned — no executable case yet; does not contribute to executed counts.
 
-Contract coverage: external-secret-schema / "Admission and cleanup have separate lifetimes" — scenario "Disable feature after creation".
+Contract coverage: external-secret-schema / "Admission and cleanup have separate lifetimes" — scenarios "Disable feature after creation", "Admission is disabled between Stage and schema submission".
+
+#### Scenario: No-op ALTER preserves every pending setup state
+
+- **GIVEN** active binding A and pending B in not-started, successful-awaiting-promotion, young unknown or expired unknown state.
+- **WHEN** an authorized ALTER requests the active account/cloud unchanged.
+- **THEN** authenticated schema execution succeeds without touching pending/current records or revisions and without setup/revoke dispatch.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: external-secret-schema / "Stored-secret compatibility" — scenario "No-op ALTER has a pending replacement".
+
+#### Scenario: Coordinator coroutine recovers a worker-owned refusal
+
+- **GIVEN** a held coordinator reply and a worker that wins setup and persists a terminal IAM refusal.
+- **WHEN** the coordinator resumes, including after storage restart, or is cancelled before a late result.
+- **THEN** recovery returns the recorded IAM status/issues with the old binding intact; a cancelled coordinator emits no late result.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: external-secret-schema / "DDL asynchronous state belongs to the coordinator coroutine" — scenario "Late response after coordinator cancellation"; "Setup fails for an account not delegable in its cloud" — scenario "Recovery owns the terminal refusal".

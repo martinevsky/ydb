@@ -19,3 +19,9 @@ Implementation and local regression tasks belong to their component OpenSpec cha
 
 - Keep a local change active while its implementation or validation tasks remain open. Synchronize and archive completed component changes through OpenSpec when requested.
 - Live rollout includes service-owned tablet provisioning and IAM/control-plane validation; deterministic local tests do not establish undocumented remote-service guarantees.
+
+## 2. Specification follow-up (not yet implemented)
+
+- [ ] 2.1 Implement the component-local coroutine, typed-enum, DDL recovery, standard-backoff and authenticated-inventory tasks in [implementation-plan.md](implementation-plan.md).
+- [ ] 2.2 Preserve tablet ownership through tenant deletion and complete the new boundary/chaos/consumer scenarios; retain all existing uncertainty and lease fences.
+- [ ] 2.3 Push each implementation/test checkpoint before running product tests, then review the complete delta and record new evidence separately from historical 407 GOOD.

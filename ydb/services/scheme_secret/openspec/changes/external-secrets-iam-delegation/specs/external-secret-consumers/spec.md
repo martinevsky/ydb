@@ -6,6 +6,14 @@ Resolve secret-backed credentials for long-running external operations with curr
 
 ## ADDED Requirements
 
+### Requirement: Acquisition state belongs to its coroutine
+Secret resolution and credential acquisition SHALL use `NActors::async` with `co_await`/`co_return`. Each request's caller context, identity/revision, deadline and pending result SHALL stay in its coroutine frame. Shared provider/cache state MAY remain shared; modes/outcomes MUST use typed enums, not phase flags. Callback-only transports MAY use boundary adapters whose waits/subscriptions belong to the awaiting operation.
+
+#### Scenario: Cancelled acquisition receives a late transport result
+- **WHEN** an acquisition is cancelled while awaiting schema, tablet, mint or transport completion
+- **THEN** its waits are released and the late result cannot resume it or emit credentials
+- **AND** another authorized acquisition sharing the producer can still complete.
+
 ### Requirement: Each secret reference retains its own identity
 A multi-secret resolution SHALL validate each entry against its own immutable schema identity, version and delegation reference. A cache hit for one path MUST NOT authorize another path, even if both secrets share an account or token producer.
 

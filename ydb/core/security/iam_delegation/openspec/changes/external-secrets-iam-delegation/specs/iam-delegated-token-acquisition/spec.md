@@ -25,7 +25,7 @@ A token SHALL be served only while the current time is strictly before its usabl
 - **THEN** the old token is not returned and acquisition must obtain another usable result or fail.
 
 ### Requirement: Refresh is automatic and bounded against busy loops
-The node SHALL refresh active cache entries without reader credentials, normally at half of the token lifetime and at least once per hour for longer-lived tokens. Refresh scheduling MUST respect the usable deadline, separate attempts for an entry by a minimum pacing interval even when the deadline would schedule them sooner, and avoid a busy loop for near-boundary tokens; scheduling MUST NOT extend their usable lifetime.
+Active entries SHALL refresh without reader credentials, normally by half-life and at least hourly. Attempts MUST be paced by at least one second. When sufficient usable time remains, dispersion MUST stay within the half-life/hourly/usable target. Otherwise the next attempt MAY follow the usable deadline, but the token MUST be absent at that deadline; pacing MUST NOT extend validity or cause a busy loop.
 
 #### Scenario: Long-running consumer
 - **WHEN** a consumer continues using the same secret beyond the first token's lifetime
@@ -33,14 +33,22 @@ The node SHALL refresh active cache entries without reader credentials, normally
 
 #### Scenario: Near-boundary token
 - **WHEN** a minted token's usable remaining time is shorter than the normal half-life interval
-- **THEN** the next refresh is paced rather than immediate and is not scheduled beyond the usable deadline.
+- **THEN** the next refresh respects minimum pacing and the strict serving cutoff
+- **AND** a positive subsecond usable interval may end before the next attempt, leaving a safe period without a usable token.
 
 ### Requirement: Refresh scheduling is dispersed
-Initial mint and refresh scheduling SHALL incorporate dispersion across entries and nodes so that simultaneous cache population does not synchronize subsequent remote calls.
+The first demanded mint SHALL start immediately. Subsequent healthy refreshes SHALL incorporate bounded dispersion across entries and nodes so that simultaneous cache population does not synchronize subsequent remote calls. Retry backoff and scheduling dispersion SHALL reuse standard `NKikimr::TBackoff` rather than a separate retry algorithm; healthy refreshes MUST NOT accumulate exponential failure backoff or push the target beyond its allowed bounds.
 
 #### Scenario: Fleet restart aligns cache population
 - **WHEN** many entries are first minted together after a fleet restart
 - **THEN** their subsequent refreshes are dispersed rather than aligned to the restart time.
+
+### Requirement: Refresh operation state belongs to its coroutine
+Each shared producer SHALL run as an owned `NActors::async` coroutine using `co_await`/`co_return`. The coroutine frame SHALL retain the in-flight mint, deadline, temporary result and standard backoff across suspension. The actor MAY retain shared cache entries and waiter notification state; each coroutine MUST revalidate an entry after suspension instead of holding an invalidated reference. Per-operation phases MUST NOT be encoded by actor-level Boolean flags or callback state machines.
+
+#### Scenario: Producer stops with a mint outstanding
+- **WHEN** the producer coroutine is cancelled while waiting for IAM or retry pacing
+- **THEN** its waits and subscriptions are released, late replies cannot publish a result, and cancellation of one reader does not stop a producer still needed by other readers.
 
 ### Requirement: Concurrent demand shares one producer
 Concurrent requests for the same account, cloud and saved service identity SHALL share one refresh producer per node. Token sharing MUST NOT share or bypass schema authorization between secret references or between callers.

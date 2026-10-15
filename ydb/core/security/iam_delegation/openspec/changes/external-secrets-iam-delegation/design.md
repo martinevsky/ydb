@@ -6,7 +6,7 @@ Own shared platform-authenticated minting, refresh, strict token usability and t
 
 ## Goals / Non-Goals
 
-Implement the local capability contracts without expanding this component's authority. Durable formats and the independent-tablet ownership model remain unchanged by the review fixes. Other providers and undocumented IAM replay guarantees are outside scope.
+Implement the local capability contracts without expanding this component's authority. The independent-tablet ownership model remains unchanged. The specification follow-up may add compatible durable fields and refactor temporary asynchronous state into coroutine frames; these changes remain planned until verified. Other providers and undocumented IAM replay guarantees are outside scope.
 
 ## Decisions
 

@@ -122,11 +122,11 @@ Executable mapping (status: implemented; execution per verification record):
 
 - **GIVEN** several concurrent callers sharing one in-flight mint.
 - **WHEN** one caller cancels.
-- **THEN** the cancelled caller's wait ends immediately while the remaining callers still receive the shared result.
+- **THEN** the cancelled acquisition coroutine releases its waits, late replies emit no credentials or second result, and the remaining callers still receive the shared result.
 
 Status: planned — no executable case yet; does not contribute to executed counts.
 
-Contract coverage: iam-delegated-token-acquisition / "Caller policy and cancellation remain effective" — scenario "One concurrent caller cancels" (shared-result half).
+Contract coverage: iam-delegated-token-acquisition / "Caller policy and cancellation remain effective" — scenario "One concurrent caller cancels" (shared-result half); external-secret-consumers / "Acquisition state belongs to its coroutine" — scenario "Cancelled acquisition receives a late transport result".
 
 #### Scenario: Per-caller authorization on shared resolution
 

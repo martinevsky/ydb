@@ -161,11 +161,11 @@ Contract coverage: iam-delegation-revocation / "Outstanding cleanup is operator-
 
 - **GIVEN** several bindings whose revocation retries fail together.
 - **WHEN** subsequent attempts are scheduled.
-- **THEN** per-binding delay grows with failures and the backlog drains without synchronized IAM calls.
+- **THEN** the worker uses standard `TBackoff`, per-binding retry windows grow to their cap with jitter, and waiting does not consume a claim lease; individual samples need not grow strictly.
 
 Status: planned — no executable case yet; does not contribute to executed counts.
 
-Contract coverage: iam-delegation-revocation / "Only authoritative revocation completion removes work" — scenarios "Retry delay grows with failures", "Backlog drains without synchronized calls".
+Contract coverage: iam-delegation-revocation / "Only authoritative revocation completion removes work" — scenarios "Retry delay grows with failures", "Backlog drains without synchronized calls"; "Revocation retries use standard backoff and typed reasons".
 
 #### Scenario: Discovery behind cursor and paced rescans
 
@@ -190,9 +190,29 @@ Contract coverage: iam-delegation-lifecycle / "Lifecycle state is owned independ
 #### Scenario: Recovery dispatch denied by IAM
 
 - **GIVEN** a recovered intent whose initiating subject lost IAM permission before setup dispatch.
-- **WHEN** the worker reaches the dispatch decision.
-- **THEN** the setup is not dispatched and the intent remains for later resolution.
+- **WHEN** the worker sends setup on the saved initiating subject's behalf and IAM returns a known terminal denial.
+- **THEN** the mapped denial is persisted, no binding is activated, and a waiting coordinator can recover the original refusal without resubmitting setup.
 
 Status: planned — no executable case yet; does not contribute to executed counts.
 
-Contract coverage: iam-delegation-lifecycle / "Intent precedes remote setup" (dispatch-time authorization clause).
+Contract coverage: iam-delegation-lifecycle / "Intent precedes remote setup" (dispatch-time authorization clause); "Terminal setup failures retain their diagnostics" — scenario "Recovery records refusal before the coordinator resumes".
+
+#### Scenario: Coroutine cancellation releases the lifecycle wait
+
+- **GIVEN** a lifecycle coroutine suspended on a controlled tablet, schema or IAM reply.
+- **WHEN** its owner is cancelled and the reply later arrives.
+- **THEN** no completed coroutine resumes or emits a second result, and committed work remains recoverable by another worker.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-lifecycle / "Asynchronous coordination keeps operation state in coroutines" — scenario "Coordinator is cancelled while awaiting a reply".
+
+#### Scenario: Typed pending and uncertain revoke outcomes
+
+- **GIVEN** a saved revoke operation and failure history.
+- **WHEN** typed Accepted, Failed and Unknown results arrive across worker takeover.
+- **THEN** Accepted resets the streak, Failed/Unknown advance it, Unknown retains the identifier for polling and only definitive failure permits clearing it.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-lifecycle / "Modes and outcomes use typed enums"; iam-delegation-revocation / "Revocation retries use standard backoff and typed reasons"; "Revoke outcomes preserve remote operation identity" — scenarios "Unknown poll retains operation and failure history", "Accepted operation makes progress".

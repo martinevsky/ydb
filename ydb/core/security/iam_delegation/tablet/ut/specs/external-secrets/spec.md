@@ -122,35 +122,25 @@ Executable mapping (status: implemented; execution per verification record):
 | `IamDelegationRecoveryChaos::Seed330` | [recovery_chaos_ut.cpp:281](../../recovery_chaos_ut.cpp#L281) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationRecoveryChaos::Seed20261013` | [recovery_chaos_ut.cpp:285](../../recovery_chaos_ut.cpp#L285) | `ydb/core/security/iam_delegation/tablet/ut` |
 
-#### Scenario: Settling transitions are durable and fence work
+#### Scenario: Lost inventory response preserves cleanup ownership
 
-- **GIVEN** a registered incarnation with active lifecycle and claim work.
-- **WHEN** the settling state is entered or lifted across crash boundaries and reboot.
-- **THEN** the state survives the reboot, claims and lifecycle transitions are fenced while it holds, and an authorized lift before handoff resumes work.
-
-Status: planned — no executable case yet; does not contribute to executed counts.
-
-Contract coverage: iam-delegation-inventory / "Deletion export requires a settled incarnation" — scenario "Export before settlement"; "Settling is authorized and reversible before handoff" — scenario "Settling lifted before handoff".
-
-#### Scenario: Handoff commit boundaries
-
-- **GIVEN** a settled incarnation with a completed export.
-- **WHEN** a handoff commit is interrupted before/after commit or its reply is lost, or a stale export or lifted settlement is presented.
-- **THEN** precommit the tablet retains responsibility; postcommit replay returns the recorded outcome; a mutated revision or lifted settlement rejects the uncommitted handoff; and a committed handoff fences outstanding claims and excludes transferred records from claim selection.
+- **GIVEN** a retained incarnation with outstanding cleanup after tenant deletion.
+- **WHEN** an inventory response is lost or enumeration restarts while recovery continues.
+- **THEN** the tablet retains all cleanup obligations and listing neither acknowledges nor transfers them.
 
 Status: planned — no executable case yet; does not contribute to executed counts.
 
-Contract coverage: iam-delegation-inventory / "Handoff transfer is a distinct durable transition" — scenarios "Export completes without handoff", "Restarted export re-delivers records"; "Handoff is bound to a live settlement and revision" — scenarios "Handoff based on a stale export", "Handoff reply is lost after commit".
+Contract coverage: iam-delegation-inventory / "Tablet cleanup ownership survives database deletion" — scenario "Inventory response is lost during deletion"; "Listing is observational".
 
 #### Scenario: Inventory and cleanup survive tenant deletion
 
 - **GIVEN** an incarnation with delegation bindings and pending cleanup work.
-- **WHEN** the tenant database is removed without a coordinated deletion handoff.
-- **THEN** the delegation identities and cleanup responsibilities remain durable and available to recovery and administrative inventory.
+- **WHEN** the tenant database is removed while the service-owned tablet survives.
+- **THEN** confirmed cleanup continues from saved bindings, uncertain setup stays unclaimable and explicit-incarnation inventory remains available across restart and path reuse.
 
 Status: planned — no executable case yet; does not contribute to executed counts.
 
-Contract coverage: iam-delegation-lifecycle / "Durable ownership survives tenant deletion" — scenario "Database is removed".
+Contract coverage: iam-delegation-lifecycle / "Durable ownership survives tenant deletion" — scenario "Database is removed"; iam-delegation-inventory / "Tablet cleanup ownership survives database deletion" — scenario "Tenant disappears with cleanup outstanding".
 
 #### Scenario: Claim limit validation
 
@@ -158,9 +148,9 @@ Contract coverage: iam-delegation-lifecycle / "Durable ownership survives tenant
 - **WHEN** batch size is zero or exceeds the bound, or the lease is zero or exceeds its bound.
 - **THEN** the request is rejected without claiming any work.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
-
 Contract coverage: iam-delegation-revocation / "Claim batches are bounded and atomic" — scenario "Invalid claim limits".
+
+Executable mapping (status: implemented; execution per verification record): `IamDelegationRevocationBoundaries::InvalidClaimAndFinishBoundsLeaveOutboxUnchanged` in [revocation_boundaries_ut.cpp:322](../../revocation_boundaries_ut.cpp#L322).
 
 #### Scenario: Cold page during claim and transition
 
@@ -168,6 +158,26 @@ Contract coverage: iam-delegation-revocation / "Claim batches are bounded and at
 - **WHEN** a claim or a multi-record transition must read them.
 - **THEN** the batch or transition either loads the pages within its bounds or fails safely without a partial mutation.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Executable mapping for atomic claims (status: implemented; execution per verification record): `IamDelegationColdScans::ClaimBatchRetriesColdReadsWithoutDuplicateClaimsOrPartialWrites` in [cold_scan_ut.cpp:174](../../cold_scan_ut.cpp#L174). A cold multi-record promotion/drop transition remains planned and does not contribute to executed counts.
 
 Contract coverage: iam-delegation-revocation / "Claim batches are bounded and atomic" — scenario "Batch cannot read a required page"; iam-delegation-lifecycle / "Recovery preserves committed state under storage failures" — scenario "Cold page during a multi-record transition".
+
+#### Scenario: Completed ACK replay follows the original lease deadline
+
+- **GIVEN** a committed success or retry ACK in the same tablet generation with no newer claim.
+- **WHEN** the identical ACK is replayed after its original lease deadline.
+- **THEN** it returns its recorded result without changing due time or failure history; a newer claim or generation still fences it.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-revocation / "Completed acknowledgement replay is exact" — scenario "Retry acknowledgement response is lost".
+
+#### Scenario: Retry and refusal records survive commit boundaries
+
+- **GIVEN** a terminal setup diagnostic or a revoke failure history and first cleanup timestamp.
+- **WHEN** commit/reply loss, cold reads, tablet restart and fresh-runtime disk reopening occur.
+- **THEN** records and replay receipts retain their values atomically; duplicate ACKs do not advance history, and legacy records remain readable.
+
+Status: planned — no executable case yet; does not contribute to executed counts.
+
+Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics"; iam-delegation-revocation / "Revocation retries use standard backoff and typed reasons"; "Outstanding cleanup is operator-visible".
