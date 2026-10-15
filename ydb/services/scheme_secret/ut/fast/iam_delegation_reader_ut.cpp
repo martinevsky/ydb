@@ -207,7 +207,7 @@ struct TRealTokenProducer {
     ui32 SubscriptionsSeen = 0;
     ui32 MintCalls = 0;
     std::deque<TAutoPtr<IEventHandle>> Mints;
-    std::function<void(const IEventHandle&)> OnMint;
+    std::function<void(IEventHandle&)> OnMint;
     TTestActorRuntime::TEventObserverHolder SubscriptionObserver;
     TTestActorRuntime::TEventObserverHolder MintObserver;
 
@@ -273,7 +273,7 @@ Y_UNIT_TEST_SUITE(IamDelegationSecretReader) {
         TString expectedCredential = "platform-token-1";
         TString latestToken;
         TVector<TString> usedCredentials;
-        producer.OnMint = [&](const IEventHandle& event) {
+        producer.OnMint = [&](IEventHandle& event) {
             const auto& request = *event.Get<TRealTokenProducer::TCloudToken::TEvCreateForServiceRequest>();
             UNIT_ASSERT_VALUES_EQUAL(request.Token, expectedCredential);
             UNIT_ASSERT_VALUES_EQUAL(request.Request.target_service_account_id(), "service-account-1");
