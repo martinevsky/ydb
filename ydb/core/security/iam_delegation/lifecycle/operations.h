@@ -6,6 +6,8 @@
 #include <ydb/library/actors/async/async.h>
 #include <ydb/library/actors/async/timeout.h>
 #include <ydb/library/actors/async/wait_for_event.h>
+#include <ydb/library/actors/core/actorsystem.h>
+#include <util/generic/scope.h>
 
 namespace NKikimr::NIamDelegation {
 
@@ -28,6 +30,8 @@ inline NActors::async<NKikimrIamDelegation::TResponse> CallIamDelegationTablet(
     auto event = MakeHolder<TEvIamDelegationTablet::TEvRequest>();
     event->Record.Swap(&request);
     const auto client = NActors::TActivationContext::Register(CreateIamDelegationTabletRequestActor(tabletId));
+    auto* actorSystem = NActors::TActivationContext::ActorSystem();
+    Y_DEFER { actorSystem->Send(client, new NActors::TEvents::TEvPoison); };
     auto reply = co_await NActors::ActorRequest<TEvIamDelegationTablet::TEvResponse>(client, event.Release());
     co_return std::move(reply->Get()->Record);
 }

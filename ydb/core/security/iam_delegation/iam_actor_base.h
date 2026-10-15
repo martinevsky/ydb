@@ -48,7 +48,8 @@ bool IsRetryableGrpcStatus(const NYdbGrpc::TGrpcStatus& status);
 TStringBuf HintForIamFailureType(TStringBuf type);
 
 // IAM reports the failure type as Violation.type of a google.rpc.PreconditionFailure in the error
-// details. Returns "; TYPE (description): hint" for every violation found, or an empty string.
+// details. Returns bounded, deduplicated allowlisted types and fixed hints. Remote
+// messages, violation descriptions and unknown types are never returned.
 TString ExplainIamFailure(const google::rpc::Status& status);
 
 // The gRPC error details carry a serialized google.rpc.Status.
@@ -161,9 +162,9 @@ NActors::async<typename TResponseEv::TPtr> IamCallWithRetry(const TIamDelegation
                 }
                 const auto grpcCode = static_cast<grpc::StatusCode>(status.GRpcStatusCode);
                 if (!IsRetryableGrpcStatus(status)) {
-                    throw TIamCallError(MapGrpcStatus(status.GRpcStatusCode), grpcCode) << method << " failed: " << status.Msg << ExplainIamFailure(status);
+                    throw TIamCallError(MapGrpcStatus(status.GRpcStatusCode), grpcCode) << method << " failed: " << status.GRpcStatusCode << ExplainIamFailure(status);
                 }
-                retryableError = TStringBuilder() << status.GRpcStatusCode << " " << status.Msg;
+                retryableError = TStringBuilder() << "gRPC status " << status.GRpcStatusCode << ExplainIamFailure(status);
                 retryableStatus = MapGrpcStatus(status.GRpcStatusCode);
                 retryableGrpcCode = grpcCode;
             }
@@ -198,9 +199,9 @@ protected:
     }
 
     using NActors::IActorExceptionHandler::OnUnhandledException;
-    bool OnUnhandledException(const std::exception& e) override {
+    bool OnUnhandledException(const std::exception&) override {
         YDB_LOG_ERROR_COMP(NKikimrServices::IAM_DELEGATION, "Unhandled exception in an IAM delegation actor",
-            {"actor", TBase::SelfId()}, {"exception", e.what()});
+            {"actor", TBase::SelfId()});
         return true;
     }
 

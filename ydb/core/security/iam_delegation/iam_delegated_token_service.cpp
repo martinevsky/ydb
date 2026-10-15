@@ -311,9 +311,9 @@ private:
             result.Status = e.Status;
             result.GrpcCode = e.GrpcCode;
             result.Error = e.what();
-        } catch (const std::exception& e) {
+        } catch (const std::exception&) {
             result.Status = Ydb::StatusIds::INTERNAL_ERROR;
-            result.Error = TStringBuilder() << "unexpected exception: " << e.what();
+            result.Error = "Unexpected IAM token acquisition failure";
         }
         co_return result;
     }

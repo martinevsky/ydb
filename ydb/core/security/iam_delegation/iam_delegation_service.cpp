@@ -164,7 +164,8 @@ private:
             typename TResponse::TPtr typed(reinterpret_cast<TEventHandle<TResponse>*>(response->Release()));
             const auto& status = typed->Get()->Status;
             if (!status.Ok()) {
-                SetOperationError(result, status.InternalError ? Ydb::StatusIds::UNAVAILABLE : MapGrpcStatus(status.GRpcStatusCode), TStringBuilder() << status.Msg << ExplainIamFailure(status));
+                SetOperationError(result, status.InternalError ? Ydb::StatusIds::UNAVAILABLE : MapGrpcStatus(status.GRpcStatusCode),
+                    TStringBuilder() << "IAM request failed with gRPC status " << status.GRpcStatusCode << ExplainIamFailure(status));
                 if (!polling && !status.InternalError) {
                     const auto code = static_cast<grpc::StatusCode>(status.GRpcStatusCode);
                     if (kind == EDelegationOperationKind::Revoke && code == grpc::StatusCode::NOT_FOUND) {
@@ -201,7 +202,7 @@ private:
                     result.Outcome = EDelegationOperationOutcome::Failed;
                     result.FailureReasons = ExtractIamFailureReasons(operation.error());
                     SetOperationError(result, MapGrpcStatus(operation.error().code()),
-                        TStringBuilder() << operation.error().message() << ExplainIamFailure(operation.error()));
+                        TStringBuilder() << "IAM operation failed with gRPC status " << operation.error().code() << ExplainIamFailure(operation.error()));
                 }
             } else {
                 result.Outcome = EDelegationOperationOutcome::Succeeded;
@@ -213,11 +214,11 @@ private:
                 result.Outcome = EDelegationOperationOutcome::Failed;
             }
             SetOperationError(result, error.Status, error.what());
-        } catch (const std::exception& error) {
+        } catch (const std::exception&) {
             if (!polling && !dispatched) {
                 result.Outcome = EDelegationOperationOutcome::Failed;
             }
-            SetOperationError(result, Ydb::StatusIds::INTERNAL_ERROR, error.what());
+            SetOperationError(result, Ydb::StatusIds::INTERNAL_ERROR, "Unexpected IAM operation failure");
         }
         co_return result;
     }
@@ -326,8 +327,8 @@ private:
             co_return TDelegationResult::Success();
         } catch (const TIamCallError& e) {
             co_return TDelegationResult::Error(e.Status, e.what());
-        } catch (const std::exception& e) {
-            co_return TDelegationResult::Error(Ydb::StatusIds::INTERNAL_ERROR, TStringBuilder() << "unexpected exception: " << e.what());
+        } catch (const std::exception&) {
+            co_return TDelegationResult::Error(Ydb::StatusIds::INTERNAL_ERROR, "Unexpected IAM operation failure");
         }
     }
 
@@ -386,7 +387,7 @@ private:
             operation = response->Get()->Response;
         }
         if (operation.has_error()) {
-            throw TIamCallError(MapGrpcStatus(operation.error().code())) << method << ": operation " << operation.id() << " failed: " << operation.error().message() << ExplainIamFailure(operation.error());
+            throw TIamCallError(MapGrpcStatus(operation.error().code())) << method << ": operation failed with gRPC status " << operation.error().code() << ExplainIamFailure(operation.error());
         }
     }
 

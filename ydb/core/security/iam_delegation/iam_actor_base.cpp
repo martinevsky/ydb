@@ -46,34 +46,6 @@ TStringBuf HintForIamFailureType(TStringBuf type) {
     return {};
 }
 
-TString ExplainIamFailure(const google::rpc::Status& status) {
-    TStringBuilder out;
-    for (const auto& detail : status.details()) {
-        google::rpc::PreconditionFailure failure;
-        if (!detail.Is<google::rpc::PreconditionFailure>() || !detail.UnpackTo(&failure)) {
-            continue;
-        }
-        for (const auto& violation : failure.violations()) {
-            out << "; " << violation.type();
-            if (!violation.description().empty()) {
-                out << " (" << violation.description() << ")";
-            }
-            if (const TStringBuf hint = HintForIamFailureType(violation.type())) {
-                out << ": " << hint;
-            }
-        }
-    }
-    return out;
-}
-
-TString ExplainIamFailure(const NYdbGrpc::TGrpcStatus& status) {
-    google::rpc::Status rpcStatus;
-    if (status.Details.empty() || !rpcStatus.ParseFromString(status.Details)) {
-        return {};
-    }
-    return ExplainIamFailure(rpcStatus);
-}
-
 namespace {
 constexpr size_t MaxIamFailureDetailsBytes = 64 * 1024;
 struct TIamFailureType {
@@ -123,6 +95,29 @@ TVector<EDelegationFailureReason> ExtractIamFailureReasons(const NYdbGrpc::TGrpc
         return {};
     }
     return ExtractIamFailureReasons(details);
+}
+
+namespace {
+TString ExplainFailureReasons(const TVector<EDelegationFailureReason>& reasons) {
+    TStringBuilder out;
+    for (const auto reason : reasons) {
+        for (const auto& known : SafeFailureTypes) {
+            if (known.Reason == reason) {
+                out << "; " << known.Type << ": " << HintForIamFailureType(known.Type);
+                break;
+            }
+        }
+    }
+    return out;
+}
+} // namespace
+
+TString ExplainIamFailure(const google::rpc::Status& status) {
+    return ExplainFailureReasons(ExtractIamFailureReasons(status));
+}
+
+TString ExplainIamFailure(const NYdbGrpc::TGrpcStatus& status) {
+    return ExplainFailureReasons(ExtractIamFailureReasons(status));
 }
 
 Ydb::StatusIds::StatusCode MapGrpcStatus(int code) {
@@ -180,7 +175,7 @@ NActors::async<TString> GetIamCallToken(TIamCallCredentials& credentials, TMonot
         throw TIamCallError(Ydb::StatusIds::UNAVAILABLE) << "timeout while obtaining the system service account token";
     }
     if (credentials.Status.Code != TEvTokenManager::TStatus::ECode::SUCCESS) {
-        throw TIamCallError(Ydb::StatusIds::UNAVAILABLE) << "system service account token is unavailable: " << credentials.Status.Message;
+        throw TIamCallError(Ydb::StatusIds::UNAVAILABLE) << "system service account token is unavailable";
     }
     if (credentials.Token.empty()) {
         throw TIamCallError(Ydb::StatusIds::UNAVAILABLE) << "system service account token is empty";

@@ -44,7 +44,7 @@ struct TFixture {
                 UNIT_ASSERT_VALUES_EQUAL(entry.Access, ui32(NACLib::SelectRow));
                 entry.Status = NSchemeCache::TSchemeCacheNavigate::EStatus::Ok;
                 entry.Kind = NSchemeCache::TSchemeCacheNavigate::KindSecret;
-                const auto found = Fixture.AdditionalSchemaReferences.find(JoinPath(entry.Path));
+                const auto found = Fixture.AdditionalSchemaReferences.find(CanonizePath(entry.Path));
                 const auto& reference = found == Fixture.AdditionalSchemaReferences.end()
                     ? Fixture.SchemaReference : found->second;
                 auto self = MakeIntrusive<NSchemeCache::TSchemeCacheNavigate::TDirEntryInfo>();
@@ -351,6 +351,7 @@ Y_UNIT_TEST_SUITE(ScriptExternalEffectSecrets) {
         TFixture fixture;
         auto& runtime = fixture.Context.GetRuntime();
         SetRandomSeed(42);
+        Y_DEFER { ResetRandomState(); };
         using TCloudToken = NCloud::TEvIamTokenService;
         TActorId producer;
         TDuration longBackoff;
