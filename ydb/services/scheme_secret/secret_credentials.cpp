@@ -13,9 +13,13 @@ namespace {
 using TReference = NKqp::TEvDescribeSecretsResponse::TSecretReference;
 using TDescription = NKqp::TEvDescribeSecretsResponse::TDescription;
 
+struct TRefreshAttempt : TThrRefBase {
+    NThreading::TPromise<std::string> Promise = NThreading::NewPromise<std::string>();
+};
+
 struct TRefreshState : TThrRefBase {
     TAdaptiveLock Lock;
-    std::optional<NThreading::TPromise<std::string>> Waiting;
+    TIntrusivePtr<TRefreshAttempt> Waiting;
 };
 
 class TRefreshingProvider final : public NYdb::ICredentialsProvider {
@@ -34,41 +38,43 @@ public:
     }
 
     NThreading::TFuture<std::string> GetAuthInfoAsync() const override {
-        NThreading::TFuture<std::string> result;
+        TIntrusivePtr<TRefreshAttempt> attempt;
         with_lock (State->Lock) {
-            if (State->Waiting) return State->Waiting->GetFuture();
-            State->Waiting = NThreading::NewPromise<std::string>();
-            result = State->Waiting->GetFuture();
+            if (State->Waiting) return State->Waiting->Promise.GetFuture();
+            attempt = State->Waiting = MakeIntrusive<TRefreshAttempt>();
         }
-        auto promise = NThreading::NewPromise<TDescription>();
-        auto future = promise.GetFuture();
+        auto result = attempt->Promise.GetFuture();
         TDescribeSecretSettings settings;
         settings.ExpectedReference = Reference;
-        ActorSystem->Send(MakeDescribeSchemaSecretServiceId(ActorSystem->NodeId),
-            new TDescribeSchemaSecretsService::TEvResolveSecret(UserToken, Database, {Path}, promise, settings));
-        future.Subscribe([state = State, reference = Reference](const NThreading::TFuture<TDescription>& response) {
-            TString value;
-            TString error;
-            try {
-                const auto& description = response.GetValue();
-                if (description.Status == Ydb::StatusIds::SUCCESS && description.SecretValues.size() == 1
-                    && description.References.size() == 1 && description.References[0] == reference
-                    && description.UsableUntil.size() == 1 && TInstant::Now() < description.UsableUntil[0]) {
-                    value = description.SecretValues[0];
-                } else {
-                    error = "Secret is unavailable, changed, expired, or access was denied";
+        DescribeSchemaSecret({Path}, UserToken, Database, ActorSystem, std::move(settings))
+            .Subscribe([state = State, attempt, reference = Reference](const NThreading::TFuture<TDescription>& response) {
+                TString value;
+                TString error;
+                try {
+                    const auto& description = response.GetValue();
+                    // The owned actor checks usability using actor time before
+                    // completing the future; this adapter only validates its shape.
+                    if (description.Status == Ydb::StatusIds::SUCCESS && description.SecretValues.size() == 1
+                        && description.References.size() == 1 && description.References[0] == reference
+                        && description.UsableUntil.size() == 1) {
+                        value = description.SecretValues[0];
+                    } else {
+                        error = "Secret is unavailable, changed, expired, or access was denied";
+                    }
+                } catch (const std::exception&) {
+                    error = "Secret resolution failed";
                 }
-            } catch (const std::exception&) {
-                error = "Secret resolution failed";
-            }
-            std::optional<NThreading::TPromise<std::string>> waiting;
-            with_lock (state->Lock) { waiting.swap(state->Waiting); }
-            if (value.empty()) {
-                waiting->SetException(error.empty() ? TString("Secret returned an empty token") : error);
-            } else {
-                waiting->SetValue(std::string(value));
-            }
-        });
+                with_lock (state->Lock) {
+                    if (state->Waiting == attempt) state->Waiting.Reset();
+                }
+                // Settle only this attempt, outside the shared lock. A late
+                // completion must never take a newer attempt's promise.
+                if (value.empty()) {
+                    attempt->Promise.SetException(error.empty() ? TString("Secret returned an empty token") : error);
+                } else {
+                    attempt->Promise.SetValue(std::string(value));
+                }
+            });
         return result;
     }
     bool IsValid() const override { return true; }

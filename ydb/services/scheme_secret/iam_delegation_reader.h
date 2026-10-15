@@ -15,6 +15,9 @@ struct TEvIamDelegationSecretReadResult : NActors::TEventLocal<TEvIamDelegationS
     TInstant UsableUntil;
 };
 
+// Four bounded storage/schema phases plus one complete producer attempt.
+TDuration IamDelegationSecretReadTimeout();
+
 NActors::IActor* CreateIamDelegationSecretReaderActor(const NActors::TActorId& replyTo, ui64 cookie,
     TString secretPath, TString database, TIntrusiveConstPtr<NACLib::TUserToken> userToken,
     NKqp::TEvDescribeSecretsResponse::TSecretReference reference);

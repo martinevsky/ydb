@@ -14,6 +14,7 @@ PEERDIR(
     ydb/core/kqp/proxy_service
     ydb/core/mind
     ydb/core/tx/scheme_cache
+    ydb/library/actors/async
     ydb/library/table_creator
     ydb/library/yql/providers/s3/actors_factory
 )

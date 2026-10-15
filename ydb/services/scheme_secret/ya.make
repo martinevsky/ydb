@@ -21,6 +21,7 @@ PEERDIR(
     ydb/core/tx/schemeshard
     ydb/core/tx/tx_proxy
     ydb/library/aclib
+    ydb/library/actors/async
     ydb/library/actors/core
     ydb/library/yql/providers/common/token_accessor/client
     ydb/public/sdk/cpp/src/client/types/credentials

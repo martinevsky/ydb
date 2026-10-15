@@ -1,8 +1,9 @@
 #include "kqp_script_secrets.h"
 
 #include <ydb/core/kqp/common/kqp_external_effect_secrets.h>
+#include <ydb/library/actors/async/task_group.h>
+#include <ydb/library/actors/async/timeout.h>
 #include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/actorsystem.h>
 #include <ydb/library/actors/core/hfunc.h>
 #include <ydb/services/scheme_secret/resolver.h>
 #include <yql/essentials/providers/common/structured_token/yql_token_builder.h>
@@ -11,22 +12,64 @@
 
 namespace NKikimr::NKqp {
 namespace {
+using namespace NActors;
+using TDescription = TEvDescribeSecretsResponse::TDescription;
+using TReference = TEvDescribeSecretsResponse::TSecretReference;
+
+TDescription Failure(Ydb::StatusIds::StatusCode status, TString issue) {
+    return TDescription(status, {NYql::TIssue(std::move(issue))});
+}
 
 class TScriptSecretsResolver final : public TActorBootstrapped<TScriptSecretsResolver> {
-    using TDescription = TEvDescribeSecretsResponse::TDescription;
 public:
     TScriptSecretsResolver(const TActorId& replyTo, TIntrusiveConstPtr<NACLib::TUserToken> userToken,
-        TString database, std::vector<TString> secretNames, std::vector<NKqpProto::TKqpExternalSink> sinks)
+        TString database, std::vector<TString> secretNames, std::vector<NKqpProto::TKqpExternalSink> sinks,
+        std::optional<TInstant> deadline)
         : ReplyTo(replyTo), UserToken(std::move(userToken)), Database(std::move(database))
-        , SecretNames(std::move(secretNames)), Sinks(std::move(sinks))
-        , Values(SecretNames.size()), References(SecretNames.size())
-        , UsableUntil(SecretNames.size(), TInstant::Max()), Received(SecretNames.size(), false)
-    {}
+        , SecretNames(std::move(secretNames)), Sinks(std::move(sinks)), Deadline(deadline) {}
 
     void Bootstrap() {
+        Become(&TThis::StateWork);
+        auto result = co_await WithDeadline(Deadline.value_or(TInstant::Max()), &TThis::Resolve, this);
+        Send(ReplyTo, new TEvDescribeSecretsResponse(result ? std::move(*result)
+            : Failure(Ydb::StatusIds::TIMEOUT, "External effect secret resolution timed out")));
+        PassAway();
+    }
+
+private:
+    STRICT_STFUNC(StateWork,
+        IgnoreFunc(TEvDescribeSecretsResponse);
+        IgnoreFunc(TEvents::TEvUndelivered);
+        cFunc(TEvents::TEvPoison::EventType, PassAway);
+    )
+
+    async<TDescription> ReadSecret(TString path, std::optional<TReference> expected) {
+        NSecret::TDescribeSecretSettings settings;
+        settings.ExpectedReference = expected;
+        auto description = co_await NSecret::DescribeSecretAsync({path}, UserToken, Database, std::move(settings));
+        if (description.Status != Ydb::StatusIds::SUCCESS) co_return description;
+        if (description.SecretValues.size() != 1 || description.References.size() > 1
+            || description.UsableUntil.size() > 1) {
+            co_return Failure(Ydb::StatusIds::INTERNAL_ERROR, "Unexpected external effect secret response");
+        }
+        const auto reference = description.References.empty() ? TReference{} : description.References.front();
+        if (expected && *expected != reference) {
+            co_return Failure(Ydb::StatusIds::NOT_FOUND, "External effect secret incarnation changed");
+        }
+        if (reference.TabletId && !expected) {
+            co_return Failure(Ydb::StatusIds::PRECONDITION_FAILED, "External effect has no persisted IAM secret identity");
+        }
+        if (reference.TabletId && description.UsableUntil.size() != 1) {
+            co_return Failure(Ydb::StatusIds::UNAVAILABLE, "Missing delegated token expiry");
+        }
+        co_return description;
+    }
+
+    async<TDescription> Resolve() {
+        TScriptSecretReferences expected;
+        TSet<TString> required;
         try {
-            Expected = ExtractScriptExternalEffectSecretPins(Sinks, Database);
-            TSet<TString> required;
+            expected = ExtractScriptExternalEffectSecretPins(Sinks, Database);
             for (const auto& sink : Sinks) {
                 if (NYql::IsStructuredTokenJson(sink.GetAuthInfo())) {
                     NYql::CreateStructuredTokenParser(sink.GetAuthInfo()).ListReferences(required);
@@ -36,112 +79,40 @@ public:
                 Y_ENSURE(std::find(SecretNames.begin(), SecretNames.end(), path) != SecretNames.end(),
                     "Persisted external effect secret is missing from the secret list");
             }
-            for (size_t i = 0; i < SecretNames.size(); ++i) {
-                // SecretNames also contains source credentials. Finalizing a sink
-                // must not require or adopt identities belonging only to reads.
-                Received[i] = !required.contains(SecretNames[i]);
-                Remaining += !Received[i];
-            }
         } catch (const std::exception&) {
-            Fail(Ydb::StatusIds::PRECONDITION_FAILED, "Invalid persisted external effect secret identities");
-            return;
+            co_return Failure(Ydb::StatusIds::PRECONDITION_FAILED, "Invalid persisted external effect secret identities");
         }
-        if (!Remaining) {
-            Complete();
-            return;
-        }
-        Become(&TScriptSecretsResolver::StateWork);
-        Schedule(TDuration::Minutes(1), new TEvents::TEvWakeup());
-        auto* actorSystem = TActivationContext::ActorSystem();
-        for (size_t i = 0; i < SecretNames.size(); ++i) {
-            if (Received[i]) {
-                continue;
+        co_return co_await WithTaskGroup<TDescription>([&](TTaskGroup<TDescription>& group) -> async<TDescription> {
+            std::vector<size_t> indices;
+            for (size_t i = 0; i < SecretNames.size(); ++i) {
+                // Input also contains source credentials. Only persisted sink
+                // references participate in external-effect finalization.
+                if (!required.contains(SecretNames[i])) continue;
+                const auto it = expected.find(SecretNames[i]);
+                std::optional<TReference> pin;
+                if (it != expected.end()) pin = it->second;
+                group.Add(&TThis::ReadSecret, this, SecretNames[i], std::move(pin));
+                indices.push_back(i);
             }
-            NSecret::TDescribeSecretSettings settings;
-            if (const auto it = Expected.find(SecretNames[i]); it != Expected.end()) {
-                settings.ExpectedReference = it->second;
+            std::vector<TString> values(SecretNames.size());
+            std::vector<TReference> references(SecretNames.size());
+            std::vector<TInstant> usableUntil(SecretNames.size(), TInstant::Max());
+            while (group) {
+                auto completed = co_await group.NextResult();
+                const auto index = indices.at(completed.GetIndex());
+                auto description = completed.ExtractValue();
+                if (description.Status != Ydb::StatusIds::SUCCESS) co_return description;
+                values[index] = description.SecretValues.front();
+                if (!description.References.empty()) references[index] = description.References.front();
+                if (!description.UsableUntil.empty()) usableUntil[index] = description.UsableUntil.front();
             }
-            NSecret::DescribeSecret({SecretNames[i]}, UserToken, Database, actorSystem, std::move(settings))
-                .Subscribe([actorSystem, self = SelfId(), i](const NThreading::TFuture<TDescription>& ready) {
-                    THolder<TEvDescribeSecretsResponse> response;
-                    try {
-                        response = MakeHolder<TEvDescribeSecretsResponse>(ready.GetValue());
-                    } catch (const std::exception&) {
-                        response = MakeHolder<TEvDescribeSecretsResponse>(TDescription(Ydb::StatusIds::UNAVAILABLE,
-                            {NYql::TIssue("Cannot resolve external effect secret")}));
-                    }
-                    actorSystem->Send(new IEventHandle(self, {}, response.Release(), 0, i));
-                });
-        }
-    }
-
-private:
-    STRICT_STFUNC(StateWork,
-        hFunc(TEvDescribeSecretsResponse, Handle);
-        cFunc(TEvents::TEvWakeup::EventType, Timeout);
-    )
-
-    void Handle(TEvDescribeSecretsResponse::TPtr& ev) {
-        const size_t index = ev->Cookie;
-        if (index >= SecretNames.size() || Received[index]) {
-            return;
-        }
-        const auto& description = ev->Get()->Description;
-        if (description.Status != Ydb::StatusIds::SUCCESS) {
-            Send(ReplyTo, new TEvDescribeSecretsResponse(description));
-            PassAway();
-            return;
-        }
-        if (description.SecretValues.size() != 1 || description.References.size() > 1
-            || description.UsableUntil.size() > 1) {
-            Fail(Ydb::StatusIds::INTERNAL_ERROR, "Unexpected external effect secret response");
-            return;
-        }
-        const auto reference = description.References.empty()
-            ? TEvDescribeSecretsResponse::TSecretReference{} : description.References.front();
-        const auto expected = Expected.find(SecretNames[index]);
-        if (expected != Expected.end() && expected->second != reference) {
-            Fail(Ydb::StatusIds::NOT_FOUND, "External effect secret incarnation changed");
-            return;
-        }
-        if (reference.TabletId && expected == Expected.end()) {
-            // Legacy effects have only a pathname. It cannot prove that the
-            // current delegated secret authorized the original upload.
-            Fail(Ydb::StatusIds::PRECONDITION_FAILED, "External effect has no persisted IAM secret identity");
-            return;
-        }
-        if (reference.TabletId && description.UsableUntil.size() != 1) {
-            Fail(Ydb::StatusIds::UNAVAILABLE, "Missing delegated token expiry");
-            return;
-        }
-        Values[index] = description.SecretValues.front();
-        References[index] = reference;
-        if (!description.UsableUntil.empty()) {
-            UsableUntil[index] = description.UsableUntil.front();
-        }
-        Received[index] = true;
-        if (!--Remaining) {
-            Complete();
-        }
-    }
-
-    void Complete() {
-        for (size_t i = 0; i < References.size(); ++i) {
-            if (References[i].TabletId && NActors::TActivationContext::Now() >= UsableUntil[i]) {
-                Fail(Ydb::StatusIds::UNAVAILABLE, "Delegated token expired during external effect preparation");
-                return;
+            for (size_t i = 0; i < references.size(); ++i) {
+                if (references[i].TabletId && TActivationContext::Now() >= usableUntil[i]) {
+                    co_return Failure(Ydb::StatusIds::UNAVAILABLE, "Delegated token expired during external effect preparation");
+                }
             }
-        }
-        Send(ReplyTo, new TEvDescribeSecretsResponse(TDescription(
-            std::move(Values), std::move(References), std::move(UsableUntil))));
-        PassAway();
-    }
-
-    void Timeout() { Fail(Ydb::StatusIds::UNAVAILABLE, "External effect secret resolution timed out"); }
-
-    void Fail(Ydb::StatusIds::StatusCode status, const TString& issue) {
-        Send(ReplyTo, new TEvDescribeSecretsResponse(TDescription(status, {NYql::TIssue(issue)})));
-        PassAway();
+            co_return TDescription(std::move(values), std::move(references), std::move(usableUntil));
+        });
     }
 
     const TActorId ReplyTo;
@@ -149,12 +120,7 @@ private:
     const TString Database;
     const std::vector<TString> SecretNames;
     const std::vector<NKqpProto::TKqpExternalSink> Sinks;
-    TScriptSecretReferences Expected;
-    std::vector<TString> Values;
-    std::vector<TEvDescribeSecretsResponse::TSecretReference> References;
-    std::vector<TInstant> UsableUntil;
-    std::vector<bool> Received;
-    size_t Remaining = 0;
+    const std::optional<TInstant> Deadline;
 };
 } // namespace
 
@@ -163,10 +129,8 @@ IActor* CreateScriptSecretsResolverActor(const TActorId& replyTo,
     std::vector<TString> secretNames, std::vector<NKqpProto::TKqpExternalSink> sinks,
     std::optional<TInstant> deadline)
 {
-    // Interface scaffold for the deadline regression; behavior is not implemented yet.
-    Y_UNUSED(deadline);
     return new TScriptSecretsResolver(replyTo, std::move(userToken), std::move(database),
-        std::move(secretNames), std::move(sinks));
+        std::move(secretNames), std::move(sinks), deadline);
 }
 
 } // namespace NKikimr::NKqp

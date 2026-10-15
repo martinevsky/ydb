@@ -14,6 +14,8 @@
 #include <ydb/library/yql/providers/s3/actors/yql_s3_applicator_actor.h>
 #include <ydb/library/yql/providers/s3/proto/sink.pb.h>
 
+#include <utility>
+
 #include <yql/essentials/providers/common/provider/yql_provider_names.h>
 #include <yql/essentials/providers/common/structured_token/yql_token_builder.h>
 
@@ -77,7 +79,7 @@ public:
         if (Sinks.empty()) {
             FinishScriptFinalization();
         } else {
-            FetchSecrets();
+            FetchSecrets(TActivationContext::Now() + FinalizationTimeout);
         }
     }
 
@@ -92,11 +94,22 @@ private:
         FinishScriptFinalization(Ydb::StatusIds::TIMEOUT, "Script finalization timeout");
     }
 
-    void FetchSecrets() {
-        Register(CreateScriptSecretsResolverActor(SelfId(), UserToken, Database, SecretNames, Sinks));
+    void FetchSecrets(TInstant deadline) {
+        SecretsResolver = Register(CreateScriptSecretsResolverActor(SelfId(), UserToken, Database, SecretNames, Sinks, deadline));
+    }
+
+    void CancelSecrets() {
+        if (SecretsResolver) Send(std::exchange(SecretsResolver, {}), new TEvents::TEvPoison);
+    }
+
+    void PassAway() override {
+        CancelSecrets();
+        TActorBootstrapped::PassAway();
     }
 
     void Handle(TEvDescribeSecretsResponse::TPtr& ev) {
+        if (ev->Sender != SecretsResolver) return;
+        CancelSecrets();
         if (ev->Get()->Description.Status != Ydb::StatusIds::SUCCESS) {
             FinishScriptFinalization(ev->Get()->Description.Status, std::move(ev->Get()->Description.Issues));
             return;
@@ -198,6 +211,7 @@ private:
     )
 
     void FinishScriptFinalization(std::optional<Ydb::StatusIds::StatusCode> status, NYql::TIssues issues) {
+        CancelSecrets();
         Register(CreateScriptFinalizationFinisherActor(SelfId(), Database, ExecutionId, status, std::move(issues), LeaseGeneration));
         Become(&TScriptFinalizerActor::FinishState);
     }
@@ -225,6 +239,7 @@ private:
     }
 
 private:
+    TActorId SecretsResolver;
     const TActorId ReplyActor;
     const TString ExecutionId;
     const TString Database;

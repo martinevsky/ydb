@@ -53,10 +53,14 @@ struct TCredentialsFixture {
         UNIT_ASSERT(Pending);
     }
 
-    void Reply(TDescription result) {
+    void Reply(TDescription result, const NThreading::TFuture<std::string>& settled) {
         auto promise = *Pending;
         Pending.reset();
         promise.SetValue(std::move(result));
+        TDispatchOptions options;
+        options.CustomFinalCondition = [&] { return settled.HasValue() || settled.HasException(); };
+        Context.GetRuntime().DispatchEvents(options, TDuration::Seconds(1));
+        UNIT_ASSERT(settled.HasValue() || settled.HasException());
     }
 };
 } // namespace
@@ -70,7 +74,7 @@ Y_UNIT_TEST_SUITE(RefreshingSecretCredentials) {
         auto value = provider->GetAuthInfoAsync();
         fixture.WaitForRead();
         UNIT_ASSERT(!value.HasValue());
-        fixture.Reply(TDescription({"minted"}, {fixture.Reference}, {TInstant::Max()}));
+        fixture.Reply(TDescription({"minted"}, {fixture.Reference}, {TInstant::Max()}), value);
         UNIT_ASSERT_VALUES_EQUAL(value.GetValue(), "Bearer minted");
     }
 
@@ -82,13 +86,13 @@ Y_UNIT_TEST_SUITE(RefreshingSecretCredentials) {
         fixture.WaitForRead();
         UNIT_ASSERT_VALUES_EQUAL(fixture.Reads, 1);
         UNIT_ASSERT(!first.HasValue());
-        fixture.Reply(TDescription({"token-one"}, {fixture.Reference}, {TInstant::Max()}));
+        fixture.Reply(TDescription({"token-one"}, {fixture.Reference}, {TInstant::Max()}), first);
         UNIT_ASSERT_VALUES_EQUAL(first.GetValue(), "token-one");
         UNIT_ASSERT_VALUES_EQUAL(concurrent.GetValue(), "token-one");
         auto next = provider->GetAuthInfoAsync();
         UNIT_ASSERT(!next.HasValue());
         fixture.WaitForRead();
-        fixture.Reply(TDescription({"token-two"}, {fixture.Reference}, {TInstant::Max()}));
+        fixture.Reply(TDescription({"token-two"}, {fixture.Reference}, {TInstant::Max()}), next);
         UNIT_ASSERT_VALUES_EQUAL(next.GetValue(), "token-two");
         UNIT_ASSERT_VALUES_EQUAL(fixture.Reads, 2);
     }
@@ -98,15 +102,15 @@ Y_UNIT_TEST_SUITE(RefreshingSecretCredentials) {
         const auto provider = fixture.Provider();
         auto first = provider->GetAuthInfoAsync();
         fixture.WaitForRead();
-        fixture.Reply(TDescription({"previous"}, {fixture.Reference}, {TInstant::Max()}));
+        fixture.Reply(TDescription({"previous"}, {fixture.Reference}, {TInstant::Max()}), first);
         UNIT_ASSERT_VALUES_EQUAL(first.GetValue(), "previous");
         auto denied = provider->GetAuthInfoAsync();
         fixture.WaitForRead();
-        fixture.Reply(TDescription(Ydb::StatusIds::UNAUTHORIZED, {NYql::TIssue("revoked")}));
+        fixture.Reply(TDescription(Ydb::StatusIds::UNAUTHORIZED, {NYql::TIssue("revoked")}), denied);
         UNIT_ASSERT(denied.HasException());
         auto expired = provider->GetAuthInfoAsync();
         fixture.WaitForRead();
-        fixture.Reply(TDescription({"expired"}, {fixture.Reference}, {TInstant::Zero()}));
+        fixture.Reply(TDescription({"expired"}, {fixture.Reference}, {TInstant::Zero()}), expired);
         UNIT_ASSERT(expired.HasException());
     }
 
