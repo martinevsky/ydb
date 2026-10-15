@@ -2,12 +2,13 @@
 
 #include <ydb/core/testlib/tx_helpers.h>
 #include <ydb/library/mkql_proto/protos/minikql.pb.h>
+#include <yql/essentials/ast/yql_ast_escaping.h>
 
 #include <util/generic/map.h>
 #include <util/generic/set.h>
 #include <util/generic/vector.h>
 #include <util/string/cast.h>
-#include <util/string/escape.h>
+#include <util/stream/str.h>
 
 #include <limits>
 
@@ -43,11 +44,16 @@ NProto::TDelegation QueueDefault(TTestContext& ctx) {
 // Keep both canonical and covering-index records consistent without adding
 // a test-only hook to production.
 void SeedStoredRevocationHistory(TTestContext& ctx, const NProto::TDelegation& stored) {
+    const auto atom = [](TStringBuf bytes) {
+        TStringStream out;
+        NYql::EscapeArbitraryAtom(bytes, '"', &out);
+        return out.Str();
+    };
     const TString program = TStringBuilder()
-        << "(\n(let key '('('OperationId (String '\"" << EscapeC(stored.GetOperationId()) << "\"))))\n"
-        << "(let indexedKey '('('Incarnation (String '\"" << EscapeC(stored.GetDatabaseIncarnation())
-        << "\")) '('OperationId (String '\"" << EscapeC(stored.GetOperationId()) << "\"))))\n"
-        << "(let value '('('Data (String '\"" << EscapeC(stored.SerializeAsString()) << "\"))))\n"
+        << "(\n(let key '('('OperationId (String '" << atom(stored.GetOperationId()) << "))))\n"
+        << "(let indexedKey '('('Incarnation (String '" << atom(stored.GetDatabaseIncarnation())
+        << ")) '('OperationId (String '" << atom(stored.GetOperationId()) << "))))\n"
+        << "(let value '('('Data (String '" << atom(stored.SerializeAsString()) << "))))\n"
         << "(return (AsList (UpdateRow 'Delegations key value) (UpdateRow 'Inventory indexedKey value)))\n)";
     TString diagnostic;
     auto responseObserver = ctx.GetRuntime().AddObserver<TEvTablet::TEvLocalMKQLResponse>([&](auto& event) {

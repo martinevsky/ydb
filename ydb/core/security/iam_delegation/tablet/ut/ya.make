@@ -5,6 +5,7 @@ FORK_SUBTESTS()
 SIZE(MEDIUM)
 
 PEERDIR(
+    yql/essentials/ast
     ydb/core/testlib/default
 )
 
