@@ -206,6 +206,28 @@ Y_UNIT_TEST_SUITE(DescribeSecretIamDelegation) {
         }
     }
 
+    Y_UNIT_TEST(UnrelatedTabletRepliesCannotCompleteSnapshot) {
+        enum class EUnrelatedReply { Sender, Cookie };
+        for (const auto mismatch : {EUnrelatedReply::Sender, EUnrelatedReply::Cookie}) {
+            TFixture f;
+            f.Describe();
+            auto request = f.Request();
+            auto unrelated = MakeHolder<TTabletEvents::TEvResponse>();
+            unrelated->Record.SetStatus(SUCCESS);
+            *unrelated->Record.MutableSecret() = f.Secret(10, "", "");
+            const auto sender = mismatch == EUnrelatedReply::Sender
+                ? f.Runtime.AllocateEdgeActor() : request->Recipient;
+            const auto cookie = mismatch == EUnrelatedReply::Cookie ? request->Cookie + 1 : request->Cookie;
+            f.Runtime.Send(new IEventHandle(request->Sender, sender, unrelated.Release(), 0, cookie));
+            f.Runtime.SimulateSleep(TDuration::MilliSeconds(1));
+            UNIT_ASSERT(!f.Promise.GetFuture().HasValue());
+            UNIT_ASSERT_VALUES_EQUAL(f.TabletRequestCount, 1);
+            f.TabletRequests.push_front(std::move(request));
+            f.ReplySecret(f.Secret(10, "", ""));
+            UNIT_ASSERT_VALUES_EQUAL(f.Result().version(), 5);
+        }
+    }
+
     Y_UNIT_TEST(PlainSecretDoesNotReadTablet) {
         TFixture f;
         f.Describe(false);

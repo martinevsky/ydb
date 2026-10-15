@@ -6,17 +6,21 @@
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
 #include <ydb/core/security/iam_delegation/lifecycle/client.h>
 #include <ydb/core/ydb_convert/ydb_convert.h>
+#include <ydb/library/actors/async/wait_for_event.h>
 #include <ydb/public/api/protos/ydb_secret.pb.h>
+#include <util/generic/scope.h>
 
 namespace NKikimr::NGRpcService {
 
 using namespace NActors;
+namespace P = NKikimrIamDelegation;
 
 using TEvDescribeSecretRequest = TGrpcRequestOperationCall<::Ydb::Secret::DescribeSecretRequest,
     ::Ydb::Secret::DescribeSecretResponse>;
 
 class TDescribeSecretRPC : public TRpcSchemeRequestActor<TDescribeSecretRPC, TEvDescribeSecretRequest> {
     using TBase = TRpcSchemeRequestActor<TDescribeSecretRPC, TEvDescribeSecretRequest>;
+    using TTabletEvents = NIamDelegation::TEvIamDelegationTablet;
 
 public:
     using TBase::TBase;
@@ -28,13 +32,12 @@ public:
         SetDatabase(navigateRequest.get(), *Request_);
         navigateRequest->Record.MutableDescribePath()->SetPath(
             Request_->NormalizePath(GetProtoRequest()->path()));
-
         Send(MakeTxProxyID(), navigateRequest.release());
-        Become(&TDescribeSecretRPC::StateDescribeScheme);
+        Become(&TThis::StateDescribeScheme);
     }
 
 private:
-    enum class EReading { Secret, Current, Pending };
+    enum class EBinding { Current, Pending };
 
     STATEFN(StateDescribeScheme) {
         switch (ev->GetTypeRewrite()) {
@@ -46,49 +49,46 @@ private:
 
     STATEFN(StateReadDelegation) {
         switch (ev->GetTypeRewrite()) {
-            HFunc(NIamDelegation::TEvIamDelegationTablet::TEvResponse, Handle);
+            IgnoreFunc(TTabletEvents::TEvResponse);
         default:
             return TBase::StateWork(ev);
         }
     }
 
+    STFUNC(StateDying) { Y_UNUSED(ev); }
+
     void Handle(NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr& ev, const TActorContext& ctx) {
         const auto& record = ev->Get()->GetRecord();
-        const auto& pathDescription = record.GetPathDescription();
-
+        const auto& path = record.GetPathDescription();
         if (record.HasReason()) {
             Request_->RaiseIssue(NYql::TIssue(record.GetReason()));
         }
-
         switch (record.GetStatus()) {
             case NKikimrScheme::StatusSuccess: {
-                if (pathDescription.GetSelf().GetPathType() != NKikimrSchemeOp::EPathTypeSecret) {
-                    Request_->RaiseIssue(NYql::TIssue(
-                        TStringBuilder() << "Unexpected path type: " << pathDescription.GetSelf().GetPathType()));
-                    return Reply(Ydb::StatusIds::SCHEME_ERROR, ctx);
+                if (path.GetSelf().GetPathType() != NKikimrSchemeOp::EPathTypeSecret) {
+                    return Fail(Ydb::StatusIds::SCHEME_ERROR,
+                        TStringBuilder() << "Unexpected path type: " << path.GetSelf().GetPathType());
                 }
-                if (!pathDescription.HasSecretDescription()) {
-                    Request_->RaiseIssue(NYql::TIssue("Secret description is missing"));
-                    return Reply(Ydb::StatusIds::SCHEME_ERROR, ctx);
+                if (!path.HasSecretDescription()) {
+                    return Fail(Ydb::StatusIds::SCHEME_ERROR, "Secret description is missing");
                 }
-
-                ConvertDirectoryEntry(pathDescription.GetSelf(), Result.mutable_self(), true);
-                Result.set_version(pathDescription.GetSecretDescription().GetVersion());
-                if (!pathDescription.GetSecretDescription().HasIamDelegation()) {
-                    return ReplyWithResult(Ydb::StatusIds::SUCCESS, Result, ctx);
+                Ydb::Secret::DescribeSecretResult result;
+                ConvertDirectoryEntry(path.GetSelf(), result.mutable_self(), true);
+                result.set_version(path.GetSecretDescription().GetVersion());
+                if (!path.GetSecretDescription().HasIamDelegation()) {
+                    return ReplyWithResult(Ydb::StatusIds::SUCCESS, result, ctx);
                 }
-
-                Reference = pathDescription.GetSecretDescription().GetIamDelegation();
-                Identity.SetDatabaseIncarnation(Reference.GetDatabaseIncarnation());
-                Identity.SetPathOwnerId(pathDescription.GetSelf().GetSchemeshardId());
-                Identity.SetPathLocalId(pathDescription.GetSelf().GetPathId());
-                if (!Reference.GetTabletId() || Reference.GetDatabaseIncarnation().empty()
-                    || Reference.GetCreateOperationId().empty() || !Identity.GetPathOwnerId()
-                    || !Identity.GetPathLocalId()) {
-                    return Fail(Ydb::StatusIds::SCHEME_ERROR, "IAM secret reference is incomplete", ctx);
+                const auto& reference = path.GetSecretDescription().GetIamDelegation();
+                P::TSecretIdentity identity;
+                identity.SetDatabaseIncarnation(reference.GetDatabaseIncarnation());
+                identity.SetPathOwnerId(path.GetSelf().GetSchemeshardId());
+                identity.SetPathLocalId(path.GetSelf().GetPathId());
+                if (!reference.GetTabletId() || reference.GetDatabaseIncarnation().empty()
+                    || reference.GetCreateOperationId().empty() || !identity.GetPathOwnerId() || !identity.GetPathLocalId()) {
+                    return Fail(Ydb::StatusIds::SCHEME_ERROR, "IAM secret reference is incomplete");
                 }
-                Become(&TDescribeSecretRPC::StateReadDelegation);
-                return ReadSnapshot(ctx);
+                Become(&TThis::StateReadDelegation);
+                return ReadDelegation(reference, std::move(identity), std::move(result));
             }
             case NKikimrScheme::StatusPathDoesNotExist:
             case NKikimrScheme::StatusSchemeError:
@@ -102,123 +102,112 @@ private:
         }
     }
 
-    bool SameIdentity(const NKikimrIamDelegation::TSecretIdentity& identity) const {
-        return identity.GetDatabaseIncarnation() == Identity.GetDatabaseIncarnation()
-            && identity.GetPathOwnerId() == Identity.GetPathOwnerId()
-            && identity.GetPathLocalId() == Identity.GetPathLocalId();
+    static bool SameIdentity(const P::TSecretIdentity& left, const P::TSecretIdentity& right) {
+        return left.GetDatabaseIncarnation() == right.GetDatabaseIncarnation()
+            && left.GetPathOwnerId() == right.GetPathOwnerId()
+            && left.GetPathLocalId() == right.GetPathLocalId();
     }
 
-    bool SameSnapshot(const NKikimrIamDelegation::TSecretRecord& secret) const {
-        return secret.GetRevision() == Snapshot.GetRevision()
-            && secret.GetCurrentOperationId() == Snapshot.GetCurrentOperationId()
-            && secret.GetPendingOperationId() == Snapshot.GetPendingOperationId();
+    static bool SameSnapshot(const P::TSecretRecord& left, const P::TSecretRecord& right) {
+        return left.GetRevision() == right.GetRevision()
+            && left.GetCurrentOperationId() == right.GetCurrentOperationId()
+            && left.GetPendingOperationId() == right.GetPendingOperationId();
     }
 
-    void SendRequest(THolder<NIamDelegation::TEvIamDelegationTablet::TEvRequest> request) {
-        TabletRequest = Register(NIamDelegation::CreateIamDelegationTabletRequestActor(Reference.GetTabletId()));
-        Send(TabletRequest, request.Release(), 0, ++RequestCookie);
-    }
-
-    void ReadSnapshot(const TActorContext& ctx) {
-        if (++SnapshotAttempts > MaxSnapshotAttempts) {
-            return Fail(Ydb::StatusIds::UNAVAILABLE, "IAM secret changed while being described; retry the request", ctx);
+    // Keep the RPC's sender fence in addition to its unique per-read cookie.
+    // The client owns the transport deadline; cancellation closes it immediately.
+    async<P::TResponse> ReadTablet(ui64 tabletId, P::TRequest request) {
+        const auto client = Register(NIamDelegation::CreateIamDelegationTabletRequestActor(tabletId));
+        auto* actorSystem = TActivationContext::ActorSystem();
+        Y_DEFER { actorSystem->Send(client, new TEvents::TEvPoison); };
+        auto event = MakeHolder<TTabletEvents::TEvRequest>();
+        event->Record.Swap(&request);
+        const auto cookie = AllocateWaitCookie();
+        Send(client, event.Release(), 0, cookie);
+        for (;;) {
+            auto reply = co_await ActorWaitForEvent<TTabletEvents::TEvResponse>(cookie);
+            if (reply->Sender == client) {
+                co_return std::move(reply->Get()->Record);
+            }
         }
-        Result.clear_iam_delegation();
-        Result.clear_pending_iam_delegation();
-        Reading = EReading::Secret;
-        auto request = MakeHolder<NIamDelegation::TEvIamDelegationTablet::TEvRequest>();
-        *request->Record.MutableGetSecret()->MutableSecret() = Identity;
-        SendRequest(std::move(request));
     }
 
-    void ReadBinding(EReading reading, const TString& operationId) {
-        Reading = reading;
-        auto request = MakeHolder<NIamDelegation::TEvIamDelegationTablet::TEvRequest>();
-        request->Record.MutableGetDelegation()->SetOperationId(operationId);
-        SendRequest(std::move(request));
-    }
-
-    void ReadPendingOrReply(const TActorContext& ctx) {
-        if (!Snapshot.GetPendingOperationId().empty()) {
-            return ReadBinding(EReading::Pending, Snapshot.GetPendingOperationId());
-        }
-        ReplyWithResult(Ydb::StatusIds::SUCCESS, Result, ctx);
-    }
-
-    void Handle(NIamDelegation::TEvIamDelegationTablet::TEvResponse::TPtr& ev, const TActorContext& ctx) {
-        if (ev->Cookie != RequestCookie || ev->Sender != TabletRequest) {
-            return;
-        }
-        TabletRequest = {};
-        const auto& record = ev->Get()->Record;
-        if (record.GetStatus() != NKikimrIamDelegation::SUCCESS) {
-            return Fail(record.GetStatus() == NKikimrIamDelegation::NOT_FOUND
-                ? Ydb::StatusIds::SCHEME_ERROR : Ydb::StatusIds::UNAVAILABLE,
-                "Cannot read IAM secret lifecycle state", ctx);
+    bool Validate(const P::TResponse& record, const P::TSecretIdentity& identity,
+        const NKikimrSchemeOp::TIamDelegationSecretReference& reference)
+    {
+        if (record.GetStatus() != P::SUCCESS) {
+            Fail(record.GetStatus() == P::NOT_FOUND ? Ydb::StatusIds::SCHEME_ERROR : Ydb::StatusIds::UNAVAILABLE,
+                "Cannot read IAM secret lifecycle state");
+            return false;
         }
         const auto& secret = record.GetSecret();
-        if (!record.HasSecret() || !SameIdentity(secret.GetIdentity())
-            || secret.GetCreateOperationId() != Reference.GetCreateOperationId()
-            || secret.GetState() != NKikimrIamDelegation::SECRET_LIVE) {
-            return Fail(Ydb::StatusIds::SCHEME_ERROR, "IAM secret lifecycle identity no longer matches the schema object", ctx);
+        if (!record.HasSecret() || !SameIdentity(secret.GetIdentity(), identity)
+            || secret.GetCreateOperationId() != reference.GetCreateOperationId() || secret.GetState() != P::SECRET_LIVE) {
+            Fail(Ydb::StatusIds::SCHEME_ERROR, "IAM secret lifecycle identity no longer matches the schema object");
+            return false;
         }
-        if (Reading == EReading::Secret) {
-            Snapshot = secret;
-            if (!Snapshot.GetCurrentOperationId().empty()) {
-                return ReadBinding(EReading::Current, Snapshot.GetCurrentOperationId());
-            }
-            return ReadPendingOrReply(ctx);
-        }
-
-        // GetDelegation reads its associated Secret in the same tablet transaction.
-        // Restart all reads if promotion, retirement or another ALTER intervened.
-        if (!SameSnapshot(secret)) {
-            return ReadSnapshot(ctx);
-        }
-        const auto& delegation = record.GetDelegation();
-        const auto& operationId = Reading == EReading::Current
-            ? Snapshot.GetCurrentOperationId() : Snapshot.GetPendingOperationId();
-        if (!record.HasDelegation() || delegation.GetOperationId() != operationId
-            || !SameIdentity(delegation.GetSecret())
-            || delegation.GetDatabaseIncarnation() != Identity.GetDatabaseIncarnation()
-            || !delegation.HasBinding()
-            || (Reading == EReading::Current && (delegation.GetState() != NKikimrIamDelegation::ACTIVE
-                || delegation.GetSetupState() != NKikimrIamDelegation::SETUP_SUCCEEDED))
-            || (Reading == EReading::Pending && delegation.GetState() != NKikimrIamDelegation::PENDING)) {
-            return Fail(Ydb::StatusIds::SCHEME_ERROR, "IAM secret binding does not match its lifecycle snapshot", ctx);
-        }
-        auto* binding = Reading == EReading::Current
-            ? Result.mutable_iam_delegation() : Result.mutable_pending_iam_delegation();
-        binding->set_service_account_id(delegation.GetBinding().GetServiceAccountId());
-        binding->set_cloud_id(delegation.GetBinding().GetCloudId());
-        binding->set_referrer_id(delegation.GetBinding().GetReferrerId());
-        if (Reading == EReading::Current) {
-            return ReadPendingOrReply(ctx);
-        }
-        ReplyWithResult(Ydb::StatusIds::SUCCESS, Result, ctx);
+        return true;
     }
 
-    void Fail(Ydb::StatusIds::StatusCode status, const TString& message, const TActorContext& ctx) {
+    void ReadDelegation(NKikimrSchemeOp::TIamDelegationSecretReference reference,
+        P::TSecretIdentity identity, Ydb::Secret::DescribeSecretResult result)
+    {
+        for (ui32 attempt = 0; attempt < 3; ++attempt) {
+            result.clear_iam_delegation();
+            result.clear_pending_iam_delegation();
+            P::TRequest request;
+            *request.MutableGetSecret()->MutableSecret() = identity;
+            const auto first = co_await ReadTablet(reference.GetTabletId(), std::move(request));
+            if (!Validate(first, identity, reference)) co_return;
+            const auto snapshot = first.GetSecret();
+            bool snapshotChanged = false;
+            for (const auto kind : {EBinding::Current, EBinding::Pending}) {
+                const auto& operationId = kind == EBinding::Current
+                    ? snapshot.GetCurrentOperationId() : snapshot.GetPendingOperationId();
+                if (operationId.empty()) continue;
+                P::TRequest read;
+                read.MutableGetDelegation()->SetOperationId(operationId);
+                const auto record = co_await ReadTablet(reference.GetTabletId(), std::move(read));
+                if (!Validate(record, identity, reference)) co_return;
+                // Each binding and its associated secret are read in one tablet
+                // transaction. A changed snapshot restarts all metadata reads.
+                if (!SameSnapshot(record.GetSecret(), snapshot)) {
+                    snapshotChanged = true;
+                    break;
+                }
+                const auto& delegation = record.GetDelegation();
+                if (!record.HasDelegation() || delegation.GetOperationId() != operationId
+                    || !SameIdentity(delegation.GetSecret(), identity)
+                    || delegation.GetDatabaseIncarnation() != identity.GetDatabaseIncarnation()
+                    || !delegation.HasBinding()
+                    || (kind == EBinding::Current && (delegation.GetState() != P::ACTIVE
+                        || delegation.GetSetupState() != P::SETUP_SUCCEEDED))
+                    || (kind == EBinding::Pending && delegation.GetState() != P::PENDING)) {
+                    Fail(Ydb::StatusIds::SCHEME_ERROR, "IAM secret binding does not match its lifecycle snapshot");
+                    co_return;
+                }
+                auto* binding = kind == EBinding::Current
+                    ? result.mutable_iam_delegation() : result.mutable_pending_iam_delegation();
+                binding->set_service_account_id(delegation.GetBinding().GetServiceAccountId());
+                binding->set_cloud_id(delegation.GetBinding().GetCloudId());
+                binding->set_referrer_id(delegation.GetBinding().GetReferrerId());
+            }
+            if (snapshotChanged) continue;
+            ReplyWithResult(Ydb::StatusIds::SUCCESS, result, ActorContext());
+            co_return;
+        }
+        Fail(Ydb::StatusIds::UNAVAILABLE, "IAM secret changed while being described; retry the request");
+    }
+
+    void Fail(Ydb::StatusIds::StatusCode status, const TString& message) {
         Request_->RaiseIssue(NYql::TIssue(message));
-        Reply(status, ctx);
+        Reply(status, ActorContext());
     }
 
     void PassAway() override {
-        if (TabletRequest) {
-            Send(TabletRequest, new TEvents::TEvPoison);
-        }
+        Become(&TThis::StateDying);
         TBase::PassAway();
     }
-
-    static constexpr ui32 MaxSnapshotAttempts = 3;
-    EReading Reading = EReading::Secret;
-    ui32 SnapshotAttempts = 0;
-    ui64 RequestCookie = 0;
-    TActorId TabletRequest;
-    NKikimrSchemeOp::TIamDelegationSecretReference Reference;
-    NKikimrIamDelegation::TSecretIdentity Identity;
-    NKikimrIamDelegation::TSecretRecord Snapshot;
-    Ydb::Secret::DescribeSecretResult Result;
 };
 
 void DoDescribeSecretRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {

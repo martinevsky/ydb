@@ -1,3 +1,4 @@
+#include <ydb/library/yql/providers/common/http_gateway/yql_http_default_retry_policy.h>
 #include <ydb/library/yql/providers/common/ut_helpers/dq_fake_ca.h>
 #include <ydb/library/yql/providers/common/ut_helpers/async_credentials.h>
 #include <ydb/library/yql/providers/s3/actors/yql_s3_write_actor.h>

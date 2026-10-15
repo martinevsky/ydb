@@ -249,16 +249,18 @@ protected:
         co_return std::move(result.ResultSet.front());
     }
 
-    async<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr> DescribeRequest(TString path) {
+    async<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::TPtr> DescribeForAuthorizedCreateRequest(TString path) {
         auto request = MakeHolder<TEvTxUserProxy::TEvNavigate>();
         request->Record.SetDatabaseName(Op.Database);
-        request->Record.SetUserToken(RequestTemplate.GetUserToken());
         request->Record.MutableDescribePath()->SetPath(path);
         co_return co_await ActorRequest<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult>(MakeTxProxyID(), request.Release());
     }
 
-    async<TExistingSecret> NavigateSecret(TString path) {
-        const auto reply = co_await WithTimeout(Op.Timeouts.Navigate, &TDelegationSecretActorBase::DescribeRequest, this, path);
+    // Internal metadata is read only after CreateTable has been checked on the
+    // parent. Plain CREATE has no DescribeSchema requirement on the target or
+    // parent. The authenticated schema proposal rechecks ACL and path identity.
+    async<TExistingSecret> DescribeForAuthorizedCreate(TString path) {
+        const auto reply = co_await WithTimeout(Op.Timeouts.Navigate, &TDelegationSecretActorBase::DescribeForAuthorizedCreateRequest, this, path);
         if (!reply) {
             throw TOrchestrationError(Ydb::StatusIds::UNAVAILABLE) << "Cannot describe " << path;
         }
@@ -667,19 +669,25 @@ protected:
         auto& op = *ModifyScheme().MutableCreateSecret();
         const TString name = op.GetName();
         const TString path = SecretPath(name);
-        const auto existing = co_await (ModifyScheme().GetReplaceIfExists()
-            ? NavigateSecretForAlter(path) : NavigateSecret(path));
+        TExistingSecret existing;
+        if (ModifyScheme().GetReplaceIfExists()) {
+            existing = co_await NavigateSecretForAlter(path);
+        } else {
+            co_await Authorize(RequestTemplate.GetTransaction().GetModifyScheme().GetWorkingDir(), NACLib::CreateTable);
+            existing = co_await DescribeForAuthorizedCreate(path);
+        }
         if (existing.Exists) {
             if (ModifyScheme().GetReplaceIfExists()) {
                 co_return co_await Replace(path, existing, op);
             }
-            co_await Authorize(RequestTemplate.GetTransaction().GetModifyScheme().GetWorkingDir(), NACLib::CreateTable);
             if (!ModifyScheme().GetFailOnExist() && existing.IsSecret) {
                 co_return MakeSuccess();
             }
             throw TOrchestrationError(Ydb::StatusIds::ALREADY_EXISTS) << "Path already exists: " << path;
         }
-        co_await Authorize(RequestTemplate.GetTransaction().GetModifyScheme().GetWorkingDir(), NACLib::CreateTable);
+        if (ModifyScheme().GetReplaceIfExists()) {
+            co_await Authorize(RequestTemplate.GetTransaction().GetModifyScheme().GetWorkingDir(), NACLib::CreateTable);
+        }
         const TString subject = ResolveSubjectId();
         const auto settings = DelegationSettings();
         TabletId = settings.Config.GetDelegationTabletId();
@@ -700,7 +708,7 @@ protected:
         }
         const auto key = database.DomainInfo->DomainKey;
         const TString incarnation = TStringBuilder() << key.OwnerId << ':' << key.LocalPathId;
-        const auto parent = co_await NavigateSecret(TString(ExtractParent(path)));
+        const auto parent = co_await DescribeForAuthorizedCreate(TString(ExtractParent(path)));
         if (!parent.Exists || !parent.Self.GetCreateFinished()) {
             throw TOrchestrationError(Ydb::StatusIds::UNAVAILABLE) << "Cannot resolve completed secret parent";
         }

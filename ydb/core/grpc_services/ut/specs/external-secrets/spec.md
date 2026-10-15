@@ -206,3 +206,11 @@ DescribeSecret SHALL close its owned lifecycle client on caller departure at eve
 - **AND** late replies cause neither another read nor a second RPC result
 
 Executable coverage: `ClientDepartureCancelsEverySnapshotWait`.
+
+#### Scenario: unrelated replies cannot satisfy a metadata read
+
+- **WHEN** a tablet response has another sender or a stale request cookie
+- **THEN** DescribeSecret keeps waiting for its own client reply and starts no subsequent read
+- **AND** the legitimate response can still complete the snapshot
+
+Executable coverage: `UnrelatedTabletRepliesCannotCompleteSnapshot`.

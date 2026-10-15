@@ -19,6 +19,7 @@
 #include <util/string/ascii.h>
 #include <util/folder/tempdir.h>
 #include <util/generic/scope.h>
+#include <util/generic/hash_set.h>
 
 #include <deque>
 
@@ -526,7 +527,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         TOrchestratorFixture::TabletId, initial.GetDatabaseIncarnation(), creatingId,
         initial.GetSecret().GetPathOwnerId(), initial.GetSecret().GetPathLocalId()};
     const auto reader = MakeIntrusiveConst<NACLib::TUserToken>("provider-reader", TVector<TString>{});
-    f.SetAccess("secret", reader->GetUserSID(), NACLib::SelectRow);
+    f.SetAccess("secret", reader->GetUserSID(), NACLib::SelectRow | NACLib::DescribeSchema);
     const auto provider = NSecret::CreateRefreshingSecretCredentialsProviderFactory(
         f.Runtime.GetActorSystem(0), "/Root/secret", "/Root", reference, reader,
         NSecret::EBearerPrefix::None)->CreateProvider();
@@ -689,7 +690,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         TOrchestratorFixture f;
         f.Create();
         const auto reader = MakeIntrusiveConst<NACLib::TUserToken>("revoked-reader", TVector<TString>{});
-        f.SetAccess("secret", reader->GetUserSID(), NACLib::SelectRow);
+        f.SetAccess("secret", reader->GetUserSID(), NACLib::SelectRow | NACLib::DescribeSchema);
         UNIT_ASSERT_VALUES_EQUAL(f.Read("secret", reader)->Status, Ydb::StatusIds::SUCCESS);
         f.MintKeys.clear();
         TAutoPtr<IEventHandle> held;
@@ -1740,7 +1741,21 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         }).Success());
         const auto creator = MakeIntrusiveConst<NACLib::TUserToken>("creator@" BUILTIN_ACL_DOMAIN, TVector<TString>{});
         f.SetAccess("Root", creator->GetUserSID(), NACLib::GenericRead);
-        f.SetAccess("private", creator->GetUserSID(), NACLib::CreateTable, NACLib::DescribeSchema);
+        UNIT_ASSERT(f.Scheme([&](auto& scheme) {
+            scheme.SetWorkingDir("/Root");
+            scheme.SetOperationType(NKikimrSchemeOp::ESchemeOpModifyACL);
+            NACLib::TDiffACL acl;
+            acl.SetInterruptInheritance(true);
+            acl.AddAccess(NACLib::EAccessType::Allow, NACLib::CreateTable, creator->GetUserSID());
+            acl.AddAccess(NACLib::EAccessType::Deny, NACLib::DescribeSchema, creator->GetUserSID());
+            scheme.MutableModifyACL()->SetName("private");
+            scheme.MutableModifyACL()->SetDiffACL(acl.SerializeAsString());
+        }).Success());
+        const auto parent = f.Describe("private").GetPathDescription().GetSelf();
+        NACLib::TSecurityObject permissions(parent.GetOwner(), true);
+        UNIT_ASSERT(permissions.MutableACL()->ParseFromString(parent.GetEffectiveACL()));
+        UNIT_ASSERT_C(permissions.CheckAccess(NACLib::CreateTable, *creator), parent.ShortDebugString());
+        UNIT_ASSERT_C(!permissions.CheckAccess(NACLib::DescribeSchema, *creator), parent.ShortDebugString());
         UNIT_ASSERT_VALUES_EQUAL(f.Describe("private", creator, false).GetStatus(), NKikimrScheme::StatusAccessDenied);
         f.AutoReply = true;
         for (const TString& sql : {
@@ -1766,11 +1781,10 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         TAutoPtr<IEventHandle> held;
         TActorId coordinator;
         f.Intercept = [&](auto& event) {
-            if (event->GetTypeRewrite() == TEvTxUserProxy::TEvNavigate::EventType && event->Sender) {
-                const auto* sender = f.Runtime.FindActor(event->Sender);
-                if (!sender || sender->GetActivityType() != NKikimrServices::TActivity::IAM_DELEGATION_SECRET_ORCHESTRATOR) {
-                    return EAction::PROCESS;
-                }
+            if (event->GetTypeRewrite() == TEvTxUserProxy::TEvNavigate::EventType
+                && event->template Get<TEvTxUserProxy::TEvNavigate>()->Record.GetDescribePath().GetPath()
+                    == "/Root/cancel-before-admission") {
+                UNIT_ASSERT(!held);
                 coordinator = event->Sender;
                 held.Reset(event.Release());
                 return EAction::DROP;
@@ -1779,10 +1793,12 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         };
         auto query = f.Kikimr.RunInThreadPool([&] {
             auto client = f.Kikimr.GetQueryClient(NYdb::NQuery::TClientSettings().AuthToken("bob@" BUILTIN_ACL_DOMAIN));
-            return client.ExecuteQuery("CREATE SECRET secret WITH (SOURCE = 'YC_IAM_DELEGATION', SERVICE_ACCOUNT_ID = 'account-1', RESOURCE = 'cloud-1');",
+            return client.ExecuteQuery("CREATE SECRET `cancel-before-admission` WITH (SOURCE = 'YC_IAM_DELEGATION', SERVICE_ACCOUNT_ID = 'account-1', RESOURCE = 'cloud-1');",
                 NYdb::NQuery::TTxControl::NoTx()).GetValueSync();
         });
-        f.Until([&] { return bool(held); });
+        f.Until([&] { return bool(held) || query.HasValue(); });
+        UNIT_ASSERT_C(held, "Query finished before the metadata boundary: "
+            << (query.HasValue() ? query.GetValue().GetIssues().ToString() : TString("pending")));
         const auto executor = parents.at(coordinator);
         UNIT_ASSERT(executor);
         UNIT_ASSERT(f.Commands.empty());
@@ -1797,7 +1813,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         f.Runtime.SimulateSleep(TDuration::Seconds(1));
         UNIT_ASSERT(f.Commands.empty());
         UNIT_ASSERT(f.SetupBindings.empty());
-        UNIT_ASSERT_VALUES_EQUAL(f.Describe().GetStatus(), NKikimrScheme::StatusPathDoesNotExist);
+        UNIT_ASSERT_VALUES_EQUAL(f.Describe("cancel-before-admission").GetStatus(), NKikimrScheme::StatusPathDoesNotExist);
     }
 
     Y_UNIT_TEST(DescribeTimeoutFailsBeforeStagingOrIam) {
@@ -2012,6 +2028,7 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         ui32 setupPolls = 0;
         ui32 revokeCalls = 0;
         THashMap<TString, P::TDelegation> observed;
+        THashSet<TString> retiredSecrets;
         runtime.RegisterService(MakeTxProxyID(), runtime.AllocateEdgeActor());
         runtime.RegisterService(MakeIamDelegationServiceId(), runtime.AllocateEdgeActor());
         const auto previousSchedule = runtime.SetScheduledEventFilter([](auto&, auto&, auto, auto&) { return false; });
@@ -2066,6 +2083,10 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
                 if (reply.GetStatus() == P::SUCCESS && reply.HasDelegation()) {
                     observed[reply.GetDelegation().GetOperationId()] = reply.GetDelegation();
                 }
+                if (reply.GetStatus() == P::SUCCESS && reply.HasSecret()
+                    && reply.GetSecret().GetState() == P::SECRET_DROPPED) {
+                    retiredSecrets.insert(reply.GetSecret().GetIdentity().SerializeAsString());
+                }
             }
             return EAction::PROCESS;
         });
@@ -2082,8 +2103,8 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         until([&] {
             return observed[savedActive].GetRevokeConsecutiveFailures() >= 1
                 && observed[savedAccepted].GetRevokeConsecutiveFailures() >= 1
-                && observed[savedUnknown].GetState() == P::WAITING_SETUP
-                && observed[savedUndispatched].GetState() == P::CANCELLED;
+                && retiredSecrets.contains(before.at(savedUnknown).GetSecret().SerializeAsString())
+                && retiredSecrets.contains(before.at(savedUndispatched).GetSecret().SerializeAsString());
         });
         runtime.Send(new IEventHandle(worker, {}, new TEvents::TEvPoison));
         reopened.Reboot();
@@ -2096,7 +2117,9 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         const auto acceptedAge = read(savedAccepted).GetCleanupQueuedAtUs();
         UNIT_ASSERT(activeAge && acceptedAge);
         UNIT_ASSERT_VALUES_EQUAL(read(savedNew).SerializeAsString(), before.at(savedNew).SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(read(savedUnknown).GetState(), P::WAITING_SETUP);
         UNIT_ASSERT(!read(savedUnknown).HasCleanupQueuedAtUs());
+        UNIT_ASSERT_VALUES_EQUAL(read(savedUndispatched).GetState(), P::CANCELLED);
         iamMode = ECleanupIam::Recovered;
         worker = runtime.Register(CreateIamDelegationRecoveryWorker(reopened.GetTabletId()));
         runtime.EnableScheduleForActor(worker);
