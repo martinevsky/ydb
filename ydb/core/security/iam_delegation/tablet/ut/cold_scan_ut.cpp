@@ -68,6 +68,32 @@ private:
 } // namespace
 
 Y_UNIT_TEST_SUITE(IamDelegationColdScans) {
+    Y_UNIT_TEST(DisabledAdmissionReplaysColdCommittedIntentsWithoutMutation) {
+        TTestContext ctx;
+        TPageReadEvidence evidence(ctx);
+        ctx.Call(RegisterRequest(DatabaseIdentity()));
+        EnableSmallCompactions(ctx, {TSchema::Delegations::TableId});
+        TVector<std::pair<NProto::TRequest, NProto::TDelegation>> committed;
+        for (ui32 index = 0; index < 40; ++index) {
+            const TString operation = "operation-" + ToString(index);
+            auto request = StageCreateRequest(operation, WideBinding(operation),
+                "/Root/database/secret-" + ToString(index));
+            auto record = ctx.Call(request).GetDelegation();
+            committed.emplace_back(std::move(request), std::move(record));
+        }
+        UNIT_ASSERT(evidence.CompactedCollections > 0);
+        ctx.Reboot();
+        ctx.GetRuntime().GetAppData().FeatureFlags.SetEnableIamDelegationSecrets(false);
+        evidence.TransactionFetches = 0;
+        for (const auto& [request, record] : committed) {
+            UNIT_ASSERT_VALUES_EQUAL(ctx.Call(request).GetDelegation().SerializeAsString(), record.SerializeAsString());
+        }
+        UNIT_ASSERT_C(evidence.TransactionFetches > 1, "Saved Stage replay must actually retry cold page reads");
+        auto fresh = StageCreateRequest("fresh", WideBinding("fresh"), "/Root/database/fresh");
+        ctx.Call(fresh, NProto::PRECONDITION_FAILED);
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListRequest()).DelegationsSize(), committed.size());
+    }
+
     Y_UNIT_TEST(DatabaseEnumerationRetriesColdPagesWithoutPreloadingRegistry) {
         TTestContext ctx;
         TPageReadEvidence evidence(ctx);
