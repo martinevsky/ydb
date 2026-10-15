@@ -377,9 +377,82 @@ void CheckNoopAlterPreservesPending(P::ESetupState outcome, TDuration age = TDur
     UNIT_ASSERT(f.RevokeBindings.empty());
 }
 
+enum class ERefusalDelivery { Submission, Poll };
+enum class ERefusalReload { Live, TabletRestart };
+
+void CheckWorkerOwnedRefusal(ERefusalDelivery delivery, ERefusalReload reload) {
+    TOrchestratorFixture f;
+    const auto currentId = f.Create();
+    const auto current = f.Delegation(currentId).GetDelegation();
+    TActorId coordinator;
+    TAutoPtr<IEventHandle> heldStage;
+    P::TDelegation pending;
+    f.Intercept = [&](auto& event) {
+        if (event->GetTypeRewrite() == TEvIamDelegationTablet::TEvResponse::EventType
+            && event->GetRecipientRewrite() == coordinator && pending.GetOperationId().empty()) {
+            const auto& response = event->template Get<TEvIamDelegationTablet::TEvResponse>()->Record;
+            if (response.HasDelegation() && response.GetDelegation().GetOperationId() != currentId
+                && response.GetDelegation().GetSetupState() == P::SETUP_NOT_STARTED) {
+                pending = response.GetDelegation();
+                heldStage.Reset(event.Release());
+                return EAction::DROP;
+            }
+        }
+        return EAction::PROCESS;
+    };
+    const auto altering = f.Start(f.Operation(true, "account-2"), true);
+    coordinator = altering.Actor;
+    f.Until([&] { return bool(heldStage); });
+    const auto worker = f.StartWorker();
+    auto submission = f.Take(f.Submissions);
+    const auto& setup = *submission->Get<TEvIamDelegation::TEvSubmitDelegationOperation>();
+    UNIT_ASSERT(setup.Kind == EDelegationOperationKind::Setup);
+    UNIT_ASSERT_VALUES_EQUAL(setup.SubjectId, "bob");
+    UNIT_ASSERT_VALUES_EQUAL(setup.RequestId, pending.GetOperationId());
+    UNIT_ASSERT_VALUES_EQUAL(setup.Binding.ServiceAccountId, "account-2");
+    if (delivery == ERefusalDelivery::Poll) {
+        f.ReplyIam(*submission, EDelegationOperationOutcome::Accepted, "worker-setup-operation");
+        auto poll = f.Take(f.Polls);
+        UNIT_ASSERT_VALUES_EQUAL(poll->Get<TEvIamDelegation::TEvPollDelegationOperation>()->OperationId,
+            "worker-setup-operation");
+        f.ReplyIam(*poll, EDelegationOperationOutcome::Failed, "worker-setup-operation");
+    } else {
+        f.ReplyIam(*submission, EDelegationOperationOutcome::Failed);
+    }
+    f.Until([&] { return f.ObservedDelegations[pending.GetOperationId()].GetSetupState() == P::SETUP_FAILED; });
+    f.Runtime.Send(new IEventHandle(worker, {}, new TEvents::TEvPoison));
+    if (reload == ERefusalReload::TabletRestart) {
+        f.RebootTablet();
+    }
+    f.Intercept = {};
+    f.Runtime.Send(heldStage.Release());
+    const auto result = f.Finish(altering);
+    UNIT_ASSERT_C(result.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::UNAUTHORIZED),
+        result.Issues().ToString());
+    UNIT_ASSERT(result.Issues().ToString().Contains("IAM refused delegation setup"));
+    UNIT_ASSERT_VALUES_EQUAL(f.Delegation(currentId).GetDelegation().SerializeAsString(), current.SerializeAsString());
+    UNIT_ASSERT_VALUES_EQUAL(f.Delegation(currentId).GetSecret().GetCurrentOperationId(), currentId);
+    UNIT_ASSERT_VALUES_EQUAL(f.Read()->Token, "token-for-account-1");
+    UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 2);
+    UNIT_ASSERT(f.RevokeBindings.empty());
+}
+
 } // namespace
 
 Y_UNIT_TEST_SUITE(KqpIamDelegationSecretOrchestrator) {
+    Y_UNIT_TEST(WorkerOwnedSetupRefusalReturnsOriginalStatus) {
+        CheckWorkerOwnedRefusal(ERefusalDelivery::Submission, ERefusalReload::Live);
+    }
+    Y_UNIT_TEST(WorkerOwnedSetupRefusalReturnsOriginalStatusAfterRestart) {
+        CheckWorkerOwnedRefusal(ERefusalDelivery::Submission, ERefusalReload::TabletRestart);
+    }
+    Y_UNIT_TEST(WorkerOwnedPolledRefusalReturnsOriginalStatus) {
+        CheckWorkerOwnedRefusal(ERefusalDelivery::Poll, ERefusalReload::Live);
+    }
+    Y_UNIT_TEST(WorkerOwnedPolledRefusalReturnsOriginalStatusAfterRestart) {
+        CheckWorkerOwnedRefusal(ERefusalDelivery::Poll, ERefusalReload::TabletRestart);
+    }
+
     Y_UNIT_TEST(ExtractCloudSubjectId) {
         struct TCase { TString Sid; TString Domain; TMaybe<TString> Expected; };
         for (const auto& entry : TVector<TCase>{
