@@ -65,8 +65,7 @@ CREATE RESOURCE POOL CLASSIFIER c_reject_fts WITH (
     REJECT_MESSAGE = 'Full-scan DELETE on big_table is not allowed; use a key range',
     MATCH = $$
         statement_type = 'DELETE'
-        AND full_scan = TRUE
-        AND table_path LIKE '/db/big_table%'
+        AND EXISTS TABLE WHERE path LIKE '/db/big_table%' AND full_scan
     $$
 );
 ```
@@ -93,21 +92,80 @@ A restricted boolean expression over **match attributes**. Supported operators:
 references to user tables — the predicate must be evaluable at query-admission
 time, before execution starts.
 
-Initial attribute set:
+There are two attribute scopes: **query-level** and **per-table**.
+
+Query-level attributes:
 
 | Attribute              | Type    | Meaning                                              |
 |------------------------|---------|------------------------------------------------------|
 | `statement_type`       | string  | `'SELECT'`, `'DELETE'`, `'UPDATE'`, `'UPSERT'`, ...  |
-| `full_scan`            | bool    | plan reads a table without a key-range/index prefix  |
-| `table_path`           | string  | path of a table touched by the plan (multi-valued: matches if ANY touched table matches) |
-| `estimated_read_bytes` | int     | optimizer estimate, 0 if unknown                     |
+| `estimated_read_bytes` | int     | optimizer estimate for the whole query, 0 if unknown |
 | `estimated_rows`       | int     | optimizer estimate                                   |
 | `member_name`          | string  | authenticated user (existing classifier semantic)    |
 | `database`             | string  | database path (existing classifier semantic)         |
 
-Multi-valued `table_path` semantics: `table_path LIKE '/db/big_table%'` is true
-if **any** table in the plan matches. `NOT (table_path LIKE ...)` therefore
-means "no touched table matches", which is the safe reading for guard rules.
+Per-table attributes (only valid inside a table quantifier):
+
+| Attribute    | Type   | Meaning                                                  |
+|--------------|--------|----------------------------------------------------------|
+| `path`       | string | full path of the table                                   |
+| `full_scan`  | bool   | this table is read without a key-range/index prefix      |
+| `read_bytes` | int    | optimizer estimate for this table                        |
+| `access`     | string | `'READ'`, `'WRITE'`, `'READ_WRITE'`                      |
+
+## Table quantifiers
+
+One request can touch several tables, and full scans may apply to only some of
+them — so per-table attributes must be correlated **per table**, not flattened
+to the query level. Two quantifiers bind them:
+
+```sql
+EXISTS TABLE WHERE <per-table predicate>   -- at least one touched table satisfies it
+ALL TABLES WHERE <per-table predicate>     -- every touched table satisfies it
+```
+
+Why the flat form is wrong. Consider a DELETE whose plan reads `big_table` by
+primary key and full-scans `other_table`:
+
+```sql
+-- flat (query-level) predicate: over-rejects
+full_scan = TRUE AND table_path LIKE '/db/big_table%'
+--   full_scan is TRUE (because of other_table) and big_table IS touched,
+--   so the rule fires — even though big_table itself was read by key.
+
+-- correlated per-table predicate: correct
+EXISTS TABLE WHERE path LIKE '/db/big_table%' AND full_scan
+--   no single table satisfies both conjuncts → no rejection.
+```
+
+Truth table for `EXISTS TABLE WHERE path LIKE '/db/big%' AND full_scan`:
+
+| Plan touches                                  | Result |
+|-----------------------------------------------|--------|
+| big_table full scan only                      | match  |
+| big_table full scan + other table key lookup  | match  |
+| big_table key lookup + other table full scan  | no match |
+| big_table key lookup only                     | no match |
+
+Useful patterns:
+
+```sql
+-- reject if ANY table in the query is full-scanned, regardless of which
+EXISTS TABLE WHERE full_scan
+
+-- reject full scans of anything under /db/ except an allow-listed dir
+EXISTS TABLE WHERE full_scan AND path LIKE '/db/%' AND path NOT LIKE '/db/scratch/%'
+
+-- allow the query only if every touched table is read by key
+ALL TABLES WHERE NOT full_scan
+
+-- reject writes that full-scan the written table itself
+EXISTS TABLE WHERE full_scan AND access IN ('WRITE', 'READ_WRITE')
+```
+
+For convenience the bare query-level `full_scan` remains as a shorthand for
+`EXISTS TABLE WHERE full_scan`, but combining it with a path match is a
+compile-time warning precisely because of the correlation pitfall above.
 
 ## Semantics
 
@@ -165,9 +223,14 @@ WHERE statement_type = 'DELETE' AND full_scan = TRUE AND table_path LIKE '/db/bi
 
 1. Exact definition of `full_scan` for writes: DELETE/UPDATE compile to
    read+write; is "full scan" about the read side lacking a key prefix?
+   (The `access` per-table attribute sidesteps part of this by letting rules
+   target the written table explicitly.)
 2. Should `REJECT` apply at prepare/compile time only, or also re-checked at
    execution (plans can change with parameter values)?
-3. Multi-valued `table_path` vs. repeating attributes (`ANY_TABLE(...)`) — is
-   the implicit-ANY reading sufficient?
+3. Quantifier nesting: is a single `EXISTS TABLE` / `ALL TABLES` level enough,
+   or do real rules need correlation across two tables (e.g. "full scan of A
+   joined with any read of B")? A bound table variable
+   (`EXISTS TABLE t WHERE t.path = ... AND EXISTS TABLE u WHERE u...`) would
+   cover that at the cost of a more complex evaluator.
 4. Do we need `ACTION = 'TAG'` (attach a label, keep running) for observability
    before enforcing rejection?
