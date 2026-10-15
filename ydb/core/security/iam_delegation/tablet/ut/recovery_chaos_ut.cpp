@@ -1,6 +1,7 @@
 #include "requests.h"
 
 #include <util/generic/map.h>
+#include <util/generic/maybe.h>
 #include <util/generic/set.h>
 #include <util/generic/yexception.h>
 #include <util/string/cast.h>
@@ -16,9 +17,25 @@ namespace {
 // A held remote setup remains unresolved regardless of elapsed virtual time.
 enum class ERole { Current, Pending, UnresolvedRetired, Revocable, Cancelled, Revoked };
 
+enum class ERevokeProgress { Failing, PendingReported, UncertainAfterProgress };
+enum class EExpectedFailure { Absent, SubjectNotDelegatable };
+
+struct TQueueWindow {
+    TInstant Earliest;
+    TInstant Latest;
+};
+
 struct TExpectedDelegation {
     NProto::TIamBinding Binding;
     ERole Role;
+    EExpectedFailure Failure = EExpectedFailure::Absent;
+    ui32 ConsecutiveFailures = 0;
+    ERevokeProgress Progress = ERevokeProgress::Failing;
+    TString RevokeOperationId;
+    TMaybe<TQueueWindow> Queued;
+    // First observation is accepted only inside the independently recorded
+    // transition window; every subsequent operation must retain that instant.
+    TMaybe<ui64> ObservedQueuedAt;
 };
 
 struct TRecoveryModel {
@@ -28,7 +45,7 @@ struct TRecoveryModel {
     TString Current;
     TString Pending;
 
-    void Check(TTestContext& ctx) const {
+    void Check(TTestContext& ctx) {
         const auto secret = GetSecret(ctx, Identity);
         UNIT_ASSERT_VALUES_EQUAL(secret.GetState(), NProto::SECRET_LIVE);
         UNIT_ASSERT_VALUES_EQUAL(secret.GetCurrentOperationId(), Current);
@@ -64,9 +81,30 @@ struct TRecoveryModel {
         }
         UNIT_ASSERT(databases == Incarnations);
         TSet<TString> expectedInventory;
-        for (const auto& [id, expected] : Delegations) {
+        for (auto& [id, expected] : Delegations) {
             const auto actual = GetDelegation(ctx, id);
             AssertBinding(actual, expected.Binding);
+            UNIT_ASSERT_VALUES_EQUAL(actual.GetRevokeConsecutiveFailures(), expected.ConsecutiveFailures);
+            UNIT_ASSERT_VALUES_EQUAL(actual.GetRevokeOperationId(), expected.RevokeOperationId);
+            if (expected.Failure == EExpectedFailure::SubjectNotDelegatable) {
+                UNIT_ASSERT(actual.HasSetupFailure());
+                UNIT_ASSERT_VALUES_EQUAL(actual.GetSetupFailure().GetStatus(), Ydb::StatusIds::UNAUTHORIZED);
+                UNIT_ASSERT_VALUES_EQUAL(actual.GetSetupFailure().ReasonsSize(), 1);
+                UNIT_ASSERT_VALUES_EQUAL(actual.GetSetupFailure().GetReasons(0), NProto::SETUP_FAILURE_SUBJECT_NOT_DELEGATABLE);
+            } else {
+                UNIT_ASSERT(!actual.HasSetupFailure());
+            }
+            UNIT_ASSERT_VALUES_EQUAL(actual.HasCleanupQueuedAtUs(), expected.Queued.Defined());
+            if (expected.Queued) {
+                const auto when = actual.GetCleanupQueuedAtUs();
+                UNIT_ASSERT(when >= expected.Queued->Earliest.MicroSeconds());
+                UNIT_ASSERT(when <= expected.Queued->Latest.MicroSeconds());
+                if (expected.ObservedQueuedAt) {
+                    UNIT_ASSERT_VALUES_EQUAL(when, *expected.ObservedQueuedAt);
+                } else {
+                    expected.ObservedQueuedAt = when;
+                }
+            }
             if (expected.Role != ERole::Cancelled && expected.Role != ERole::Revoked) {
                 expectedInventory.insert(id);
             }
@@ -161,21 +199,35 @@ void RunRecoveryChaos(ui64 seed) {
         model.Delegations.emplace(replacementId, TExpectedDelegation{replacementBinding, ERole::Pending});
         const auto lateOutcome = rng() % 2 ? NProto::SETUP_SUCCEEDED : NProto::SETUP_FAILED;
         auto lateResult = SetupResultRequest(GetDelegation(ctx, abandonedId), lateOutcome);
+        if (lateOutcome == NProto::SETUP_FAILED) {
+            auto* failure = lateResult.MutableSetSetupResult()->MutableSetupFailure();
+            failure->SetStatus(Ydb::StatusIds::UNAUTHORIZED);
+            failure->AddReasons(NProto::SETUP_FAILURE_SUBJECT_NOT_DELEGATABLE);
+        }
         const auto oldCurrent = model.Current;
         std::array<ui32, 4> actions{0, 1, 2, 3};
         std::shuffle(actions.begin(), actions.end(), rng);
         for (const auto action : actions) {
             switch (action) {
-                case 0:
+                case 0: {
+                    const auto before = ctx.GetRuntime().GetCurrentTime();
                     ctx.Call(lateResult);
-                    model.Delegations.at(abandonedId).Role = lateOutcome == NProto::SETUP_SUCCEEDED
+                    auto& expected = model.Delegations.at(abandonedId);
+                    expected.Role = lateOutcome == NProto::SETUP_SUCCEEDED
                         ? ERole::Revocable : ERole::Cancelled;
+                    if (lateOutcome == NProto::SETUP_SUCCEEDED) {
+                        expected.Queued = TQueueWindow{before, ctx.GetRuntime().GetCurrentTime()};
+                    } else {
+                        expected.Failure = EExpectedFailure::SubjectNotDelegatable;
+                    }
                     // Duplicate terminal replies cannot retire current or clear
                     // a newer pending operation even after their CAS is stale.
                     ctx.Call(lateResult);
                     break;
+                }
                 case 1: {
                     const auto promote = PromoteRequest(ready, GetSecret(ctx, model.Identity).GetRevision());
+                    const auto before = ctx.GetRuntime().GetCurrentTime();
                     if (rng() % 2) {
                         ctx.CrashCall(promote, ECrashPoint::ResponseLost);
                     }
@@ -183,6 +235,7 @@ void RunRecoveryChaos(ui64 seed) {
                     model.Current = replacementId;
                     model.Pending.clear();
                     model.Delegations.at(oldCurrent).Role = ERole::Revocable;
+                    model.Delegations.at(oldCurrent).Queued = TQueueWindow{before, ctx.GetRuntime().GetCurrentTime()};
                     model.Delegations.at(replacementId).Role = ERole::Current;
                     break;
                 }
@@ -197,8 +250,10 @@ void RunRecoveryChaos(ui64 seed) {
         }
 
         if (round % 2) {
+            const auto before = ctx.GetRuntime().GetCurrentTime();
             ctx.Call(DropRequest(GetSecret(ctx, model.Identity)));
             model.Delegations.at(model.Current).Role = ERole::Revocable;
+            model.Delegations.at(model.Current).Queued = TQueueWindow{before, ctx.GetRuntime().GetCurrentTime()};
             const auto oldIdentity = model.Identity;
             const TString incarnation = "incarnation-reused-" + label;
             // Identical database path and full secret PathId in a new database
@@ -233,25 +288,63 @@ void RunRecoveryChaos(ui64 seed) {
         for (const auto& record : firstClaims.GetDelegations()) {
             ctx.Call(FinishRequest(record), NProto::STALE_CLAIM);
         }
-        bool retried = false;
         for (ui32 batch = 0;; ++batch) {
-            UNIT_ASSERT(batch < 8);
-            ctx.AdvanceTime(TDuration::Seconds(11));
+            UNIT_ASSERT_C(batch < 60, "The fixed recovery schedule did not drain cleanup");
+            // Past both the maximum policy delay (including jitter) and lease.
+            ctx.AdvanceTime(TDuration::Seconds(80));
             const auto claims = ctx.Call(ClaimRequest("recovery-worker", 2));
             if (!claims.DelegationsSize()) {
                 break;
             }
             for (const auto& record : claims.GetDelegations()) {
                 model.CheckClaim(record);
-                if (!retried && rng() % 2) {
-                    ctx.Call(FinishRequest(record, NProto::REVOKE_RETRY, TDuration::Seconds(3)));
-                    retried = true;
+                auto& expected = model.Delegations.at(record.GetOperationId());
+                auto next = expected;
+                auto ack = FinishRequest(record, NProto::REVOKE_RETRY);
+                if (expected.Progress == ERevokeProgress::Failing && expected.ConsecutiveFailures < 2 + round % 3) {
+                    ack.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_FAILURE);
+                    ack.MutableFinishRevocation()->ClearRevokeOperationId();
+                    ++next.ConsecutiveFailures;
+                } else if (expected.Progress == ERevokeProgress::Failing) {
+                    ack.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_PENDING);
+                    ack.MutableFinishRevocation()->SetRevokeOperationId("remote-cleanup-" + record.GetOperationId());
+                    next.RevokeOperationId = ack.GetFinishRevocation().GetRevokeOperationId();
+                    next.ConsecutiveFailures = 0;
+                    next.Progress = ERevokeProgress::PendingReported;
+                } else if (expected.Progress == ERevokeProgress::PendingReported) {
+                    ack.MutableFinishRevocation()->SetRetryReason(NProto::REVOKE_RETRY_FAILURE);
+                    ack.MutableFinishRevocation()->ClearRevokeOperationId();
+                    next.ConsecutiveFailures = 1;
+                    next.Progress = ERevokeProgress::UncertainAfterProgress;
                 } else {
-                    const auto finish = FinishRequest(record);
-                    ctx.Call(finish);
-                    ctx.Call(finish);
-                    model.Delegations.at(record.GetOperationId()).Role = ERole::Revoked;
+                    ack = FinishRequest(record);
+                    ack.MutableFinishRevocation()->SetRevokeOperationId(expected.RevokeOperationId);
+                    next.Role = ERole::Revoked;
+                    // Completion removes outstanding work. Its old-shaped ACK
+                    // does not erase the last durable failure history.
                 }
+                const auto before = ctx.GetRuntime().GetCurrentTime();
+                if (rng() % 3 == 0) {
+                    const auto point = static_cast<ECrashPoint>(rng() % 3);
+                    ctx.CrashCall(ack, point);
+                    if (point != ECrashPoint::BeforeCommit) {
+                        expected = std::move(next);
+                    }
+                    ctx.Call(ack, NProto::STALE_CLAIM);
+                    // Every remaining claim in this batch belongs to the old
+                    // generation. Never let a dead owner finish another row.
+                    for (const auto& old : claims.GetDelegations()) {
+                        ctx.Call(FinishRequest(old), NProto::STALE_CLAIM);
+                    }
+                    break;
+                }
+                const auto saved = ctx.Call(ack).GetDelegation();
+                expected = std::move(next);
+                if (expected.Role == ERole::Revocable) {
+                    UNIT_ASSERT(saved.GetDueAtUs() >= (before + TDuration::Seconds(1)).MicroSeconds());
+                    UNIT_ASSERT(saved.GetDueAtUs() < (ctx.GetRuntime().GetCurrentTime() + TDuration::Seconds(75)).MicroSeconds());
+                }
+                UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ack).GetDelegation().SerializeAsString(), saved.SerializeAsString());
             }
             model.Check(ctx);
         }

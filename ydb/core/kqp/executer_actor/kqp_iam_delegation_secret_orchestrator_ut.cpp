@@ -7,6 +7,7 @@
 #include <ydb/core/security/iam_delegation/lifecycle/worker.h>
 #include <ydb/core/security/iam_delegation/tablet/iam_delegation.h>
 #include <ydb/core/security/iam_delegation/tablet/public/events.h>
+#include <ydb/core/security/iam_delegation/tablet/ut/ut_helpers.h>
 #include <ydb/core/testlib/tablet_helpers.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
@@ -15,6 +16,8 @@
 #include <ydb/library/ycloud/api/folder_service.h>
 
 #include <util/string/ascii.h>
+#include <util/folder/tempdir.h>
+#include <util/generic/scope.h>
 
 #include <deque>
 
@@ -32,7 +35,7 @@ class TOrchestratorFixture {
 public:
     static constexpr ui64 TabletId = MakeTabletID(false, 8901);
 
-    static TKikimrSettings Settings() {
+    static TKikimrSettings Settings(TMaybe<NFake::TStorage> storage = {}) {
         NKikimrConfig::TAppConfig config;
         auto* iam = config.MutableIamConfig();
         iam->SetTokenServiceEndpoint("unused-token-endpoint");
@@ -49,11 +52,15 @@ public:
         NKikimrConfig::TFeatureFlags flags;
         flags.SetEnableSchemaSecrets(true);
         flags.SetEnableIamDelegationSecrets(true);
-        return TKikimrSettings(config).SetWithSampleTables(false)
+        auto settings = TKikimrSettings(config).SetWithSampleTables(false)
             .SetFeatureFlags(flags).SetUseRealThreads(false);
+        if (storage) {
+            settings.SetStorage(*storage);
+        }
+        return settings;
     }
 
-    TKikimrRunner Kikimr{Settings()};
+    TKikimrRunner Kikimr;
     TTestActorRuntime& Runtime = *Kikimr.GetTestServer().GetRuntime();
     TActorId Iam = Runtime.AllocateEdgeActor();
     TActorId TokenService = Runtime.AllocateEdgeActor();
@@ -71,7 +78,9 @@ public:
     std::function<EAction(TAutoPtr<IEventHandle>&)> Intercept;
     bool AutoReply = false;
 
-    TOrchestratorFixture() {
+    explicit TOrchestratorFixture(TMaybe<NFake::TStorage> storage = {})
+        : Kikimr(Settings(std::move(storage)))
+    {
         ReadyObserver = Runtime.AddObserver<TEvTablet::TEvReady>([this](auto& event) {
             if (event->Get()->TabletID == TabletId) {
                 Generation = event->Get()->Generation;
@@ -1742,6 +1751,316 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
             && f.ObservedDelegations[alterId].GetState() == P::REVOKED; });
         UNIT_ASSERT_VALUES_EQUAL(f.RevokeBindings.size(), 2);
     }
+    Y_UNIT_TEST(PopulatedTenantCleanupSurvivesWholeRuntimeDiskReopen) {
+        using NIamDelegation::NTests::TTestContext;
+        TTempDir directory;
+        enum class EDiskOpen { Format, Reopen };
+        const auto storage = [&](EDiskOpen mode) {
+            NFake::TStorage disk;
+            disk.UseDisk = true;
+            disk.FormatDisk = mode == EDiskOpen::Format;
+            disk.DiskPath = directory.Name() + "/";
+            disk.DiskSize = 8ull << 30;
+            disk.SectorSize = 4096;
+            disk.ChunkSize = 32ull << 20;
+            return disk;
+        };
+        TString savedActive, savedAccepted, savedUnknown, savedUndispatched, savedNew;
+        TString oldDatabase;
+        THashMap<TString, P::TDelegation> before;
+        NKikimrScheme::TEvDescribeSchemeResult replacementSchema;
+        TInstant clock;
+        {
+            TOrchestratorFixture f(storage(EDiskOpen::Format));
+            const auto createDatabase = [&] {
+                UNIT_ASSERT(f.Scheme([](auto& scheme) {
+                    scheme.SetWorkingDir("/Root");
+                    scheme.SetOperationType(NKikimrSchemeOp::ESchemeOpCreateSubDomain);
+                    scheme.MutableSubDomain()->SetName("database");
+                    scheme.MutableSubDomain()->SetCoordinators(0);
+                    scheme.MutableSubDomain()->SetMediators(0);
+                }).Success());
+            };
+            const auto operation = [&](const TString& name, const TString& account) {
+                auto op = f.Operation(false, account, "cloud-1", name);
+                op.Database = "/Root/database";
+                op.Request->Record.SetDatabaseName(op.Database);
+                op.Request->Record.MutableTransaction()->MutableModifyScheme()->SetWorkingDir(op.Database);
+                return op;
+            };
+            const auto stop = [&](const TOrchestratorFixture::TRunning& running) {
+                f.Runtime.Send(new IEventHandle(running.Actor, {}, new TEvents::TEvPoison));
+                UNIT_ASSERT(!f.Finish(running).Success());
+            };
+            createDatabase();
+            const auto creating = f.Start(operation("active", "old-active-account"));
+            auto request = f.Take(f.Submissions);
+            const TString activeId = request->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->RequestId;
+            f.ReplyIam(*request, EDelegationOperationOutcome::Succeeded);
+            UNIT_ASSERT(f.Finish(creating).Success());
+            const auto original = f.Delegation(activeId).GetDelegation();
+            const TString oldIncarnation = original.GetDatabaseIncarnation();
+
+            const auto accepted = f.Start(operation("accepted", "accepted-account"));
+            request = f.Take(f.Submissions);
+            const TString acceptedId = request->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->RequestId;
+            f.ReplyIam(*request, EDelegationOperationOutcome::Accepted, "tenant-setup-operation");
+            auto latePoll = f.Take(f.Polls);
+            UNIT_ASSERT_VALUES_EQUAL(latePoll->Get<TEvIamDelegation::TEvPollDelegationOperation>()->OperationId,
+                "tenant-setup-operation");
+            stop(accepted);
+
+            const auto unknown = f.Start(operation("unknown", "unknown-account"));
+            auto lateSetup = f.Take(f.Submissions); // the initial remote reply is lost
+            const TString unknownId = lateSetup->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->RequestId;
+            stop(unknown);
+            UNIT_ASSERT(f.Delegation(unknownId).GetDelegation().GetSetupOperationId().empty());
+
+            TAutoPtr<IEventHandle> lateStart;
+            f.Intercept = [&](auto& event) {
+                if (event->GetTypeRewrite() == TEvIamDelegationTablet::TEvRequest::EventType
+                    && event->GetRecipientRewrite() == f.TabletActor
+                    && event->template Get<TEvIamDelegationTablet::TEvRequest>()->Record.HasStartSetup()) {
+                    UNIT_ASSERT(!lateStart);
+                    lateStart.Reset(event.Release());
+                    return EAction::DROP;
+                }
+                return EAction::PROCESS;
+            };
+            const auto undispatched = f.Start(operation("undispatched", "undispatched-account"));
+            f.Until([&] { return bool(lateStart); });
+            const TString undispatchedId = lateStart->Get<TEvIamDelegationTablet::TEvRequest>()->Record.GetStartSetup().GetOperationId();
+            stop(undispatched);
+            f.Intercept = {};
+            UNIT_ASSERT_VALUES_EQUAL(f.Delegation(undispatchedId).GetDelegation().GetSetupState(), P::SETUP_NOT_STARTED);
+            UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 3);
+
+            UNIT_ASSERT(f.Scheme([](auto& scheme) {
+                scheme.SetWorkingDir("/Root");
+                scheme.SetOperationType(NKikimrSchemeOp::ESchemeOpForceDropSubDomain);
+                scheme.MutableDrop()->SetName("database");
+            }).Success());
+            UNIT_ASSERT_VALUES_EQUAL(f.Describe("database").GetStatus(), NKikimrScheme::StatusPathDoesNotExist);
+            // The independent service tablet remains available after actual schema teardown.
+            P::TRequest inventory;
+            inventory.MutableListInventory()->SetDatabaseIncarnation(oldIncarnation);
+            inventory.MutableListInventory()->SetPageSize(100);
+            UNIT_ASSERT_VALUES_EQUAL(f.Tablet(inventory).DelegationsSize(), 4);
+            createDatabase();
+            const auto replacement = f.Start(operation("active", "new-active-account"));
+            request = f.Take(f.Submissions);
+            const TString newId = request->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->RequestId;
+            f.ReplyIam(*request, EDelegationOperationOutcome::Succeeded);
+            UNIT_ASSERT(f.Finish(replacement).Success());
+            const auto newRecord = f.Delegation(newId).GetDelegation();
+            UNIT_ASSERT_VALUES_UNEQUAL(newRecord.GetDatabaseIncarnation(), oldIncarnation);
+            UNIT_ASSERT_VALUES_UNEQUAL(newRecord.GetSecret().SerializeAsString(), original.GetSecret().SerializeAsString());
+            savedActive = activeId;
+            savedAccepted = acceptedId;
+            savedUnknown = unknownId;
+            savedUndispatched = undispatchedId;
+            savedNew = newId;
+            oldDatabase = oldIncarnation;
+            replacementSchema = f.Describe("database/active");
+            for (const auto& id : {savedActive, savedAccepted, savedUnknown, savedUndispatched, savedNew}) {
+                before[id] = f.Delegation(id).GetDelegation();
+            }
+            clock = f.Runtime.GetCurrentTime();
+        } // All original actors and storage services are destroyed here.
+
+        TTestContext reopened(storage(EDiskOpen::Reopen), TOrchestratorFixture::TabletId);
+        auto& runtime = reopened.GetRuntime();
+        runtime.UpdateCurrentTime(Max(clock, runtime.GetCurrentTime()));
+        for (const auto& [id, expected] : before) {
+            P::TRequest read;
+            read.MutableGetDelegation()->SetOperationId(id);
+            UNIT_ASSERT_VALUES_EQUAL(reopened.Call(read).GetDelegation().SerializeAsString(), expected.SerializeAsString());
+        }
+        enum class ECleanupIam { Outage, Recovered };
+        auto iamMode = ECleanupIam::Outage;
+        ui32 setupPolls = 0;
+        ui32 revokeCalls = 0;
+        THashMap<TString, P::TDelegation> observed;
+        runtime.RegisterService(MakeTxProxyID(), runtime.AllocateEdgeActor());
+        runtime.RegisterService(MakeIamDelegationServiceId(), runtime.AllocateEdgeActor());
+        const auto previousSchedule = runtime.SetScheduledEventFilter([](auto&, auto&, auto, auto&) { return false; });
+        Y_DEFER { runtime.SetScheduledEventFilter(previousSchedule); };
+        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& event) {
+            if (event->GetTypeRewrite() == TEvTxUserProxy::TEvNavigate::EventType) {
+                const auto& request = event->Get<TEvTxUserProxy::TEvNavigate>()->Record;
+                auto reply = MakeHolder<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResultBuilder>();
+                if (request.GetDescribePath().GetPath() == "/Root/database/active") {
+                    reply->Record = replacementSchema;
+                } else {
+                    reply->Record.SetStatus(NKikimrScheme::StatusPathDoesNotExist);
+                }
+                // Controlled observation after reopening: the real preceding runtime
+                // already proved force-drop/name reuse; this only supplies its state.
+                runtime.Send(new IEventHandle(event->Sender, event->Recipient, reply.Release(), 0, event->Cookie));
+                return EAction::DROP;
+            }
+            if (event->GetTypeRewrite() == TEvIamDelegation::TEvPollDelegationOperation::EventType) {
+                UNIT_ASSERT_VALUES_EQUAL(event->Get<TEvIamDelegation::TEvPollDelegationOperation>()->OperationId,
+                    "tenant-setup-operation");
+                ++setupPolls;
+                TDelegationOperationResult result;
+                result.Outcome = EDelegationOperationOutcome::Succeeded;
+                result.Status = Ydb::StatusIds::SUCCESS;
+                result.OperationId = "tenant-setup-operation";
+                runtime.Send(new IEventHandle(event->Sender, event->Recipient,
+                    new TEvIamDelegation::TEvDelegationOperationResult(std::move(result)), 0, event->Cookie));
+                return EAction::DROP;
+            }
+            if (event->GetTypeRewrite() == TEvIamDelegation::TEvSubmitDelegationOperation::EventType) {
+                const auto& request = *event->Get<TEvIamDelegation::TEvSubmitDelegationOperation>();
+                UNIT_ASSERT(request.Kind == EDelegationOperationKind::Revoke);
+                UNIT_ASSERT(request.RequestId == savedActive || request.RequestId == savedAccepted);
+                UNIT_ASSERT_VALUES_UNEQUAL(request.Binding.ReferrerId, before.at(savedNew).GetBinding().GetReferrerId());
+                ++revokeCalls;
+                TDelegationOperationResult result;
+                result.Outcome = iamMode == ECleanupIam::Recovered
+                    ? EDelegationOperationOutcome::Succeeded : EDelegationOperationOutcome::Unknown;
+                result.Status = iamMode == ECleanupIam::Recovered ? Ydb::StatusIds::SUCCESS : Ydb::StatusIds::UNAVAILABLE;
+                runtime.Send(new IEventHandle(event->Sender, event->Recipient,
+                    new TEvIamDelegation::TEvDelegationOperationResult(std::move(result)), 0, event->Cookie));
+                return EAction::DROP;
+            }
+            if (event->GetTypeRewrite() == TEvIamDelegationTablet::TEvResponse::EventType) {
+                const auto& reply = event->Get<TEvIamDelegationTablet::TEvResponse>()->Record;
+                if (reply.GetStatus() == P::SUCCESS && reply.HasDelegation()) {
+                    observed[reply.GetDelegation().GetOperationId()] = reply.GetDelegation();
+                }
+            }
+            return EAction::PROCESS;
+        });
+        Y_DEFER { runtime.SetObserverFunc(TTestActorRuntimeBase::DefaultObserverFunc); };
+        const auto until = [&](auto condition) {
+            TDispatchOptions options;
+            options.CustomFinalCondition = condition;
+            options.FinalEvents.emplace_back([](IEventHandle&) { return false; });
+            runtime.DispatchEvents(options, TDuration::Minutes(10));
+            UNIT_ASSERT(condition());
+        };
+        auto worker = runtime.Register(CreateIamDelegationRecoveryWorker(reopened.GetTabletId()));
+        runtime.EnableScheduleForActor(worker);
+        until([&] {
+            return observed[savedActive].GetRevokeConsecutiveFailures() >= 1
+                && observed[savedAccepted].GetRevokeConsecutiveFailures() >= 1
+                && observed[savedUnknown].GetState() == P::WAITING_SETUP
+                && observed[savedUndispatched].GetState() == P::CANCELLED;
+        });
+        runtime.Send(new IEventHandle(worker, {}, new TEvents::TEvPoison));
+        reopened.Reboot();
+        const auto read = [&](const TString& id) {
+            P::TRequest request;
+            request.MutableGetDelegation()->SetOperationId(id);
+            return reopened.Call(request).GetDelegation();
+        };
+        const auto activeAge = read(savedActive).GetCleanupQueuedAtUs();
+        const auto acceptedAge = read(savedAccepted).GetCleanupQueuedAtUs();
+        UNIT_ASSERT(activeAge && acceptedAge);
+        UNIT_ASSERT_VALUES_EQUAL(read(savedNew).SerializeAsString(), before.at(savedNew).SerializeAsString());
+        UNIT_ASSERT(!read(savedUnknown).HasCleanupQueuedAtUs());
+        iamMode = ECleanupIam::Recovered;
+        worker = runtime.Register(CreateIamDelegationRecoveryWorker(reopened.GetTabletId()));
+        runtime.EnableScheduleForActor(worker);
+        until([&] { return observed[savedActive].GetState() == P::REVOKED
+            && observed[savedAccepted].GetState() == P::REVOKED; });
+        runtime.Send(new IEventHandle(worker, {}, new TEvents::TEvPoison));
+        reopened.Reboot();
+        UNIT_ASSERT_VALUES_EQUAL(read(savedActive).GetCleanupQueuedAtUs(), activeAge);
+        UNIT_ASSERT_VALUES_EQUAL(read(savedAccepted).GetCleanupQueuedAtUs(), acceptedAge);
+        UNIT_ASSERT_VALUES_EQUAL(read(savedNew).SerializeAsString(), before.at(savedNew).SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(read(savedUnknown).GetState(), P::WAITING_SETUP);
+        UNIT_ASSERT(read(savedUnknown).GetSetupOperationId().empty());
+        UNIT_ASSERT_VALUES_EQUAL(setupPolls, 1);
+        UNIT_ASSERT(revokeCalls >= 4);
+        P::TRequest inventory;
+        inventory.MutableListInventory()->SetDatabaseIncarnation(oldDatabase);
+        inventory.MutableListInventory()->SetPageSize(100);
+        const auto retained = reopened.Call(inventory);
+        UNIT_ASSERT_VALUES_EQUAL(retained.DelegationsSize(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(retained.GetDelegations(0).GetOperationId(), savedUnknown);
+    }
+
+    Y_UNIT_TEST(ReplacementGuardUsesOriginalTenMinuteBoundaryAfterRestart) {
+        TOrchestratorFixture f;
+        const auto currentId = f.Create();
+        const auto current = f.Delegation(currentId);
+        P::TRequest stage;
+        auto* intent = stage.MutableStage();
+        intent->SetMode(P::ALTER);
+        intent->SetOperationId("pending-before-restart");
+        intent->SetDatabaseIncarnation(current.GetDelegation().GetDatabaseIncarnation());
+        intent->SetSecretPath(current.GetDelegation().GetSecretPath());
+        intent->SetCreateTxId(current.GetDelegation().GetCreateTxId());
+        *intent->MutableSecret() = current.GetSecret().GetIdentity();
+        intent->SetExpectedSecretRevision(current.GetSecret().GetRevision());
+        *intent->MutableBinding() = current.GetDelegation().GetBinding();
+        intent->MutableBinding()->SetServiceAccountId("account-2");
+        intent->MutableBinding()->SetReferrerId("boundary-pending-referrer");
+        auto pending = f.Tablet(std::move(stage)).GetDelegation();
+        const auto originalStagedAt = pending.GetStagedAtUs();
+        P::TRequest start;
+        start.MutableStartSetup()->SetOperationId(pending.GetOperationId());
+        start.MutableStartSetup()->SetExpectedRevision(pending.GetRevision());
+        pending = f.Tablet(std::move(start)).GetDelegation();
+        P::TRequest outcome;
+        outcome.MutableSetSetupResult()->SetOperationId(pending.GetOperationId());
+        outcome.MutableSetSetupResult()->SetExpectedRevision(pending.GetRevision());
+        outcome.MutableSetSetupResult()->SetOutcome(P::SETUP_UNKNOWN);
+        pending = f.Tablet(std::move(outcome)).GetDelegation();
+        f.Runtime.AdvanceCurrentTime(TDuration::Minutes(9));
+        f.RebootTablet();
+        const auto before = f.Delegation(pending.GetOperationId());
+        UNIT_ASSERT_VALUES_EQUAL(before.GetDelegation().GetStagedAtUs(), originalStagedAt);
+        const auto deadline = TInstant::MicroSeconds(originalStagedAt) + TDuration::Minutes(10);
+        TActorId coordinator;
+        TInstant decisionTime = deadline - TDuration::MicroSeconds(1);
+        ui32 observedDecisions = 0;
+        f.Intercept = [&](auto& event) {
+            if (event->GetTypeRewrite() == TEvIamDelegationTablet::TEvResponse::EventType
+                && event->GetRecipientRewrite() == coordinator) {
+                const auto& response = event->template Get<TEvIamDelegationTablet::TEvResponse>()->Record;
+                if (response.HasDelegation() && response.GetDelegation().GetOperationId() == pending.GetOperationId()
+                    && response.GetDelegation().GetState() == P::PENDING) {
+                    UNIT_ASSERT(f.Runtime.GetCurrentTime() <= decisionTime);
+                    f.Runtime.UpdateCurrentTime(decisionTime);
+                    ++observedDecisions;
+                }
+            }
+            return EAction::PROCESS;
+        };
+        // Position the clock at delivery of the exact state the guard consumes,
+        // after all reboot/pipe recovery and asynchronous authorization work.
+        const auto early = f.Start(f.Operation(true, "account-3"), true);
+        coordinator = early.Actor;
+        const auto denied = f.Finish(early);
+        UNIT_ASSERT(denied.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::PRECONDITION_FAILED));
+        UNIT_ASSERT_VALUES_EQUAL(observedDecisions, 1);
+        UNIT_ASSERT_VALUES_EQUAL(f.Runtime.GetCurrentTime(), decisionTime);
+        const auto unchanged = f.Delegation(pending.GetOperationId());
+        UNIT_ASSERT_VALUES_EQUAL(unchanged.GetDelegation().SerializeAsString(), before.GetDelegation().SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(unchanged.GetSecret().SerializeAsString(), before.GetSecret().SerializeAsString());
+        UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 1);
+
+        decisionTime = deadline;
+        const auto admitted = f.Start(f.Operation(true, "account-3"), true);
+        coordinator = admitted.Actor;
+        auto setup = f.Take(f.Submissions);
+        UNIT_ASSERT_VALUES_EQUAL(observedDecisions, 2);
+        UNIT_ASSERT_VALUES_EQUAL(setup->Get<TEvIamDelegation::TEvSubmitDelegationOperation>()->Binding.ServiceAccountId, "account-3");
+        f.ReplyIam(*setup, EDelegationOperationOutcome::Succeeded);
+        UNIT_ASSERT(f.Finish(admitted).Success());
+        const auto retained = f.Delegation(pending.GetOperationId()).GetDelegation();
+        UNIT_ASSERT_VALUES_EQUAL(retained.GetState(), P::WAITING_SETUP);
+        UNIT_ASSERT_VALUES_EQUAL(retained.GetSetupState(), P::SETUP_UNKNOWN);
+        UNIT_ASSERT_VALUES_EQUAL(retained.GetStagedAtUs(), originalStagedAt);
+        UNIT_ASSERT_VALUES_EQUAL(f.SetupBindings.size(), 2);
+        UNIT_ASSERT(f.RevokeBindings.empty());
+        UNIT_ASSERT_VALUES_EQUAL(f.Read()->Token, "token-for-account-3");
+    }
+
 }
 
 } // namespace NKikimr::NKqp

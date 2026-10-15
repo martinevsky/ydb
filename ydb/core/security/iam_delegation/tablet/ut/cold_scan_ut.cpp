@@ -298,6 +298,107 @@ Y_UNIT_TEST_SUITE(IamDelegationColdScans) {
             UNIT_ASSERT_VALUES_EQUAL(record.GetClaim().GetAttempt(), 1);
         }
     }
+    Y_UNIT_TEST(PromotionAndDropRetryColdReadsWithoutPartialLifecycleTransitions) {
+        TTestContext ctx;
+        TPageReadEvidence evidence(ctx);
+        ctx.Call(RegisterRequest(DatabaseIdentity()));
+        EnableSmallCompactions(ctx, {TSchema::Secrets::TableId, TSchema::Delegations::TableId,
+            TSchema::Inventory::TableId, TSchema::Revocations::TableId});
+        struct TPair {
+            NProto::TSecretIdentity Identity;
+            NProto::TDelegation Old;
+            NProto::TDelegation Ready;
+            NProto::TRequest Promote;
+            NProto::TRequest Drop;
+            TString UnknownId;
+        };
+        TVector<TPair> pairs;
+        constexpr ui32 count = 20;
+        for (ui32 index = 0; index < count; ++index) {
+            const TString suffix = ToString(index);
+            TPair pair;
+            pair.Identity = SecretIdentity(100 + index);
+            const auto oldId = "old-" + suffix;
+            auto old = ctx.Call(StageCreateRequest(oldId, WideBinding(oldId),
+                "/Root/database/secret-" + suffix, "database-incarnation-1", 100 + index)).GetDelegation();
+            old = ctx.Call(BindRequest(old, pair.Identity)).GetDelegation();
+            old = CompleteSetup(ctx, old).GetDelegation();
+            pair.Old = ctx.Call(PromoteRequest(old, GetSecret(ctx, pair.Identity).GetRevision())).GetDelegation();
+            const auto nextId = "next-" + suffix;
+            auto next = ctx.Call(StageAlterRequest(GetSecret(ctx, pair.Identity), nextId,
+                WideBinding(nextId))).GetDelegation();
+            pair.Ready = CompleteSetup(ctx, next).GetDelegation();
+            pair.Promote = PromoteRequest(pair.Ready, GetSecret(ctx, pair.Identity).GetRevision());
+            pair.UnknownId = "unknown-" + suffix;
+            pairs.push_back(std::move(pair));
+        }
+        UNIT_ASSERT(evidence.CompactedCollections > 0);
+        ctx.Reboot();
+        evidence.TransactionFetches = 0;
+        for (ui32 index = 0; index < count; ++index) {
+            auto& pair = pairs[index];
+            const auto promoted = ctx.Call(pair.Promote);
+            if (!index) {
+                UNIT_ASSERT_C(evidence.TransactionFetches > 1,
+                    "Promotion must retry actual cold reads before assertions warm the records");
+            }
+            UNIT_ASSERT_VALUES_EQUAL(promoted.GetDelegation().GetState(), NProto::ACTIVE);
+            UNIT_ASSERT_VALUES_EQUAL(promoted.GetDelegation().GetRevision(), pair.Ready.GetRevision() + 1);
+            UNIT_ASSERT_VALUES_EQUAL(promoted.GetSecret().GetCurrentOperationId(), pair.Ready.GetOperationId());
+            UNIT_ASSERT(promoted.GetSecret().GetPendingOperationId().empty());
+            const auto retired = GetDelegation(ctx, pair.Old.GetOperationId());
+            UNIT_ASSERT_VALUES_EQUAL(retired.GetState(), NProto::REVOCATION_PENDING);
+            UNIT_ASSERT_VALUES_EQUAL(retired.GetRevision(), pair.Old.GetRevision() + 1);
+            AssertBinding(retired, pair.Old.GetBinding());
+            ctx.Call(pair.Promote); // a stale CAS receipt cannot enqueue or promote twice
+            UNIT_ASSERT_VALUES_EQUAL(GetSecret(ctx, pair.Identity).SerializeAsString(), promoted.GetSecret().SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, retired.GetOperationId()).SerializeAsString(), retired.SerializeAsString());
+            auto unknown = ctx.Call(StageAlterRequest(promoted.GetSecret(), pair.UnknownId,
+                WideBinding(pair.UnknownId))).GetDelegation();
+            unknown = ctx.Call(StartRequest(unknown)).GetDelegation();
+            ctx.Call(SetupResultRequest(unknown, NProto::SETUP_UNKNOWN, "iam-" + pair.UnknownId));
+            pair.Drop = DropRequest(GetSecret(ctx, pair.Identity));
+        }
+        ctx.Reboot();
+        evidence.TransactionFetches = 0;
+        for (ui32 index = 0; index < count; ++index) {
+            const auto& pair = pairs[index];
+            const auto dropped = ctx.Call(pair.Drop);
+            if (!index) {
+                UNIT_ASSERT_C(evidence.TransactionFetches > 1,
+                    "Drop must retry cold active/pending reads before verification");
+            }
+            UNIT_ASSERT_VALUES_EQUAL(dropped.GetSecret().GetState(), NProto::SECRET_DROPPED);
+            UNIT_ASSERT(dropped.GetSecret().GetCurrentOperationId().empty());
+            UNIT_ASSERT(dropped.GetSecret().GetPendingOperationId().empty());
+            const auto current = GetDelegation(ctx, pair.Ready.GetOperationId());
+            const auto unknown = GetDelegation(ctx, pair.UnknownId);
+            UNIT_ASSERT_VALUES_EQUAL(current.GetState(), NProto::REVOCATION_PENDING);
+            UNIT_ASSERT_VALUES_EQUAL(unknown.GetState(), NProto::WAITING_SETUP);
+            UNIT_ASSERT_VALUES_EQUAL(unknown.GetSetupState(), NProto::SETUP_UNKNOWN);
+            ctx.Call(pair.Drop);
+            UNIT_ASSERT_VALUES_EQUAL(GetSecret(ctx, pair.Identity).SerializeAsString(), dropped.GetSecret().SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, pair.Ready.GetOperationId()).SerializeAsString(), current.SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, pair.UnknownId).SerializeAsString(), unknown.SerializeAsString());
+        }
+        ctx.Reboot();
+        const auto claims = ctx.Call(ClaimRequest("after-cold-transitions", 100));
+        UNIT_ASSERT_VALUES_EQUAL(claims.DelegationsSize(), count * 2);
+        TSet<TString> claimed;
+        for (const auto& delegation : claims.GetDelegations()) {
+            UNIT_ASSERT(claimed.insert(delegation.GetOperationId()).second);
+            UNIT_ASSERT_VALUES_EQUAL(delegation.GetSetupState(), NProto::SETUP_SUCCEEDED);
+            UNIT_ASSERT_VALUES_EQUAL(delegation.GetClaim().GetAttempt(), 1);
+        }
+        for (const auto& pair : pairs) {
+            UNIT_ASSERT(claimed.contains(pair.Old.GetOperationId()));
+            UNIT_ASSERT(claimed.contains(pair.Ready.GetOperationId()));
+            UNIT_ASSERT(!claimed.contains(pair.UnknownId));
+            UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, pair.UnknownId).GetState(), NProto::WAITING_SETUP);
+        }
+        UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListRequest()).DelegationsSize(), count * 3);
+    }
+
 }
 
 } // namespace NKikimr::NIamDelegation::NTests

@@ -290,3 +290,48 @@ Status: both codec regressions passed at `ac2c2d3e0b3`; full tablet target: 120/
 | --- | --- | --- |
 | `IamDelegationInventoryTokenCodec::SharedKeyStillBindsTheTabletIdentity` | [page_token_ut.cpp](../../page_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationInventoryTokenCodec::OptionalDatabaseAliasAndUnknownRegistryFieldsDoNotChangeIdentity` | [page_token_ut.cpp](../../page_token_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+
+#### Scenario: Committed acknowledgements outlive their old lease
+
+- **GIVEN** a committed success or retry acknowledgement in the current tablet generation.
+- **WHEN** the exact acknowledgement is replayed at and after its original lease deadline.
+- **THEN** its durable receipt remains exact and inventory is unchanged; a newer claim or tablet generation fences that old receipt.
+
+Contract coverage: iam-delegation-revocation / "Completed acknowledgement replay is exact".
+
+Status: Task 9 regression source added; first execution pending.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationRevocationBoundaries::CommittedSuccessAckReplaysAtAndAfterExpiredLease` | [revocation_boundaries_ut.cpp](../../revocation_boundaries_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationRevocationBoundaries::CommittedRetryAckReplaysPastLeaseUntilNextClaim` | [revocation_boundaries_ut.cpp](../../revocation_boundaries_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+
+#### Scenario: Cold promotion and retirement remain atomic
+
+- **GIVEN** twenty active/pending pairs compacted onto cold storage pages.
+- **WHEN** promotion and drop retry actual page reads, and stale requests are replayed.
+- **THEN** canonical identities, revisions and inventory agree; forty successful retired bindings are claimed once and twenty unresolved setups remain unclaimable.
+
+Contract coverage: iam-delegation-lifecycle / "Recovery preserves committed state under storage failures"; iam-delegation-revocation / "Claim batches are bounded and atomic".
+
+Status: Task 9 regression source added; first execution pending. Page-fetch counters establish actual cold reads; assertions verify committed canonical/index effects rather than an in-memory storage substitute.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationColdScans::PromotionAndDropRetryColdReadsWithoutPartialLifecycleTransitions` | [cold_scan_ut.cpp](../../cold_scan_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+
+#### Scenario: Seeded recovery retains diagnostics and cleanup history
+
+- **GIVEN** independent expected lifecycle roles, saved bindings, failure classifications and cleanup-time windows.
+- **WHEN** delayed setup outcomes, replacement, identity reuse, repeated revoke failures, accepted remote progress and takeover interleave across transaction crash boundaries.
+- **THEN** terminal diagnostics, consecutive failure history, remote operation IDs and original cleanup age match the model; unknown setups stay unclaimable and old generations cannot complete later work.
+
+Contract coverage: iam-delegation-lifecycle / "Recovery preserves committed state under storage failures"; iam-delegation-revocation / "Revocation retries use standard backoff and typed reasons"; "Outstanding cleanup is operator-visible".
+
+Status: Task 9 extends the existing six-round schedules with seeds 1, 330 and 20261013; execution of these extensions is pending. Cleanup timestamps are independently bounded at their originating transitions, then checked for exact preservation. These actor-runtime schedules do not claim live IAM or real-thread race coverage.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationRecoveryChaos::Seed1` | [recovery_chaos_ut.cpp](../../recovery_chaos_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationRecoveryChaos::Seed330` | [recovery_chaos_ut.cpp](../../recovery_chaos_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+| `IamDelegationRecoveryChaos::Seed20261013` | [recovery_chaos_ut.cpp](../../recovery_chaos_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |

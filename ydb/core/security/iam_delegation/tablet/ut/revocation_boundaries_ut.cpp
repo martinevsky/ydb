@@ -254,6 +254,34 @@ void FinishReplay(NProto::ERevokeOutcome outcome) {
 
 } // namespace
 
+void CheckCommittedAckReplayPastDeadline(NProto::ERevokeOutcome outcome) {
+    TTestContext ctx;
+    QueueDefault(ctx);
+    const auto claim = ClaimWithMaxLease(ctx);
+    const auto ack = FinishRequest(claim, outcome,
+        outcome == NProto::REVOKE_RETRY ? TDuration::Minutes(5) : TDuration::Zero());
+    const auto completed = ctx.Call(ack).GetDelegation();
+    const auto inventory = ctx.Call(ListRequest());
+    AdvanceTo(ctx, claim.GetClaim().GetDeadlineUs());
+    UNIT_ASSERT_VALUES_EQUAL(CallWithoutClockAdvance(ctx, ack).GetDelegation().SerializeAsString(),
+        completed.SerializeAsString());
+    ctx.AdvanceTime(TDuration::Seconds(1));
+    UNIT_ASSERT_VALUES_EQUAL(CallWithoutClockAdvance(ctx, ack).GetDelegation().SerializeAsString(),
+        completed.SerializeAsString());
+    UNIT_ASSERT_VALUES_EQUAL(ctx.Call(ListRequest()).SerializeAsString(), inventory.SerializeAsString());
+    if (outcome == NProto::REVOKE_RETRY) {
+        AdvanceTo(ctx, completed.GetDueAtUs());
+        const auto replacement = ClaimWithMaxLease(ctx);
+        ctx.Call(ack, NProto::STALE_CLAIM);
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").SerializeAsString(), replacement.SerializeAsString());
+        ctx.Call(FinishRequest(replacement));
+    }
+    ctx.Reboot();
+    ctx.Call(ack, NProto::STALE_CLAIM);
+    UNIT_ASSERT_VALUES_EQUAL(GetDelegation(ctx, "create-1").GetState(), NProto::REVOKED);
+}
+
+
 Y_UNIT_TEST_SUITE(IamDelegationRevocationBoundaries) {
     Y_UNIT_TEST(LegacyQueuedRecordKeepsUnknownAgeAfterClaimAndRetry) {
         TTestContext ctx;
@@ -595,6 +623,15 @@ Y_UNIT_TEST_SUITE(IamDelegationRevocationBoundaries) {
         UNIT_ASSERT_VALUES_EQUAL(next.GetClaim().GetAttempt(), claim.GetClaim().GetAttempt() + 1);
         ctx.Call(FinishRequest(next));
     }
+
+    Y_UNIT_TEST(CommittedSuccessAckReplaysAtAndAfterExpiredLease) {
+        CheckCommittedAckReplayPastDeadline(NProto::REVOKE_SUCCEEDED);
+    }
+    Y_UNIT_TEST(CommittedRetryAckReplaysPastLeaseUntilNextClaim) {
+        CheckCommittedAckReplayPastDeadline(NProto::REVOKE_RETRY);
+    }
+
+
 }
 
 } // namespace NKikimr::NIamDelegation::NTests

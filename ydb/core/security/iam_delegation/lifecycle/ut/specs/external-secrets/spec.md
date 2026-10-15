@@ -274,3 +274,17 @@ Contract coverage: external-secret-consumers / Acquisition state belongs to its 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
 | `IamDelegationTabletClient::CancellingCoroutineClosesItsTabletClientBeforeTimeout` | [client_ut.cpp](../../client_ut.cpp) | `ydb/core/security/iam_delegation/lifecycle/ut` |
+
+#### Scenario: Registrations behind a scan cursor are eventually recovered
+
+- **GIVEN** a recovery sweep paused after receiving its exclusive registry cursor.
+- **WHEN** a new database is registered before that cursor in sort order.
+- **THEN** the next sweep discovers it while later databases and the next record in an existing database retain fair progress and the minimum one-second pause.
+
+Contract coverage: iam-delegation-revocation / "Revocation retries use standard backoff and typed reasons"; iam-delegation-lifecycle / "Recovery preserves committed state under storage failures".
+
+Status: Task 9 regression source added; first execution pending. The fixture uses the real worker and tablet with controlled unavailable schema responses; no IAM submission or poll is expected.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationRecoveryWorker::DatabaseInsertedBehindActiveCursorIsFoundOnNextSweep` | [worker_ut.cpp](../../worker_ut.cpp) | `ydb/core/security/iam_delegation/lifecycle/ut` |

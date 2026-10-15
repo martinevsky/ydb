@@ -755,6 +755,42 @@ Y_UNIT_TEST_SUITE(IamDelegationRecoveryWorker) {
         f.Until([&] { return f.LastDelegations["z"].HasSecret(); });
         UNIT_ASSERT_VALUES_EQUAL(GetDelegation(f.Tablet, "z").GetSecret().GetPathLocalId(), 43);
     }
+    Y_UNIT_TEST(DatabaseInsertedBehindActiveCursorIsFoundOnNextSweep) {
+        TWorkerFixture f;
+        f.Tablet.Call(RegisterRequest(DatabaseIdentity("b", "/Root/b", "id-b")));
+        f.Tablet.Call(RegisterRequest(DatabaseIdentity("d", "/Root/d", "id-d")));
+        for (const TString operation : {"b-first", "b-second"}) {
+            f.Tablet.Call(StageCreateRequest(operation, Binding(operation), "/Root/b/" + operation, "b"));
+        }
+        f.Tablet.Call(StageCreateRequest("d-only", Binding("d-only"), "/Root/d/only", "d"));
+        f.Start();
+        auto first = f.Take(f.Descriptions);
+        UNIT_ASSERT_VALUES_EQUAL(first->Get<TEvTxUserProxy::TEvNavigate>()->Record.GetDescribePath().GetPath(),
+            "/Root/b/b-first");
+        // The registry page for b has already returned an exclusive cursor. The
+        // insertion must not be lost merely because it sorts before that cursor.
+        f.Tablet.Call(RegisterRequest(DatabaseIdentity("a", "/Root/a", "id-a")));
+        f.Tablet.Call(StageCreateRequest("a-new", Binding("a-new"), "/Root/a/new", "a"));
+        NKikimrScheme::TEvDescribeSchemeResult unavailable;
+        unavailable.SetStatus(NKikimrScheme::StatusNotAvailable);
+        auto previousReplyAt = f.Runtime.GetCurrentTime();
+        f.ReplySchema(*first, unavailable);
+        for (const TString expected : {"/Root/d/only", "/Root/a/new", "/Root/b/b-second"}) {
+            auto describe = f.Take(f.Descriptions);
+            UNIT_ASSERT_VALUES_EQUAL(describe->Get<TEvTxUserProxy::TEvNavigate>()->Record.GetDescribePath().GetPath(),
+                expected);
+            UNIT_ASSERT_C(f.Runtime.GetCurrentTime() - previousReplyAt >= TDuration::Seconds(1),
+                "Registry fairness must preserve the minimum inter-turn pacing");
+            previousReplyAt = f.Runtime.GetCurrentTime();
+            f.ReplySchema(*describe, unavailable);
+        }
+        f.Stop();
+        UNIT_ASSERT_VALUES_EQUAL(f.SubmissionCount, 0);
+        UNIT_ASSERT_VALUES_EQUAL(f.PollCount, 0);
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(f.Tablet, "a-new").GetState(), NProto::PENDING);
+        UNIT_ASSERT_VALUES_EQUAL(GetDelegation(f.Tablet, "b-second").GetState(), NProto::PENDING);
+    }
+
 }
 
 } // namespace NKikimr::NIamDelegation::NTests

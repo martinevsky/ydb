@@ -230,3 +230,31 @@ Contract coverage: external-secret-schema; external-secret-consumers.
 | `KqpIamDelegationSecretOrchestrator::MetadataRemainsAvailableDuringIamOutageWithoutMint` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
 | `KqpIamDelegationSecretOrchestrator::SelectRowRevocationWhileMintHeldPreventsValueReturn` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
 | `KqpIamDelegationSecretOrchestrator::ValueAccessNeedsSelectRowWithoutDescribeSchema` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+
+#### Scenario: Replacement uses the original persisted guard deadline
+
+- **GIVEN** an unresolved pending replacement and a tablet restart nine minutes after staging.
+- **WHEN** a new replacement reaches the guard one microsecond before, then exactly at, the original ten-minute deadline.
+- **THEN** the earlier attempt is refused without mutation or IAM dispatch; the boundary attempt succeeds and retains the unresolved old binding for recovery.
+
+Contract coverage: iam-delegation-lifecycle / "Retiring pending work preserves responsibility" — scenario "Replacement attempted during the pending guard".
+
+Status: Task 9 regression source added; first execution pending. The fixture positions virtual time when the coordinator receives the durable state used by the guard, after authorization and pipe recovery.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `KqpIamDelegationSecretOrchestrator::ReplacementGuardUsesOriginalTenMinuteBoundaryAfterRestart` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+
+#### Scenario: Tenant deletion survives complete storage reopening
+
+- **GIVEN** a real tenant with active, accepted, unknown and undispatched setup records in the service-owned tablet.
+- **WHEN** real SchemeShard force-drops the tenant, the same names are recreated, all actors/storage services are destroyed, and the existing PDisk is reopened in a fresh runtime.
+- **THEN** saved bindings and immutable identities survive; accepted setup is polled, known successful cleanup drains after an outage and worker/tablet takeover, unknown setup stays visible and unclaimed, and new identities remain unchanged.
+
+Contract coverage: iam-delegation-lifecycle / "Durable ownership survives tenant deletion"; iam-delegation-revocation / "Cleanup uses the saved binding" and "Uncertain setup is excluded from cleanup claims".
+
+Status: Task 10 regression source added; first execution pending. The first runtime performs actual force-drop and name reuse. The second reopens the physical 8 GiB PDisk without formatting and runs the real tablet/worker, with controlled schema observations copied from the first runtime and controlled IAM outcomes. It does not reopen a full SchemeShard cluster or prove production placement. Deployment must place the service tablet outside the managed tenant.
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `KqpIamDelegationSecretOrchestrator::PopulatedTenantCleanupSurvivesWholeRuntimeDiskReopen` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
