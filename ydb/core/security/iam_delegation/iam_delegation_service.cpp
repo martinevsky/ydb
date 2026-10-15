@@ -175,6 +175,7 @@ private:
                             || code == grpc::StatusCode::INVALID_ARGUMENT || code == grpc::StatusCode::OUT_OF_RANGE
                             || code == grpc::StatusCode::NOT_FOUND || code == grpc::StatusCode::UNIMPLEMENTED) {
                         result.Outcome = EDelegationOperationOutcome::Failed;
+                        result.FailureReasons = ExtractIamFailureReasons(status);
                     }
                     // ALREADY_EXISTS and FAILED_PRECONDITION can describe an earlier, still
                     // unfinished delegation. They do not establish that setup failed.
@@ -191,9 +192,17 @@ private:
             if (!operation.done()) {
                 result.Outcome = EDelegationOperationOutcome::Accepted;
             } else if (operation.has_error()) {
-                result.Outcome = EDelegationOperationOutcome::Failed;
-                SetOperationError(result, MapGrpcStatus(operation.error().code()),
-                    TStringBuilder() << operation.error().message() << ExplainIamFailure(operation.error()));
+                if (operation.error().code() == grpc::StatusCode::OK) {
+                    // Contradictory terminal data does not prove that a grant
+                    // failed. Retain the operation ID and durable uncertainty.
+                    SetOperationError(result, Ydb::StatusIds::INTERNAL_ERROR,
+                        "IAM returned a completed operation with a success-coded error; outcome is unknown");
+                } else {
+                    result.Outcome = EDelegationOperationOutcome::Failed;
+                    result.FailureReasons = ExtractIamFailureReasons(operation.error());
+                    SetOperationError(result, MapGrpcStatus(operation.error().code()),
+                        TStringBuilder() << operation.error().message() << ExplainIamFailure(operation.error()));
+                }
             } else {
                 result.Outcome = EDelegationOperationOutcome::Succeeded;
             }

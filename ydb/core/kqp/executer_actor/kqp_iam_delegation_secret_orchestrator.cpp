@@ -10,6 +10,7 @@
 #include <ydb/core/base/iam_delegation.h>
 #include <ydb/core/security/iam_delegation/lifecycle/operations.h>
 #include <ydb/core/security/iam_delegation/lifecycle/schema.h>
+#include <ydb/core/security/iam_delegation/tablet/public/setup_failure.h>
 #include <ydb/core/security/iam_delegation/iam_actor_base.h>
 
 #include <ydb/core/security/iam_delegation/settings.h>
@@ -503,6 +504,9 @@ protected:
             setup->SetOutcome(result.Outcome == EDelegationOperationOutcome::Succeeded ? P::SETUP_SUCCEEDED
                 : result.Outcome == EDelegationOperationOutcome::Failed ? P::SETUP_FAILED : P::SETUP_UNKNOWN);
             setup->SetSetupOperationId(result.OperationId);
+            if (result.Outcome == EDelegationOperationOutcome::Failed) {
+                *setup->MutableSetupFailure() = MakeSetupFailure(result);
+            }
             const auto saved = co_await CallIamDelegationTablet(TabletId, std::move(update));
             if (saved.GetStatus() == P::SUCCESS) {
                 co_return saved.GetDelegation();
@@ -543,11 +547,22 @@ protected:
             }
             delegation = (co_await ReadOperation(delegation.GetOperationId())).GetDelegation();
         }
+        if (delegation.GetSetupState() == P::SETUP_FAILED) {
+            if (delegation.HasSetupFailure() && IsValidSetupFailure(delegation.GetSetupFailure())) {
+                const auto& failure = delegation.GetSetupFailure();
+                co_return MakeError(failure.GetStatus(), DescribeSetupFailure(failure));
+            }
+            // Historical records have no durable diagnostics. A local terminal
+            // response can still supply its safe status/reasons, never raw text.
+            if (result.Outcome == EDelegationOperationOutcome::Failed) {
+                const auto failure = MakeSetupFailure(result);
+                co_return MakeError(failure.GetStatus(), DescribeSetupFailure(failure));
+            }
+            co_return MakeError(Ydb::StatusIds::UNAVAILABLE, "IAM refused delegation setup");
+        }
         if (delegation.GetSetupState() != P::SETUP_SUCCEEDED) {
-            auto failure = MakeError(delegation.GetSetupState() == P::SETUP_FAILED && result.Status != Ydb::StatusIds::SUCCESS
-                ? result.Status : Ydb::StatusIds::UNAVAILABLE,
-                delegation.GetSetupState() == P::SETUP_FAILED ? "IAM refused delegation setup"
-                    : "IAM setup outcome is not yet known; the durable intent is retained for recovery");
+            auto failure = MakeError(Ydb::StatusIds::UNAVAILABLE,
+                "IAM setup outcome is not yet known; the durable intent is retained for recovery");
             for (const auto& issue : result.Issues) {
                 failure.AddIssue(issue);
             }

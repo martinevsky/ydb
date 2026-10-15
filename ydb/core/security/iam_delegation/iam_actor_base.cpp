@@ -4,6 +4,8 @@
 
 #include <google/rpc/error_details.pb.h>
 
+#include <algorithm>
+
 namespace NKikimr::NIamDelegation {
 
 bool IsRetryableGrpcStatus(const NYdbGrpc::TGrpcStatus& status) {
@@ -70,6 +72,57 @@ TString ExplainIamFailure(const NYdbGrpc::TGrpcStatus& status) {
         return {};
     }
     return ExplainIamFailure(rpcStatus);
+}
+
+namespace {
+constexpr size_t MaxIamFailureDetailsBytes = 64 * 1024;
+struct TIamFailureType {
+    TStringBuf Type;
+    EDelegationFailureReason Reason;
+};
+constexpr TIamFailureType SafeFailureTypes[] = {
+    {"BAD_SERVICE_ACCOUNT_CLOUD", EDelegationFailureReason::WrongCloud},
+    {"SERVICE_NOT_ENABLED", EDelegationFailureReason::ServiceNotEnabled},
+    {"SYSTEM_FOLDER_NOT_FOUND", EDelegationFailureReason::ServiceNotEnabled},
+    {"AGENT_SA_NOT_FOUND", EDelegationFailureReason::ServiceNotEnabled},
+    {"RESOURCE_CONTAINER_SETTINGS_NOT_FOUND", EDelegationFailureReason::ServiceNotEnabled},
+    {"RESOURCE_CONTAINER_NOT_FOUND", EDelegationFailureReason::CloudNotFound},
+    {"SERVICE_ACCOUNT_NOT_FOUND", EDelegationFailureReason::ServiceAccountNotFound},
+    {"SUBJECT_NOT_FOUND", EDelegationFailureReason::SubjectNotDelegatable},
+    {"BAD_SUBJECT_TYPE", EDelegationFailureReason::SubjectNotDelegatable},
+};
+} // namespace
+
+TVector<EDelegationFailureReason> ExtractIamFailureReasons(const google::rpc::Status& status) {
+    TVector<EDelegationFailureReason> reasons;
+    if (status.ByteSizeLong() > MaxIamFailureDetailsBytes) {
+        return reasons;
+    }
+    for (const auto& detail : status.details()) {
+        google::rpc::PreconditionFailure failure;
+        if (!detail.Is<google::rpc::PreconditionFailure>() || !detail.UnpackTo(&failure)) {
+            continue;
+        }
+        for (const auto& violation : failure.violations()) {
+            for (const auto& known : SafeFailureTypes) {
+                if (TStringBuf(violation.type()) == known.Type) {
+                    if (std::find(reasons.begin(), reasons.end(), known.Reason) == reasons.end()) {
+                        reasons.push_back(known.Reason);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    return reasons;
+}
+
+TVector<EDelegationFailureReason> ExtractIamFailureReasons(const NYdbGrpc::TGrpcStatus& status) {
+    google::rpc::Status details;
+    if (status.Details.size() > MaxIamFailureDetailsBytes || !details.ParseFromString(status.Details)) {
+        return {};
+    }
+    return ExtractIamFailureReasons(details);
 }
 
 Ydb::StatusIds::StatusCode MapGrpcStatus(int code) {

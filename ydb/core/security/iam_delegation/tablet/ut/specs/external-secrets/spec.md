@@ -180,7 +180,7 @@ Contract coverage: iam-delegation-revocation / "Completed acknowledgement replay
 - **WHEN** commit/reply loss, cold reads, tablet restart and fresh-runtime disk reopening occur.
 - **THEN** records and replay receipts retain their values atomically; duplicate ACKs do not advance history, and legacy records remain readable.
 
-Status: partially covered by the refusal regressions listed below; execution is pending. Any additional backoff or cancellation assertions remain planned and do not contribute to executed counts.
+Status: partially covered by the refusal regressions listed below; follow-up RED evidence is recorded, with GREEN verification pending. Additional backoff or cancellation assertions remain planned and do not contribute to executed counts.
 
 Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics"; iam-delegation-revocation / "Revocation retries use standard backoff and typed reasons"; "Outstanding cleanup is operator-visible".
 
@@ -190,7 +190,7 @@ Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain th
 - **WHEN** typed refusal details are committed, replayed after reboot, omitted by a legacy replay, or supplied with invalid/conflicting data.
 - **THEN** the status and reasons persist atomically; exact or legacy replay preserves the saved result; invalid requests mutate no canonical or inventory records; conflicting terminal data cannot rewrite history; the active binding is unchanged.
 
-Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+Status: partial RED behavior observed before the broader run was interrupted after symbolization timeouts; complete GREEN verification is pending. These cases do not contribute to the historical verified count above.
 
 Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics".
 
@@ -206,7 +206,7 @@ Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain th
 - **WHEN** the result transaction crashes before commit, after durable commit before Complete, or loses its reply.
 - **THEN** recovery observes the entire old or committed result and pending-slot update; replay preserves diagnostics without changing the active binding or creating cleanup work.
 
-Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+Status: partial RED behavior observed before the broader run was interrupted after symbolization timeouts; complete GREEN verification is pending. These cases do not contribute to the historical verified count above.
 
 Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics"; "Recovery preserves committed state under storage failures".
 
@@ -222,7 +222,7 @@ Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain th
 - **WHEN** all actors are discarded and the same disk is reopened in two fresh runtimes.
 - **THEN** serialized delegation, secret and active records remain unchanged; exact replay succeeds and conflicting details are rejected.
 
-Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+Status: partial RED behavior observed before the broader run was interrupted after symbolization timeouts; complete GREEN verification is pending. These cases do not contribute to the historical verified count above.
 
 Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics"; "Recovery preserves committed state under storage failures".
 

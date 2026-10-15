@@ -1,4 +1,5 @@
 #include "tablet.h"
+#include "public/setup_failure.h"
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/path.h>
@@ -463,6 +464,10 @@ struct TIamDelegationTablet::TTxRequest final
         if (request.GetSetupOperationId().size() > 256) {
             return Error(INVALID_ARGUMENT, "Setup operation ID exceeds the accepted bound");
         }
+        if (request.HasSetupFailure()
+            && (request.GetOutcome() != SETUP_FAILED || !IsValidSetupFailure(request.GetSetupFailure()))) {
+            return Error(INVALID_ARGUMENT, "Setup failure requires a bounded non-success status and unique known reasons");
+        }
         TDelegation record;
         if (const auto status = ReadDelegation(db, request.GetOperationId(), record); status != EReadStatus::Ready) {
             return ReadError(status, "Delegation");
@@ -481,6 +486,12 @@ struct TIamDelegationTablet::TTxRequest final
         const TString setupOperationId = request.GetSetupOperationId().empty()
             ? record.GetSetupOperationId() : request.GetSetupOperationId();
         if (record.GetSetupState() == request.GetOutcome() && record.GetSetupOperationId() == setupOperationId) {
+            // An omitted payload is a legacy replay, never permission to erase
+            // diagnostics. Terminal results cannot be enriched or rewritten.
+            if (request.HasSetupFailure() && (!record.HasSetupFailure()
+                || request.GetSetupFailure().SerializeAsString() != record.GetSetupFailure().SerializeAsString())) {
+                return Error(CONFLICT, "The setup outcome was already completed with different diagnostics");
+            }
             return Reply(record, &secret);
         }
         if (record.GetRevision() != request.GetExpectedRevision()
@@ -495,6 +506,9 @@ struct TIamDelegationTablet::TTxRequest final
         record.SetSetupState(request.GetOutcome());
         record.SetSetupOperationId(setupOperationId);
         if (request.GetOutcome() == SETUP_FAILED) {
+            if (request.HasSetupFailure()) {
+                *record.MutableSetupFailure() = request.GetSetupFailure();
+            }
             record.SetState(CANCELLED);
             if (secret.GetPendingOperationId() == record.GetOperationId()) {
                 secret.ClearPendingOperationId();

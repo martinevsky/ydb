@@ -54,6 +54,11 @@ TString ExplainIamFailure(const google::rpc::Status& status);
 // The gRPC error details carry a serialized google.rpc.Status.
 TString ExplainIamFailure(const NYdbGrpc::TGrpcStatus& status);
 
+// Bounded allowlist for durable diagnostics. Unknown types and oversized or
+// malformed remote details contribute no reason; no remote text is returned.
+TVector<EDelegationFailureReason> ExtractIamFailureReasons(const google::rpc::Status& status);
+TVector<EDelegationFailureReason> ExtractIamFailureReasons(const NYdbGrpc::TGrpcStatus& status);
+
 Ydb::StatusIds::StatusCode MapGrpcStatus(int code);
 
 // A request event of a ycloud actor client (NCloud::TEvGrpcProtoRequest): the proto to fill and the credentials.

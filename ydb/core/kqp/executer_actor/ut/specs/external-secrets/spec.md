@@ -160,7 +160,7 @@ Contract coverage: external-secret-schema / "Stored-secret compatibility" — sc
 - **WHEN** the coordinator resumes, including after storage restart, or is cancelled before a late result.
 - **THEN** recovery returns the recorded IAM status/issues with the old binding intact; a cancelled coordinator emits no late result.
 
-Status: partially covered by the refusal regressions listed below; execution is pending. Any additional backoff or cancellation assertions remain planned and do not contribute to executed counts.
+Status: partially covered by the refusal regressions listed below; follow-up RED evidence is recorded, with GREEN verification pending. Additional backoff or cancellation assertions remain planned and do not contribute to executed counts.
 
 Contract coverage: external-secret-schema / "DDL asynchronous state belongs to the coordinator coroutine" — scenario "Late response after coordinator cancellation"; "Setup fails for an account not delegable in its cloud" — scenario "Recovery owns the terminal refusal".
 
@@ -170,7 +170,7 @@ Contract coverage: external-secret-schema / "DDL asynchronous state belongs to t
 - **WHEN** the worker owns submission or polling and commits a refusal before the coordinator resumes, with or without tablet reboot.
 - **THEN** the statement returns saved UNAUTHORIZED and the refusal issue; the old active record and token remain intact; no revoke or extra setup is dispatched.
 
-Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+Status: RED behavior observed in the follow-up validation; the production fix awaits GREEN verification. These cases do not contribute to the historical verified count above.
 
 Contract coverage: external-secret-schema / "Setup fails for an account not delegable in its cloud" — scenario "Recovery owns the terminal refusal".
 
@@ -187,7 +187,7 @@ Contract coverage: external-secret-schema / "Setup fails for an account not dele
 - **WHEN** submission or polling returns denial with safe typed reasons and a raw credential sentinel.
 - **THEN** the coordinator returns the mapped status without the sentinel, persists only safe diagnostics across reboot, and preserves the active binding and token.
 
-Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+Status: RED behavior observed in the follow-up validation; the production fix awaits GREEN verification. These cases do not contribute to the historical verified count above.
 
 Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics".
 
@@ -202,7 +202,7 @@ Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain th
 - **WHEN** the tablet restarts and the original coordinator resumes from its held Stage reply.
 - **THEN** the statement returns the generic UNAVAILABLE refusal without resubmitting setup, rewriting the terminal record or replacing the active binding.
 
-Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+Status: RED behavior observed in the follow-up validation; the production fix awaits GREEN verification. These cases do not contribute to the historical verified count above.
 
 Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics" (legacy compatibility).
 

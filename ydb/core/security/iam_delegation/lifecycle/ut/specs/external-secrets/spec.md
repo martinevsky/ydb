@@ -193,7 +193,7 @@ Contract coverage: iam-delegation-lifecycle / "Lifecycle state is owned independ
 - **WHEN** the worker sends setup on the saved initiating subject's behalf and IAM returns a known terminal denial.
 - **THEN** the mapped denial is persisted, no binding is activated, and a waiting coordinator can recover the original refusal without resubmitting setup.
 
-Status: partially covered by the refusal regressions listed below; execution is pending. Any additional backoff or cancellation assertions remain planned and do not contribute to executed counts.
+Status: partially covered by the refusal regressions listed below; follow-up RED evidence is recorded, with GREEN verification pending. Additional backoff or cancellation assertions remain planned and do not contribute to executed counts.
 
 Contract coverage: iam-delegation-lifecycle / "Intent precedes remote setup" (dispatch-time authorization clause); "Terminal setup failures retain their diagnostics" — scenario "Recovery records refusal before the coordinator resumes".
 
@@ -223,7 +223,7 @@ Contract coverage: iam-delegation-lifecycle / "Modes and outcomes use typed enum
 - **WHEN** IAM denies submission or polling with repeated typed reasons and a credential-bearing raw issue.
 - **THEN** the worker saves the mapped denial and deduplicated reason across reboot; pending clears without activation or revocation; the credential sentinel is absent from durable state. IAM is mocked at the event boundary.
 
-Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+Status: RED behavior observed in the follow-up validation; the production fix awaits GREEN verification. These cases do not contribute to the historical verified count above.
 
 Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics"; "Intent precedes remote setup".
 

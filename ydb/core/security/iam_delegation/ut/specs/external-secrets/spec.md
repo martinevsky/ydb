@@ -185,7 +185,7 @@ Contract coverage: iam-delegated-token-acquisition / "Refresh operation state be
 - **WHEN** the real IAM adapter processes the mocked service response.
 - **THEN** the diagnostic vector contains each of the five allowlisted reason groups once with the mapped denial status and no additional setup/revoke; the typed representation has no remote free-text field.
 
-Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+Status: RED behavior observed in the follow-up validation; the production fix awaits GREEN verification. These cases do not contribute to the historical verified count above.
 
 Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics".
 
@@ -200,7 +200,7 @@ Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain th
 - **WHEN** polling returns a done operation containing an error object with code OK.
 - **THEN** the adapter returns Unknown/INTERNAL_ERROR with the saved identifier; it sends no setup/revoke and does not treat the contradictory response as definitive failure.
 
-Status: regression source added; execution pending. These cases do not contribute to the historical verified count above.
+Status: RED behavior observed in the follow-up validation; the production fix awaits GREEN verification. These cases do not contribute to the historical verified count above.
 
 Contract coverage: iam-delegation-lifecycle / "Unknown setup is not a failed setup".
 

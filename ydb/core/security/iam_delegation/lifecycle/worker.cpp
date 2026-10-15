@@ -1,6 +1,7 @@
 #include "worker.h"
 #include "operations.h"
 #include "schema.h"
+#include <ydb/core/security/iam_delegation/tablet/public/setup_failure.h>
 
 #include <ydb/core/protos/schemeshard/operations.pb.h>
 #include <ydb/core/base/path.h>
@@ -130,6 +131,9 @@ private:
             setup->SetOutcome(result.Outcome == EDelegationOperationOutcome::Succeeded ? P::SETUP_SUCCEEDED
                 : result.Outcome == EDelegationOperationOutcome::Failed ? P::SETUP_FAILED : P::SETUP_UNKNOWN);
             setup->SetSetupOperationId(result.OperationId);
+            if (result.Outcome == EDelegationOperationOutcome::Failed) {
+                *setup->MutableSetupFailure() = MakeSetupFailure(result);
+            }
             const auto saved = co_await CallIamDelegationTablet(TabletId, std::move(update));
             if (saved.GetStatus() == P::SUCCESS) {
                 co_return;
@@ -223,6 +227,9 @@ private:
                 setup->SetExpectedRevision(delegation.GetRevision());
                 setup->SetOutcome(result.Outcome == EDelegationOperationOutcome::Succeeded ? P::SETUP_SUCCEEDED : P::SETUP_FAILED);
                 setup->SetSetupOperationId(delegation.GetSetupOperationId());
+                if (result.Outcome == EDelegationOperationOutcome::Failed) {
+                    *setup->MutableSetupFailure() = MakeSetupFailure(result);
+                }
                 auto saved = co_await CallIamDelegationTablet(TabletId, std::move(update));
                 if (saved.GetStatus() != P::SUCCESS) {
                     co_return;
