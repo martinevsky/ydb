@@ -8,6 +8,8 @@ Authoritative contracts: [consumers](../../../../../../../../services/scheme_sec
 
 ## Execution and evidence
 
+Latest recorded owning run: **54 GOOD** (full owning suite) at `9a2b73490817`, `final-fixtures-token-lifetime-green-parallel100`; actual combined command exit 0. Historical counts below retain their original revisions.
+
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/library/yql/providers/s3/actors/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below.
 
 Source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Status: **implemented and verified**, 50/50 GOOD in the full owning executable, with exact command exit 0. Per-case mappings cite the first verification at `2e7842af1181` (the fixture-correction revision); the final integration run at `66189ce6` re-executed the full owning executable at the current paths, 50/50 GOOD with the archived trace hash recorded in the verification record. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../../../../../core/security/iam_delegation/docs/external-secrets/verification.md). Historical results remain distinguished from this final run.
@@ -32,7 +34,7 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `TS3ParquetFooter::ParquetRangesAwaitCredentialsWithoutBlockingActor` | [yql_s3_read_actor_ut.cpp:443](../../yql_s3_read_actor_ut.cpp#L443) | `ydb/library/yql/providers/s3/actors/ut` |
+| `TS3ParquetFooter::ParquetRangesAwaitCredentialsWithoutBlockingActor` | [yql_s3_read_actor_ut.cpp](../../yql_s3_read_actor_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
 
 #### Scenario: Authorization failure before range request
 
@@ -46,7 +48,7 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `TS3ParquetFooter::ParquetAuthorizationFailureNeverStartsHttpRequest` | [yql_s3_read_actor_ut.cpp:459](../../yql_s3_read_actor_ut.cpp#L459) | `ydb/library/yql/providers/s3/actors/ut` |
+| `TS3ParquetFooter::ParquetAuthorizationFailureNeverStartsHttpRequest` | [yql_s3_read_actor_ut.cpp](../../yql_s3_read_actor_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
 
 #### Scenario: Cancellation before credentials resolve
 
@@ -60,7 +62,7 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `S3ExternalSecretCancellation::CancelBeforeCredentialsResolve` | [yql_s3_read_actor_ut.cpp:405](../../yql_s3_read_actor_ut.cpp#L405) | `ydb/library/yql/providers/s3/actors/ut` |
+| `S3ExternalSecretCancellation::CancelBeforeCredentialsResolve` | [yql_s3_read_actor_ut.cpp](../../yql_s3_read_actor_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
 
 #### Scenario: Streaming decoder cancellation precedes hook publication
 
@@ -74,7 +76,7 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `S3ExternalSecretCancellation::StreamingCancelBeforeHookPublication` | [yql_s3_read_actor_ut.cpp:366](../../yql_s3_read_actor_ut.cpp#L366) | `ydb/library/yql/providers/s3/actors/ut` |
+| `S3ExternalSecretCancellation::StreamingCancelBeforeHookPublication` | [yql_s3_read_actor_ut.cpp](../../yql_s3_read_actor_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
 
 #### Scenario: Repeated or concurrent cancellation and publication
 
@@ -88,9 +90,9 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `S3DownloadCancellation::CancelBeforePublication` | [download_cancellation_ut.cpp:12](../../download_cancellation_ut.cpp#L12) | `ydb/library/yql/providers/s3/actors/ut` |
-| `S3DownloadCancellation::CancelAfterPublication` | [download_cancellation_ut.cpp:23](../../download_cancellation_ut.cpp#L23) | `ydb/library/yql/providers/s3/actors/ut` |
-| `S3DownloadCancellation::ConcurrentPublicationAndCancellation` | [download_cancellation_ut.cpp:34](../../download_cancellation_ut.cpp#L34) | `ydb/library/yql/providers/s3/actors/ut` |
+| `S3DownloadCancellation::CancelBeforePublication` | [download_cancellation_ut.cpp](../../download_cancellation_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
+| `S3DownloadCancellation::CancelAfterPublication` | [download_cancellation_ut.cpp](../../download_cancellation_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
+| `S3DownloadCancellation::ConcurrentPublicationAndCancellation` | [download_cancellation_ut.cpp](../../download_cancellation_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
 
 #### Scenario: Reentrant cancel callback
 
@@ -104,8 +106,8 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `S3DownloadCancellation::ReentrantHookBeforePublication` | [download_cancellation_ut.cpp:68](../../download_cancellation_ut.cpp#L68) | `ydb/library/yql/providers/s3/actors/ut` |
-| `S3DownloadCancellation::ReentrantHookAfterPublication` | [download_cancellation_ut.cpp:56](../../download_cancellation_ut.cpp#L56) | `ydb/library/yql/providers/s3/actors/ut` |
+| `S3DownloadCancellation::ReentrantHookBeforePublication` | [download_cancellation_ut.cpp](../../download_cancellation_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
+| `S3DownloadCancellation::ReentrantHookAfterPublication` | [download_cancellation_ut.cpp](../../download_cancellation_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
 
 #### Scenario: Retry replaces a completed attempt hook
 
@@ -119,7 +121,7 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `S3DownloadCancellation::RetryReplacesCompletedAttemptHook` | [download_cancellation_ut.cpp:80](../../download_cancellation_ut.cpp#L80) | `ydb/library/yql/providers/s3/actors/ut` |
+| `S3DownloadCancellation::RetryReplacesCompletedAttemptHook` | [download_cancellation_ut.cpp](../../download_cancellation_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
 
 #### Scenario: Empty hook remains cancellable
 
@@ -133,7 +135,7 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `S3DownloadCancellation::EmptyHook` | [download_cancellation_ut.cpp:91](../../download_cancellation_ut.cpp#L91) | `ydb/library/yql/providers/s3/actors/ut` |
+| `S3DownloadCancellation::EmptyHook` | [download_cancellation_ut.cpp](../../download_cancellation_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
 
 #### Scenario: Ordinary streaming read completes
 
@@ -147,7 +149,7 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `S3ExternalSecretCancellation::StreamingReadStillCompletes` | [yql_s3_read_actor_ut.cpp:427](../../yql_s3_read_actor_ut.cpp#L427) | `ydb/library/yql/providers/s3/actors/ut` |
+| `S3ExternalSecretCancellation::StreamingReadStillCompletes` | [yql_s3_read_actor_ut.cpp](../../yql_s3_read_actor_ut.cpp) | `ydb/library/yql/providers/s3/actors/ut` |
 
 #### Scenario: Suspended credential coroutine is cancelled
 
@@ -155,7 +157,9 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 - **WHEN** cancellation releases the wait and credentials or gateway callbacks arrive late.
 - **THEN** no new download starts, destroyed operation state is not resumed, and an existing hook remains protected by synchronized exactly-once cancellation.
 
-Status: planned — no executable case yet; does not contribute to executed counts. Existing callback-based cancellation evidence above is preserved; it does not claim the coroutine refactor has run.
+Status: mapped executable cases passed at `8892e3bce7b2`, `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `S3ExternalSecretCancellation::CancelBeforeCredentialsResolve` ([source](../../yql_s3_read_actor_ut.cpp)); `S3WriterAsynchronousCredentials::StoppedWriterDropsPendingPartAndRetainsIndependentCleanup` ([source](../../yql_s3_write_actor_ut.cpp)); `AsynchronousCredentialOwnership::CancellationReleasesPayloadBeforeCredentialReply` ([source](../../../../../common/token_accessor/client/ut/async_credentials_ut.cpp)).
 
 Contract coverage: external-secret-s3-cancellation / "Credential waits use coroutine-owned operation state" — scenario "Cancellation while the credential coroutine is suspended".
 
@@ -165,7 +169,7 @@ Contract coverage: external-secret-s3-cancellation / "Credential waits use corou
 - **WHEN** a later range follows credential rotation or authorization denial.
 - **THEN** the range uses current credentials or fails without reusing the earlier token.
 
-Status: executable Task 8 regressions added; compilation and first execution pending. No behavior failure or passing result is claimed.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 Contract coverage: external-secret-consumers / Credentials are acquired for new external requests.
 

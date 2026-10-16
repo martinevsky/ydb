@@ -8,11 +8,13 @@ Authoritative contracts: [schema](../../../../executer_actor/openspec/changes/ex
 
 ## Execution and evidence
 
+Latest recorded owning run: **188 GOOD** (full owning suite) at `9a2b73490817`, `final-schema-provider-green-parallel100`; actual combined command exit 0. Historical counts below retain their original revisions.
+
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/core/kqp/provider/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
 
 Source baseline: `67a530cc28eb2269e75fe0b83f2bacf73a1cbe2a`, including C1 product commit `8795e8bd1b186fc53051e5dd79126d9347a0e1b3`. This component received coverage documentation only during the security relocation; historical source/evidence limits are recorded in the [durable verification record](../../../../../security/iam_delegation/docs/external-secrets/verification.md).
 
-Status: **historical executable coverage; no new execution claimed here**. The 166/166 post-relocation result covers only the three security targets, not this executable. Use the linked verification record for the actual historical commands and revisions. Planned scenarios have no executable case and do not contribute to executed counts.
+Historical evidence note: The 166/166 post-relocation result covers only the three security targets, not this executable. Use the linked verification record for the actual historical commands and revisions. Planned scenarios have no executable case and do not contribute to executed counts.
 
 Fixture boundary: SecretSettings constructs real expression nodes and parser issue contexts. KikimrIcGateway uses TKikimrRunner and the public query client with schema/delegation flags but without IAM configuration; its EXPLAIN probes do not dispatch IAM.
 
@@ -34,8 +36,8 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `SecretSettings::CreateDelegationPassesOnlySourceParameters` | [secret_settings_ut.cpp:21](../../../secret_settings_ut.cpp#L21) | `ydb/core/kqp/provider/ut` |
-| `SecretSettings::AlterInfersDelegationSourceFromResource` | [secret_settings_ut.cpp:35](../../../secret_settings_ut.cpp#L35) | `ydb/core/kqp/provider/ut` |
+| `SecretSettings::CreateDelegationPassesOnlySourceParameters` | [secret_settings_ut.cpp](../../../secret_settings_ut.cpp) | `ydb/core/kqp/provider/ut` |
+| `SecretSettings::AlterInfersDelegationSourceFromResource` | [secret_settings_ut.cpp](../../../secret_settings_ut.cpp) | `ydb/core/kqp/provider/ut` |
 
 #### Scenario: Invalid source options
 
@@ -49,8 +51,8 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `SecretSettings::RejectDuplicateAndUnsupportedOptions` | [secret_settings_ut.cpp:44](../../../secret_settings_ut.cpp#L44) | `ydb/core/kqp/provider/ut` |
-| `SecretSettings::RejectLegacySourceAndMixedValue` | [secret_settings_ut.cpp:57](../../../secret_settings_ut.cpp#L57) | `ydb/core/kqp/provider/ut` |
+| `SecretSettings::RejectDuplicateAndUnsupportedOptions` | [secret_settings_ut.cpp](../../../secret_settings_ut.cpp) | `ydb/core/kqp/provider/ut` |
+| `SecretSettings::RejectLegacySourceAndMixedValue` | [secret_settings_ut.cpp](../../../secret_settings_ut.cpp) | `ydb/core/kqp/provider/ut` |
 
 #### Scenario: EXPLAIN without provisioning
 
@@ -64,4 +66,4 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `KikimrIcGateway::ExplainDelegationSecretWithoutIamConfiguration` | [yql_kikimr_gateway_ut.cpp:328](../../../yql_kikimr_gateway_ut.cpp#L328) | `ydb/core/kqp/provider/ut` |
+| `KikimrIcGateway::ExplainDelegationSecretWithoutIamConfiguration` | [yql_kikimr_gateway_ut.cpp](../../../yql_kikimr_gateway_ut.cpp) | `ydb/core/kqp/provider/ut` |

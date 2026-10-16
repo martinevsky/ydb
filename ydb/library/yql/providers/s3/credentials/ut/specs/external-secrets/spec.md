@@ -8,6 +8,8 @@ Authoritative contracts: [consumers](../../../../../../../../services/scheme_sec
 
 ## Execution and evidence
 
+Latest recorded owning run: **4 GOOD** (full owning suite) at `8892e3bce7b2`, `final-review-full-green-parallel100`; actual combined command exit 1. Historical counts below retain their original revisions.
+
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/library/yql/providers/s3/credentials/ut`. A focused reproduction appends `-F 'TCredentials::Test'` using an exact mapping below. UNITTEST_FOR resolves credentials_ut.cpp from the parent library.
 
 Source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Status: **implemented and verified**, 4/4 GOOD in the full owning executable, with exact command exit 0. Per-case mappings cite the first verification at `2e7842af1181` (the fixture-correction revision); the final integration run at `66189ce6` re-executed the full owning executable at the current paths, 4/4 GOOD with the archived trace hash recorded in the verification record. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../../../../../core/security/iam_delegation/docs/external-secrets/verification.md). Historical results remain distinguished from this final run.
@@ -32,7 +34,7 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `TCredentials::CheckToken` | [credentials_ut.cpp:57](../../../credentials_ut.cpp#L57) | `ydb/library/yql/providers/s3/credentials/ut` |
+| `TCredentials::CheckToken` | [credentials_ut.cpp](../../../credentials_ut.cpp) | `ydb/library/yql/providers/s3/credentials/ut` |
 
 #### Scenario: AWS credential compatibility
 
@@ -46,7 +48,7 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `TCredentials::CheckAws` | [credentials_ut.cpp:62](../../../credentials_ut.cpp#L62) | `ydb/library/yql/providers/s3/credentials/ut` |
+| `TCredentials::CheckAws` | [credentials_ut.cpp](../../../credentials_ut.cpp) | `ydb/library/yql/providers/s3/credentials/ut` |
 
 #### Scenario: Asynchronous completion retains provider lifetime
 
@@ -60,7 +62,7 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `TCredentials::AsyncSuccessAfterWrapperDestruction` | [credentials_ut.cpp:68](../../../credentials_ut.cpp#L68) | `ydb/library/yql/providers/s3/credentials/ut` |
+| `TCredentials::AsyncSuccessAfterWrapperDestruction` | [credentials_ut.cpp](../../../credentials_ut.cpp) | `ydb/library/yql/providers/s3/credentials/ut` |
 
 #### Scenario: Asynchronous provider error propagates
 
@@ -74,4 +76,4 @@ Executable mapping (implemented and verified at `2e7842af1181`):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `TCredentials::AsyncFailureAfterWrapperDestruction` | [credentials_ut.cpp:86](../../../credentials_ut.cpp#L86) | `ydb/library/yql/providers/s3/credentials/ut` |
+| `TCredentials::AsyncFailureAfterWrapperDestruction` | [credentials_ut.cpp](../../../credentials_ut.cpp) | `ydb/library/yql/providers/s3/credentials/ut` |

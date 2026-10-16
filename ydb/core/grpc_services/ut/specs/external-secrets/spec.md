@@ -8,6 +8,8 @@ Authoritative contracts: [schema](../../../../kqp/executer_actor/openspec/change
 
 ## Execution and evidence
 
+Latest recorded owning run: **32 GOOD** (selected cases) at `913c0cb032a1`, `final-review-create-rpc-green-abort-red-parallel100`; actual combined command exit 1. Historical counts below retain their original revisions.
+
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/core/grpc_services/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
 
 Source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Status: **implemented and verified**, 20/20 GOOD in the feature-filtered cases (`-F 'DescribeSecretIamDelegation::*' -F 'ListDatabaseIamDelegations::*'`), with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../security/iam_delegation/docs/external-secrets/verification.md). These results describe that historical revision; new cases below require fresh execution.
@@ -32,9 +34,9 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `DescribeSecretIamDelegation::PlainSecretDoesNotReadTablet` | [rpc_describe_secret_ut.cpp:174](../../../rpc_describe_secret_ut.cpp#L174) | `ydb/core/grpc_services/ut` |
-| `DescribeSecretIamDelegation::AccessDeniedDoesNotReadTablet` | [rpc_describe_secret_ut.cpp:184](../../../rpc_describe_secret_ut.cpp#L184) | `ydb/core/grpc_services/ut` |
-| `ListDatabaseIamDelegations::UnauthorizedNeverReadsTablet` | [rpc_list_database_iam_delegations_ut.cpp:133](../../../rpc_list_database_iam_delegations_ut.cpp#L133) | `ydb/core/grpc_services/ut` |
+| `DescribeSecretIamDelegation::PlainSecretDoesNotReadTablet` | [rpc_describe_secret_ut.cpp](../../../rpc_describe_secret_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `DescribeSecretIamDelegation::AccessDeniedDoesNotReadTablet` | [rpc_describe_secret_ut.cpp](../../../rpc_describe_secret_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::UnauthorizedNeverReadsTablet` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
 
 #### Scenario: Coherent description revision
 
@@ -48,10 +50,10 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `DescribeSecretIamDelegation::DescribesCurrentAndPendingFromOneRevision` | [rpc_describe_secret_ut.cpp:191](../../../rpc_describe_secret_ut.cpp#L191) | `ydb/core/grpc_services/ut` |
-| `DescribeSecretIamDelegation::CreateWithUnknownSetupHasOnlyPendingBinding` | [rpc_describe_secret_ut.cpp:205](../../../rpc_describe_secret_ut.cpp#L205) | `ydb/core/grpc_services/ut` |
-| `DescribeSecretIamDelegation::ChangedRevisionRestartsAndDiscardsOldBinding` | [rpc_describe_secret_ut.cpp:216](../../../rpc_describe_secret_ut.cpp#L216) | `ydb/core/grpc_services/ut` |
-| `DescribeSecretIamDelegation::ConcurrentChangesHaveBoundedRetries` | [rpc_describe_secret_ut.cpp:231](../../../rpc_describe_secret_ut.cpp#L231) | `ydb/core/grpc_services/ut` |
+| `DescribeSecretIamDelegation::DescribesCurrentAndPendingFromOneRevision` | [rpc_describe_secret_ut.cpp](../../../rpc_describe_secret_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `DescribeSecretIamDelegation::CreateWithUnknownSetupHasOnlyPendingBinding` | [rpc_describe_secret_ut.cpp](../../../rpc_describe_secret_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `DescribeSecretIamDelegation::ChangedRevisionRestartsAndDiscardsOldBinding` | [rpc_describe_secret_ut.cpp](../../../rpc_describe_secret_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `DescribeSecretIamDelegation::ConcurrentChangesHaveBoundedRetries` | [rpc_describe_secret_ut.cpp](../../../rpc_describe_secret_ut.cpp) | `ydb/core/grpc_services/ut` |
 
 #### Scenario: Immutable description identity
 
@@ -65,9 +67,9 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `DescribeSecretIamDelegation::CreateIdentityMismatchDoesNotExposeBinding` | [rpc_describe_secret_ut.cpp:242](../../../rpc_describe_secret_ut.cpp#L242) | `ydb/core/grpc_services/ut` |
-| `DescribeSecretIamDelegation::DroppedSecretDoesNotExposeBinding` | [rpc_describe_secret_ut.cpp:252](../../../rpc_describe_secret_ut.cpp#L252) | `ydb/core/grpc_services/ut` |
-| `DescribeSecretIamDelegation::TabletUnavailableFailsDescription` | [rpc_describe_secret_ut.cpp:261](../../../rpc_describe_secret_ut.cpp#L261) | `ydb/core/grpc_services/ut` |
+| `DescribeSecretIamDelegation::CreateIdentityMismatchDoesNotExposeBinding` | [rpc_describe_secret_ut.cpp](../../../rpc_describe_secret_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `DescribeSecretIamDelegation::DroppedSecretDoesNotExposeBinding` | [rpc_describe_secret_ut.cpp](../../../rpc_describe_secret_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `DescribeSecretIamDelegation::TabletUnavailableFailsDescription` | [rpc_describe_secret_ut.cpp](../../../rpc_describe_secret_ut.cpp) | `ydb/core/grpc_services/ut` |
 
 #### Scenario: Retained inventory export
 
@@ -81,9 +83,9 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `ListDatabaseIamDelegations::ExplicitIncarnationExportsRetainedFullBinding` | [rpc_list_database_iam_delegations_ut.cpp:140](../../../rpc_list_database_iam_delegations_ut.cpp#L140) | `ydb/core/grpc_services/ut` |
-| `ListDatabaseIamDelegations::PathReuseRequiresExplicitIncarnation` | [rpc_list_database_iam_delegations_ut.cpp:163](../../../rpc_list_database_iam_delegations_ut.cpp#L163) | `ydb/core/grpc_services/ut` |
-| `ListDatabaseIamDelegations::RegisteredEmptyInventoryIsDistinctFromUnknownDatabase` | [rpc_list_database_iam_delegations_ut.cpp:261](../../../rpc_list_database_iam_delegations_ut.cpp#L261) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::ExplicitIncarnationExportsRetainedFullBinding` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::PathReuseRequiresExplicitIncarnation` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::RegisteredEmptyInventoryIsDistinctFromUnknownDatabase` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
 
 #### Scenario: Continuation and bounded validation
 
@@ -97,9 +99,9 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `ListDatabaseIamDelegations::ExpiredSnapshotRequiresCallerToRestart` | [rpc_list_database_iam_delegations_ut.cpp:231](../../../rpc_list_database_iam_delegations_ut.cpp#L231) | `ydb/core/grpc_services/ut` |
-| `ListDatabaseIamDelegations::InvalidPageSizeAndTokenDoNotReadTablet` | [rpc_list_database_iam_delegations_ut.cpp:242](../../../rpc_list_database_iam_delegations_ut.cpp#L242) | `ydb/core/grpc_services/ut` |
-| `ListDatabaseIamDelegations::RegistryScanHasBoundedWork` | [rpc_list_database_iam_delegations_ut.cpp:277](../../../rpc_list_database_iam_delegations_ut.cpp#L277) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::ExpiredSnapshotRequiresCallerToRestart` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::InvalidPageSizeAndTokenDoNotReadTablet` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
+| `ListDatabaseIamDelegations::RegistryScanHasBoundedWork` | [rpc_list_database_iam_delegations_ut.cpp](../../../rpc_list_database_iam_delegations_ut.cpp) | `ydb/core/grpc_services/ut` |
 
 #### Scenario: Metadata describes during an IAM outage
 
@@ -107,7 +109,9 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** DescribeSecret runs.
 - **THEN** the description succeeds from durable schema and tablet state without contacting IAM.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `913c0cb032a1`, `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `DescribeSecretIamDelegation::DescribesCurrentAndPendingFromOneRevision` ([source](../../../rpc_describe_secret_ut.cpp)); `KqpIamDelegationSecretOrchestrator::MetadataRemainsAvailableDuringIamOutageWithoutMint` ([source](../../../../kqp/executer_actor/kqp_iam_delegation_secret_orchestrator_ut.cpp)).
 
 Contract coverage: external-secret-schema / "Metadata is independent of token health" — scenario "IAM is unavailable during metadata access" (describe half).
 
@@ -117,7 +121,9 @@ Contract coverage: external-secret-schema / "Metadata is independent of token he
 - **WHEN** a continuation request arrives with an otherwise valid token.
 - **THEN** the continuation is rejected and no further records are disclosed.
 
-Status: executable cases mapped below; RED execution pending. No passing verification is claimed.
+Status: mapped executable cases passed at `913c0cb032a1`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `ListDatabaseIamDelegations::ContinuationRequiresFreshAdministrativeAuthorization` ([source](../../../rpc_list_database_iam_delegations_ut.cpp)).
 
 Contract coverage: iam-delegation-inventory / "Administrative export is authorized" — scenario "Authorization is revoked between pages".
 
@@ -127,7 +133,9 @@ Contract coverage: iam-delegation-inventory / "Administrative export is authoriz
 - **WHEN** the caller stops at the first short page.
 - **THEN** the caller has received every record exactly once.
 
-Status: executable cases mapped below; RED execution pending. No passing verification is claimed.
+Status: mapped executable cases passed at `913c0cb032a1`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `ListDatabaseIamDelegations::RealAuthenticatedPagesPreserveEverySameAccountReferrer` ([source](../../../rpc_list_database_iam_delegations_ut.cpp)).
 
 Contract coverage: iam-delegation-inventory / "Inventory pagination is revision-bound and bounded" — scenario "Consumer stops on a short page".
 
@@ -137,7 +145,9 @@ Contract coverage: iam-delegation-inventory / "Inventory pagination is revision-
 - **WHEN** the inventory is exported.
 - **THEN** each distinct referrer and its complete binding appears separately.
 
-Status: executable cases mapped below; RED execution pending. No passing verification is claimed.
+Status: mapped executable cases passed at `913c0cb032a1`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `ListDatabaseIamDelegations::RealAuthenticatedPagesPreserveEverySameAccountReferrer` ([source](../../../rpc_list_database_iam_delegations_ut.cpp)).
 
 Contract coverage: iam-delegation-inventory / "Inventory is authoritative beyond schema lifetime" — scenario "Multiple delegations use one account".
 
@@ -147,7 +157,9 @@ Contract coverage: iam-delegation-inventory / "Inventory is authoritative beyond
 - **WHEN** an authorized caller lists it while cleanup continues, loses the response or repeats enumeration.
 - **THEN** the saved binding, operation identifier and unsafe-revocation warning remain visible and cleanup responsibility stays with the tablet.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `913c0cb032a1`, `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `ListDatabaseIamDelegations::ExplicitIncarnationExportsRetainedFullBinding` ([source](../../../rpc_list_database_iam_delegations_ut.cpp)); `KqpIamDelegationSecretOrchestrator::PopulatedTenantCleanupSurvivesWholeRuntimeDiskReopen` ([source](../../../../kqp/executer_actor/kqp_iam_delegation_secret_orchestrator_ut.cpp)).
 
 Contract coverage: iam-delegation-inventory / "Tablet cleanup ownership survives database deletion" — scenarios "Tenant disappears with cleanup outstanding", "Inventory response is lost during deletion"; "Uncertain exports carry their resolution constraint" — scenario "Uncertain setup is listed after deletion"; "Listing is observational" — scenario "Concurrent setup during export".
 
@@ -157,7 +169,9 @@ Contract coverage: iam-delegation-inventory / "Tablet cleanup ownership survives
 - **WHEN** payload/tag fields are altered, the path is reused, storage reopens, or a mixed-version tablet lacks authenticated mode.
 - **THEN** valid continuations retain the signed identity, tampering is rejected, keys survive reopening, and unsupported mode fails closed; omitted/zero public page size still means 100.
 
-Status: executable cases mapped below; RED execution pending. No passing verification is claimed.
+Status: mapped executable cases passed at `913c0cb032a1`, `969b11b16a9d`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `ListDatabaseIamDelegations::AuthenticatedContinuationIsOpaqueAndSkipsRegistryDiscovery` ([source](../../../rpc_list_database_iam_delegations_ut.cpp)); `ListDatabaseIamDelegations::TabletRejectsTamperedContinuationWithoutRpcFallback` ([source](../../../rpc_list_database_iam_delegations_ut.cpp)); `IamDelegationStorageReopen::InventorySigningKeySurvivesWholeRuntimeReplacement` ([source](../../../../security/iam_delegation/tablet/ut/storage_reopen_ut.cpp)); `ListDatabaseIamDelegations::OldTabletCannotSilentlyDowngradeEmptyOrFinalPage` ([source](../../../rpc_list_database_iam_delegations_ut.cpp)); `ListDatabaseIamDelegations::AuthenticatedPageSizesRetainPublicZeroDefault` ([source](../../../rpc_list_database_iam_delegations_ut.cpp)).
 
 Contract coverage: iam-delegation-inventory / "Administrative export is authorized" — scenarios "Continuation payload is modified", "Database path is reused between pages"; "Authenticated pagination has an explicit protocol mode" — scenario "Tablet lacks authenticated pagination support"; "Inventory pagination is revision-bound and bounded" — scenario "Public page size uses the default".
 
@@ -167,7 +181,7 @@ Contract coverage: iam-delegation-inventory / "Administrative export is authoriz
 - **WHEN** an administrator enumerates across pages or evaluates configured age/failure thresholds.
 - **THEN** the RPC forwards authenticated tokens without rediscovery, refuses unsupported capability and unsigned v1 tokens, exports each same-account referrer separately, preserves unknown age, and exposes progress/recovery without changing cleanup ownership.
 
-Status: eight behavior regressions failed at `271e2c4f288`, with eleven existing/control cases passing. All mapped cases passed at `ac2c2d3e0b3` in `task7-green-buildfix-parallel100` (feature-filtered RPC target: 30/30 GOOD). The source mappings below also cover the authorization, enumeration and authenticated-continuation scenarios above.
+Status: mapped executable cases passed at `913c0cb032a1`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 Contract coverage: iam-delegation-inventory / "Administrative export is authorized"; "Authenticated pagination has an explicit protocol mode"; "Inventory pagination is revision-bound and bounded"; iam-delegation-revocation / "Outstanding cleanup is operator-visible".
 
@@ -190,7 +204,7 @@ Contract coverage: iam-delegation-inventory / "Administrative export is authoriz
 - **WHEN** its thirty-second deadline expires or the client departs, followed by a late tablet response.
 - **THEN** the child is stopped once, the RPC completes once through its existing status contract, and no further inventory request is sent.
 
-Status: both ownership preservation cases passed at `ac2c2d3e0b3`; feature-filtered RPC target: 30/30 GOOD.
+Status: mapped executable cases passed at `913c0cb032a1`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |

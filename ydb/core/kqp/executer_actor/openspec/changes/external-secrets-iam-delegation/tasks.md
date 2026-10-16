@@ -13,9 +13,11 @@ Restored baseline: `c68a9f3b2cafbdee3c6a3f870cb002166dda3dd7`. Selective-ALTER f
 
 - [x] 2.1 Validate this local OpenSpec change and its links, and review the relocation; verify strict validation and preservation of every requirement/scenario from the reviewed specification.
 
-## 3. DDL recovery follow-up (not yet implemented)
+## 3. DDL recovery follow-up
 
-- [ ] 3.1 Keep asynchronous request context, fences, replies and deadlines in the coordinator coroutine and use typed DDL modes.
-- [ ] 3.2 Let admitted CREATE intents recover after admission disable while rejecting new Stage; retain authenticated schema and immutable parent/database fences.
-- [ ] 3.3 Preserve pending work on no-op ALTER across all setup states, and return a worker-owned durable IAM refusal with its original status/issues.
-- [ ] 3.4 Add cancellation/late-response, lost Stage reply, cloud-resolution and actual tenant-teardown regressions.
+- [x] 3.1 Keep asynchronous request context, fences, replies and deadlines in the coordinator coroutine and use typed DDL modes.
+- [x] 3.2 Let admitted CREATE intents recover after admission disable while rejecting new Stage; retain authenticated schema and immutable parent/database fences.
+- [x] 3.3 Preserve pending work on no-op ALTER across all setup states, and return a worker-owned durable IAM refusal with its original status/issues.
+- [x] 3.4 Add cancellation/late-response, lost Stage reply, cloud-resolution and actual tenant-teardown regressions.
+
+Follow-up evidence: `ydb/core/kqp/executer_actor/ut` 146 GOOD at `9a2b73490817`. Exact commands, mixed-run exits and review findings are recorded in the shared verification record.

@@ -8,6 +8,8 @@ Authoritative contracts: [token](../../../../../../core/security/iam_delegation/
 
 ## Execution and evidence
 
+Latest recorded owning run: **48 GOOD** (full owning suite) at `1373e723886e`, `task8-10-acquisition-recovery-parallel100`; actual combined command exit 1. Historical counts below retain their original revisions.
+
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/services/scheme_secret/ut/fast`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
 
 Source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Status: **implemented and verified**, 42/42 GOOD in the full owning executable, with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../../../core/security/iam_delegation/docs/external-secrets/verification.md). Historical results remain distinguished from this final run.
@@ -32,7 +34,7 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `IamDelegationSecretReader::DefaultResolverAndConcurrentReaderWaitThroughRealProducerBackoff` | [iam_delegation_reader_ut.cpp:201](../../iam_delegation_reader_ut.cpp#L201) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::DefaultResolverAndConcurrentReaderWaitThroughRealProducerBackoff` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
 
 #### Scenario: Bounded phase timers and cancellation
 
@@ -40,16 +42,16 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** phase-specific timers fire, cancellation occurs or a late mint arrives.
 - **THEN** missing replies time out; stale token timers cannot truncate schema wait and cancelled readers ignore late mint/timer.
 
-Contract coverage: iam-delegated-token-acquisition / "Every wait remains finite and phase-specific" — scenarios "Token service never replies", "Earlier phase timeout arrives late"; "Caller policy and cancellation remain effective" — scenario "One concurrent caller cancels" (cancelled-caller half; the shared-result half is planned below).
+Contract coverage: iam-delegated-token-acquisition / "Every wait remains finite and phase-specific" — scenarios "Token service never replies", "Earlier phase timeout arrives late"; "Caller policy and cancellation remain effective" — scenario "One concurrent caller cancels" (both cancelled-caller and shared-result coverage is mapped below).
 
 Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `IamDelegationSecretReader::MissingTokenReplyTimesOutAndLateReplyIsIgnored` | [iam_delegation_reader_ut.cpp:280](../../iam_delegation_reader_ut.cpp#L280) | `ydb/services/scheme_secret/ut/fast` |
-| `IamDelegationSecretReader::StorageWaitRemainsBounded` | [iam_delegation_reader_ut.cpp:300](../../iam_delegation_reader_ut.cpp#L300) | `ydb/services/scheme_secret/ut/fast` |
-| `IamDelegationSecretReader::StaleTokenTimerDoesNotShortenBoundedSchemaWait` | [iam_delegation_reader_ut.cpp:312](../../iam_delegation_reader_ut.cpp#L312) | `ydb/services/scheme_secret/ut/fast` |
-| `IamDelegationSecretReader::CancelledReaderIgnoresLateMintAndTimer` | [iam_delegation_reader_ut.cpp:338](../../iam_delegation_reader_ut.cpp#L338) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::MissingTokenReplyTimesOutAndLateReplyIsIgnored` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::StorageWaitRemainsBounded` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::StaleTokenTimerDoesNotShortenBoundedSchemaWait` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::CancelledReaderIgnoresLateMintAndTimer` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
 
 #### Scenario: Expiry and post-mint identity/ACL check
 
@@ -63,13 +65,13 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `IamDelegationSecretReader::HeldTokenCannotCrossPromotion` | [iam_delegation_reader_ut.cpp:435](../../iam_delegation_reader_ut.cpp#L435) | `ydb/services/scheme_secret/ut/fast` |
-| `IamDelegationSecretReader::SchemaDropEndsAccessBeforeLifecycleWorkerRetiresBinding` | [iam_delegation_reader_ut.cpp:452](../../iam_delegation_reader_ut.cpp#L452) | `ydb/services/scheme_secret/ut/fast` |
-| `IamDelegationSecretReader::ReusedSchemaPathCannotReuseOldAuthorization` | [iam_delegation_reader_ut.cpp:463](../../iam_delegation_reader_ut.cpp#L463) | `ydb/services/scheme_secret/ut/fast` |
-| `IamDelegationSecretReader::AclRevocationDeniesAlreadyMintedValue` | [iam_delegation_reader_ut.cpp:469](../../iam_delegation_reader_ut.cpp#L469) | `ydb/services/scheme_secret/ut/fast` |
-| `IamDelegationSecretReader::TokenAtUsableDeadlineIsNotReturned` | [iam_delegation_reader_ut.cpp:475](../../iam_delegation_reader_ut.cpp#L475) | `ydb/services/scheme_secret/ut/fast` |
-| `IamDelegationSecretReader::TokenAtUsableDeadlineDuringSchemaCheckIsNotReturned` | [iam_delegation_reader_ut.cpp:357](../../iam_delegation_reader_ut.cpp#L357) | `ydb/services/scheme_secret/ut/fast` |
-| `IamDelegationSecretReader::CreatingOperationMismatchNeverMints` | [iam_delegation_reader_ut.cpp:427](../../iam_delegation_reader_ut.cpp#L427) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::HeldTokenCannotCrossPromotion` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::SchemaDropEndsAccessBeforeLifecycleWorkerRetiresBinding` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::ReusedSchemaPathCannotReuseOldAuthorization` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::AclRevocationDeniesAlreadyMintedValue` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::TokenAtUsableDeadlineIsNotReturned` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::TokenAtUsableDeadlineDuringSchemaCheckIsNotReturned` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::CreatingOperationMismatchNeverMints` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
 
 #### Scenario: Retry classification and caller budget
 
@@ -83,10 +85,10 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `IamDelegationSecretReader::SecretServiceRetriesEveryTransientMintStatusWithCallerPolicy` | [iam_delegation_reader_ut.cpp:369](../../iam_delegation_reader_ut.cpp#L369) | `ydb/services/scheme_secret/ut/fast` |
-| `IamDelegationSecretReader::SecretServiceUsesDefaultRetryPolicyForTransientMintFailure` | [iam_delegation_reader_ut.cpp:383](../../iam_delegation_reader_ut.cpp#L383) | `ydb/services/scheme_secret/ut/fast` |
-| `IamDelegationSecretReader::SecretServiceDoesNotRetryDefinitiveMintErrors` | [iam_delegation_reader_ut.cpp:391](../../iam_delegation_reader_ut.cpp#L391) | `ydb/services/scheme_secret/ut/fast` |
-| `IamDelegationSecretReader::SecretServiceHonorsCallerRetryBudgetAndFinalStatus` | [iam_delegation_reader_ut.cpp:405](../../iam_delegation_reader_ut.cpp#L405) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::SecretServiceRetriesEveryTransientMintStatusWithCallerPolicy` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::SecretServiceUsesDefaultRetryPolicyForTransientMintFailure` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::SecretServiceDoesNotRetryDefinitiveMintErrors` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `IamDelegationSecretReader::SecretServiceHonorsCallerRetryBudgetAndFinalStatus` | [iam_delegation_reader_ut.cpp](../../iam_delegation_reader_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
 
 #### Scenario: Fresh credentials per use
 
@@ -100,8 +102,8 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `RefreshingSecretCredentials::EveryUseReadsCurrentStateAndConcurrentUsesShareOneRead` | [secret_credentials_ut.cpp:77](../../secret_credentials_ut.cpp#L77) | `ydb/services/scheme_secret/ut/fast` |
-| `RefreshingSecretCredentials::BearerWrapperPreservesAsynchronousAcquisition` | [secret_credentials_ut.cpp:65](../../secret_credentials_ut.cpp#L65) | `ydb/services/scheme_secret/ut/fast` |
+| `RefreshingSecretCredentials::EveryUseReadsCurrentStateAndConcurrentUsesShareOneRead` | [secret_credentials_ut.cpp](../../secret_credentials_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `RefreshingSecretCredentials::BearerWrapperPreservesAsynchronousAcquisition` | [secret_credentials_ut.cpp](../../secret_credentials_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
 
 #### Scenario: Failure and safe structured metadata
 
@@ -115,8 +117,8 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `RefreshingSecretCredentials::FailedOrExpiredReadNeverServesPreviousValue` | [secret_credentials_ut.cpp:96](../../secret_credentials_ut.cpp#L96) | `ydb/services/scheme_secret/ut/fast` |
-| `RefreshingSecretCredentials::StructuredMetadataContainsIdentityButNoOriginalBearer` | [secret_credentials_ut.cpp:113](../../secret_credentials_ut.cpp#L113) | `ydb/services/scheme_secret/ut/fast` |
+| `RefreshingSecretCredentials::FailedOrExpiredReadNeverServesPreviousValue` | [secret_credentials_ut.cpp](../../secret_credentials_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
+| `RefreshingSecretCredentials::StructuredMetadataContainsIdentityButNoOriginalBearer` | [secret_credentials_ut.cpp](../../secret_credentials_ut.cpp) | `ydb/services/scheme_secret/ut/fast` |
 
 #### Scenario: Shared callers survive one cancellation
 
@@ -124,7 +126,9 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** one caller cancels.
 - **THEN** the cancelled acquisition coroutine releases its waits, late replies emit no credentials or second result, and the remaining callers still receive the shared result.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `1373e723886e`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `IamDelegationSecretReader::CancelledReaderLeavesSharedMintAndIndependentAuthorizationIntact` ([source](../../iam_delegation_reader_ut.cpp)).
 
 Contract coverage: iam-delegated-token-acquisition / "Caller policy and cancellation remain effective" — scenario "One concurrent caller cancels" (shared-result half); external-secret-consumers / "Acquisition state belongs to its coroutine" — scenario "Cancelled acquisition receives a late transport result".
 
@@ -134,7 +138,9 @@ Contract coverage: iam-delegated-token-acquisition / "Caller policy and cancella
 - **WHEN** a caller without value permission attaches to it, or callers with different permissions share a mint.
 - **THEN** each caller's authorization is enforced on its own result; sharing never grants access.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `1373e723886e`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `IamDelegationSecretReader::CancelledReaderLeavesSharedMintAndIndependentAuthorizationIntact` ([source](../../iam_delegation_reader_ut.cpp)); `DescribeSchemaSecretsService::MixedGrantsInBatch` ([source](../../service_ut.cpp)).
 
 Contract coverage: external-secret-consumers / "Shared resolution enforces per-caller authorization" — scenario "Unauthorized caller attaches to a shared resolution"; iam-delegated-token-acquisition / "Concurrent demand shares one producer" — scenario "Callers with different permissions share a mint".
 
@@ -144,7 +150,9 @@ Contract coverage: external-secret-consumers / "Shared resolution enforces per-c
 - **WHEN** they request the value or the metadata respectively.
 - **THEN** the SelectRow-only caller can read the value cold, and the metadata-only caller cannot obtain the value.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `KqpIamDelegationSecretOrchestrator::ValueAccessNeedsSelectRowWithoutDescribeSchema` ([source](../../../../../../core/kqp/executer_actor/kqp_iam_delegation_secret_orchestrator_ut.cpp)).
 
 Contract coverage: external-secret-consumers / "Value reads use their own permission" — scenarios "SelectRow-only cold read", "Metadata-only caller".
 
@@ -154,7 +162,7 @@ Contract coverage: external-secret-consumers / "Value reads use their own permis
 - **WHEN** a consumer reads for over one hour while platform credentials rotate before the first healthy refresh.
 - **THEN** autonomous refreshes use the current platform credential, subsequent reads receive current usable tokens, and no creator bearer is retained or sent.
 
-Status: passed at `271e2c4f288` in the full fast target (44/44 GOOD). This validates local credential selection, not live IAM authorization semantics.
+Status: mapped executable cases passed at `1373e723886e`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
@@ -166,7 +174,7 @@ Status: passed at `271e2c4f288` in the full fast target (44/44 GOOD). This valid
 - **WHEN** one IAM mint completes and abandoned timers subsequently arrive.
 - **THEN** only the allowed reader receives a token, the other readers retain their own authorization and identity results, and cancellation emits no reply or duplicate mint.
 
-Status: passed at `271e2c4f288` in the full fast target (44/44 GOOD). Controlled schema replies do not establish remote IAM sibling-referrer semantics.
+Status: mapped executable cases passed at `1373e723886e`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
@@ -178,7 +186,7 @@ Status: passed at `271e2c4f288` in the full fast target (44/44 GOOD). Controlled
 - **WHEN** the service is absent, shuts down, or navigation exceeds its deadline and later replies.
 - **THEN** all callers complete with failure, a subsequent attempt is independent, and late replies cannot complete newer work.
 
-Status: executable Task 8 regressions added; compilation and first execution pending. No behavior failure or passing result is claimed.
+Status: mapped executable cases passed at `1373e723886e`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 Contract coverage: external-secret-consumers / Acquisition state belongs to its coroutine.
 

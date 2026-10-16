@@ -8,6 +8,8 @@ Authoritative contracts: [lifecycle](../../../tablet/openspec/changes/external-s
 
 ## Execution and evidence
 
+Latest recorded owning run: **73 GOOD** (full owning suite) at `9a2b73490817`, `final-fixtures-token-lifetime-green-parallel100`; actual combined command exit 0. Historical counts below retain their original revisions.
+
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/core/security/iam_delegation/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
 
 Historical source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Historical status: **implemented and verified**, 57/57 GOOD in the full owning executable, with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../docs/external-secrets/verification.md). These counts apply only to that source revision; added cases below require separate fresh execution.
@@ -32,8 +34,8 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `IamDelegatedTokenActor::ConcurrentReadersShareMintAndReceiveUsableBoundary` | [iam_delegated_token_actor_ut.cpp:198](../../iam_delegated_token_actor_ut.cpp#L198) | `ydb/core/security/iam_delegation/ut` |
-| `IamDelegatedTokenActor::PersistedServiceIdentitySeparatesCachedTokens` | [iam_delegated_token_actor_ut.cpp:220](../../iam_delegated_token_actor_ut.cpp#L220) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::ConcurrentReadersShareMintAndReceiveUsableBoundary` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::PersistedServiceIdentitySeparatesCachedTokens` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
 
 #### Scenario: Strict lifetime boundary
 
@@ -41,14 +43,14 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** the producer validates them or reaches a cached token usable deadline.
 - **THEN** short tokens fail without a value and equality waits for a fresh mint.
 
-Contract coverage: iam-delegated-token-acquisition / "Served tokens have strictly more than five minutes remaining" — scenario "Exactly five minutes remain". The positive boundary ("Just before the usable deadline") is planned below.
+Contract coverage: iam-delegated-token-acquisition / "Served tokens have strictly more than five minutes remaining" — scenario "Exactly five minutes remain". The positive boundary ("Just before the usable deadline") is mapped below.
 
 Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `IamDelegatedTokenActor::TokensWithAtMostFiveMinutesRemainingAreRejected` | [iam_delegated_token_actor_ut.cpp:237](../../iam_delegated_token_actor_ut.cpp#L237) | `ydb/core/security/iam_delegation/ut` |
-| `IamDelegatedTokenActor::TokenAtUsableBoundaryWaitsForFreshMint` | [iam_delegated_token_actor_ut.cpp:249](../../iam_delegated_token_actor_ut.cpp#L249) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::TokensWithAtMostFiveMinutesRemainingAreRejected` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::TokenAtUsableBoundaryWaitsForFreshMint` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
 
 #### Scenario: Refresh failure and account-level denial
 
@@ -62,8 +64,8 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `IamDelegatedTokenActor::MalformedRefreshKeepsUsableCachedToken` | [iam_delegated_token_actor_ut.cpp:263](../../iam_delegated_token_actor_ut.cpp#L263) | `ydb/core/security/iam_delegation/ut` |
-| `IamDelegatedTokenActor::RevocationDiscardsCachedToken` | [iam_delegated_token_actor_ut.cpp:272](../../iam_delegated_token_actor_ut.cpp#L272) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::MalformedRefreshKeepsUsableCachedToken` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::RevocationDiscardsCachedToken` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
 
 #### Scenario: Polling budget and late transport replies
 
@@ -77,13 +79,13 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `IamDelegationActor::NoPollStartsAtTheDeadline` | [iam_delegation_actor_ut.cpp:417](../../iam_delegation_actor_ut.cpp#L417) | `ydb/core/security/iam_delegation/ut` |
-| `IamDelegationActor::PollResponseWaitIsClippedToDeadline` | [iam_delegation_actor_ut.cpp:430](../../iam_delegation_actor_ut.cpp#L430) | `ydb/core/security/iam_delegation/ut` |
-| `IamDelegationActor::CredentialsCannotOverrunPollDeadline` | [iam_delegation_actor_ut.cpp:443](../../iam_delegation_actor_ut.cpp#L443) | `ydb/core/security/iam_delegation/ut` |
-| `IamDelegationActor::RetryBackoffCannotStartAPollAfterDeadline` | [iam_delegation_actor_ut.cpp:457](../../iam_delegation_actor_ut.cpp#L457) | `ydb/core/security/iam_delegation/ut` |
-| `IamDelegationActor::ReplyAtDeadlineCannotStartARetry` | [iam_delegation_actor_ut.cpp:467](../../iam_delegation_actor_ut.cpp#L467) | `ydb/core/security/iam_delegation/ut` |
-| `IamDelegationActor::ConcurrentRequestsMatchOnlyTheirOwnCookies` | [iam_delegation_actor_ut.cpp:379](../../iam_delegation_actor_ut.cpp#L379) | `ydb/core/security/iam_delegation/ut` |
-| `IamDelegationActor::UndeliveredCallsAreRetriedAndLateRepliesAreIgnored` | [iam_delegation_actor_ut.cpp:399](../../iam_delegation_actor_ut.cpp#L399) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegationActor::NoPollStartsAtTheDeadline` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegationActor::PollResponseWaitIsClippedToDeadline` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegationActor::CredentialsCannotOverrunPollDeadline` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegationActor::RetryBackoffCannotStartAPollAfterDeadline` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegationActor::ReplyAtDeadlineCannotStartARetry` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegationActor::ConcurrentRequestsMatchOnlyTheirOwnCookies` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegationActor::UndeliveredCallsAreRetriedAndLateRepliesAreIgnored` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
 
 #### Scenario: Cancellation during credential subscription
 
@@ -97,7 +99,7 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `IamDelegationActor::PoisonDuringCredentialsWaitDisarmsTheSubscriptionWait` | [iam_delegation_actor_ut.cpp:492](../../iam_delegation_actor_ut.cpp#L492) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegationActor::PoisonDuringCredentialsWaitDisarmsTheSubscriptionWait` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
 
 #### Scenario: Minting never uses the original bearer
 
@@ -105,7 +107,9 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** a consumer acquires a token.
 - **THEN** minting proceeds on platform credentials and the saved binding.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `1373e723886e`, `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `IamDelegationSecretReader::LongLivedReaderMintsWithRotatedPlatformCredential` ([source](../../../../../../services/scheme_secret/ut/fast/iam_delegation_reader_ut.cpp)); `IamDelegatedTokenActor::RotatedSystemTokenAuthorizesBackgroundRefresh` ([source](../../iam_delegated_token_actor_ut.cpp)).
 
 Contract coverage: iam-delegated-token-acquisition / "Minting uses platform credentials and the saved binding" — scenario "Original user session has expired".
 
@@ -115,7 +119,9 @@ Contract coverage: iam-delegated-token-acquisition / "Minting uses platform cred
 - **WHEN** acquisition completes one microsecond before the deadline.
 - **THEN** that token is returned.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `IamDelegatedTokenActor::NearBoundaryRefreshRemainsPacedAndNeverServesExpiredToken` ([source](../../iam_delegated_token_actor_ut.cpp)).
 
 Contract coverage: iam-delegated-token-acquisition / "Served tokens have strictly more than five minutes remaining" — scenario "Just before the usable deadline".
 
@@ -125,7 +131,9 @@ Contract coverage: iam-delegated-token-acquisition / "Served tokens have strictl
 - **WHEN** refreshes are scheduled.
 - **THEN** first demand mints immediately, subsequent healthy refreshes disperse within their target using the standard helper, and subsecond usability keeps one-second pacing without serving past the deadline.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `IamDelegatedTokenActor::SuccessfulRefreshesAreDispersedAcrossEntriesAndNodes` ([source](../../iam_delegated_token_actor_ut.cpp)); `IamDelegatedTokenActor::NearBoundaryRefreshRemainsPacedAndNeverServesExpiredToken` ([source](../../iam_delegated_token_actor_ut.cpp)).
 
 Contract coverage: iam-delegated-token-acquisition / "Refresh is automatic and bounded against busy loops" — scenarios "Long-running consumer", "Near-boundary token"; "Refresh scheduling is dispersed" — scenario "Fleet restart aligns cache population".
 
@@ -135,7 +143,9 @@ Contract coverage: iam-delegated-token-acquisition / "Refresh is automatic and b
 - **WHEN** the idle bound elapses or eviction races a waiter.
 - **THEN** the idle entry is evicted within the bound and the waiter receives a fresh result, never the evicted entry.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `IamDelegatedTokenActor::IdleEntryStopsBackgroundMintingAndNextDemandStartsImmediately` ([source](../../iam_delegated_token_actor_ut.cpp)); `IamDelegatedTokenActor::DemandBeforeIdleEvictionPreservesCurrentEntry` ([source](../../iam_delegated_token_actor_ut.cpp)).
 
 Contract coverage: iam-delegated-token-acquisition / "Idle entries expire in bounded time" — scenario "Waiter arrives during eviction".
 
@@ -145,29 +155,45 @@ Contract coverage: iam-delegated-token-acquisition / "Idle entries expire in bou
 - **WHEN** one referrer is revoked out-of-band.
 - **THEN** minting and serving continue through the remaining delegation.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: external IAM behavior requires deployment validation; no local test is credited as proof of remote sibling-referrer semantics. `IamDelegationSecretReader::CancelledReaderLeavesSharedMintAndIndependentAuthorizationIntact` and `SchemaDropEndsAccessBeforeLifecycleWorkerRetiresBinding` cover local account sharing and per-reference authorization with controlled transport.
 
 Contract coverage: iam-delegated-token-acquisition / "Token serving is account-scoped" — scenario "Sibling delegation outlives out-of-band revocation".
 
 #### Scenario: Degraded minting is visible
 
-- **GIVEN** a usable cached token and a low configured failure threshold.
-- **WHEN** refreshes keep failing.
-- **THEN** operator-observable state reports the degradation after the threshold while the token keeps serving.
+- **GIVEN** a usable cached token and capture of the real producer's warnings.
+- **WHEN** all RPC attempts of a refresh fail retryably.
+- **THEN** a warning exposes the failed refresh while the usable token keeps serving, and issues/logs exclude credential material.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: the mapped case passed at `9a2b73490817`. It validates observable warning input; it does not configure or validate an external operator threshold policy.
 
-Contract coverage: iam-delegated-token-acquisition / "Degraded minting is operator-visible" — scenario "Refresh fails behind a usable cache".
+Executable coverage: `IamDelegatedTokenActor::RetryableMintWarningsRemainVisibleWhileCacheServesWithoutCredentials` ([source](../../iam_delegated_token_actor_ut.cpp)).
 
-#### Scenario: Retained issues carry no credential material
+Contract coverage: iam-delegated-token-acquisition / "Degraded minting is operator-visible" — scenario "Refresh fails behind a usable cache" (observable-warning portion only; external threshold integration requires deployment validation).
 
-- **GIVEN** a retryable mint failure with an empty cache.
-- **WHEN** the acquisition surfaces its status and issues.
-- **THEN** the issues retain IAM status and diagnostic detail but contain no token or bearer material.
+#### Scenario: Terminal IAM refusal retains safe diagnostic issues
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+- **GIVEN** an IAM permission denial with an empty token cache.
+- **WHEN** acquisition surfaces its result.
+- **THEN** it returns UNAUTHORIZED and the safe RESOURCE hint without token or bearer material in issues/logs.
 
-Contract coverage: iam-delegated-token-acquisition / "Minting uses platform credentials and the saved binding" (no-credential-material clause); "Transient failures preserve usable cached tokens" — scenario "Retryable failure with an empty cache".
+Status: the mapped case passed at `9a2b73490817`. This covers terminal IAM refusal, not retryable IAM transport failure.
+
+Executable coverage: `IamDelegatedTokenActor::FailedMintPreservesStatusAndSafeHintWithoutRemoteCredentials` ([source](../../iam_delegated_token_actor_ut.cpp)).
+
+Contract coverage: iam-delegated-token-acquisition / "Minting uses platform credentials and the saved binding" (no-credential-material clause); "Transient failures preserve usable cached tokens" (authoritative-denial status).
+
+#### Scenario: Retryable platform-credential failure retains safe issues
+
+- **GIVEN** an empty token cache and an error from the platform credential provider.
+- **WHEN** the real token producer handles acquisition.
+- **THEN** it returns retryable UNAVAILABLE with nonempty safe issues, excludes the credential sentinel from issues/logs and sends no IAM mint request.
+
+Status: the mapped case passed at `9a2b73490817`. Its controlled failure is at the platform-credential boundary; it does not inject an IAM transport error.
+
+Executable coverage: `IamDelegatedTokenActor::TokenManagerFailureDiagnosticsExcludeCredentialMaterial` ([source](../../iam_delegated_token_actor_ut.cpp)).
+
+Contract coverage: iam-delegated-token-acquisition / "Minting uses platform credentials and the saved binding" (no-credential-material clause); "Transient failures preserve usable cached tokens" — scenario "Retryable failure with an empty cache" (platform-credential failure).
 
 #### Scenario: Producer coroutine owns waits and retry state
 
@@ -175,7 +201,9 @@ Contract coverage: iam-delegated-token-acquisition / "Minting uses platform cred
 - **WHEN** one reader cancels, or the producer owner stops and late replies arrive.
 - **THEN** a surviving reader can still complete while the producer lives; stopping the producer releases waits and cannot publish a late result or retain a stale cache-entry reference.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `1373e723886e`, `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `IamDelegationSecretReader::CancelledReaderLeavesSharedMintAndIndependentAuthorizationIntact` ([source](../../../../../../services/scheme_secret/ut/fast/iam_delegation_reader_ut.cpp)); `IamDelegatedTokenActor::ProducerShutdownDisarmsMintAndBackoffWaiters` ([source](../../iam_delegated_token_actor_ut.cpp)).
 
 Contract coverage: iam-delegated-token-acquisition / "Refresh operation state belongs to its coroutine" — scenario "Producer stops with a mint outstanding"; "Caller policy and cancellation remain effective" — scenario "One concurrent caller cancels".
 
@@ -185,7 +213,7 @@ Contract coverage: iam-delegated-token-acquisition / "Refresh operation state be
 - **WHEN** the real IAM adapter processes the mocked service response.
 - **THEN** the diagnostic vector contains each of the five allowlisted reason groups once with the mapped denial status and no additional setup/revoke; the typed representation has no remote free-text field.
 
-Status: RED behavior observed in the follow-up validation; the production fix awaits GREEN verification. These cases do not contribute to the historical verified count above.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics".
 
@@ -200,7 +228,7 @@ Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain th
 - **WHEN** polling returns a done operation containing an error object with code OK.
 - **THEN** the adapter returns Unknown/INTERNAL_ERROR with the saved identifier; it sends no setup/revoke and does not treat the contradictory response as definitive failure.
 
-Status: RED behavior observed in the follow-up validation; the production fix awaits GREEN verification. These cases do not contribute to the historical verified count above.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 Contract coverage: iam-delegation-lifecycle / "Unknown setup is not a failed setup".
 
@@ -214,7 +242,7 @@ Contract coverage: iam-delegation-lifecycle / "Unknown setup is not a failed set
 - **WHEN** cold demand, successful refresh, a new failure after success, exact expiry and demand after eviction occur.
 - **THEN** first mint remains immediate, healthy refreshes spread within the bounded earlier window, subsecond usability still expires at the exact boundary despite one-second pacing, recovery resets failure backoff, and idle entries stop minting until new demand.
 
-Status: executable regression source added; RED execution pending. No passing verification is claimed.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 Contract coverage: iam-delegated-token-acquisition / "Refresh scheduling is dispersed"; "Refresh is automatic and bounded against busy loops"; "Idle entries expire in bounded time".
 
@@ -231,7 +259,7 @@ Contract coverage: iam-delegated-token-acquisition / "Refresh scheduling is disp
 - **WHEN** minting, operation submission or polling succeeds, retries or fails.
 - **THEN** status and safe hints remain observable while issues and logs exclude credential material; uncertain operation outcomes remain uncertain.
 
-Status: executable Task 8 regressions added; compilation and first execution pending. No behavior failure or passing result is claimed.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 Contract coverage: iam-delegated-token-acquisition; iam-delegation-revocation.
 
@@ -251,7 +279,7 @@ Contract coverage: iam-delegated-token-acquisition; iam-delegation-revocation.
 - **WHEN** demand arrives immediately before the idle check, after eviction, or the producer receives Poison before a late mint reply.
 - **THEN** recent demand preserves the current entry, demand after eviction starts a fresh mint, and shutdown cancels readers and refresh work without publishing late results.
 
-Status: two preservation cases added; first execution pending. The existing after-eviction case previously passed in the full IAM suite at `1373e723`.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 Contract coverage: iam-delegated-token-acquisition / "Idle entries expire in bounded time" — scenario "Waiter arrives during eviction"; "Refresh operation state belongs to its coroutine" — scenario "Producer stops with a mint outstanding".
 

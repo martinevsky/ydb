@@ -36,13 +36,14 @@ These specifications describe fixture coverage and exact case/source/command map
 - [ydb/core/grpc_services/ut](../../../../grpc_services/ut/specs/external-secrets/spec.md)
 - [ydb/core/tx/schemeshard/ut_secret](../../../../tx/schemeshard/ut_secret/specs/external-secrets/spec.md)
 - [ydb/services/scheme_secret/ut/fast](../../../../../services/scheme_secret/ut/fast/specs/external-secrets/spec.md)
+- [ydb/library/yql/providers/common/token_accessor/client/ut](../../../../../library/yql/providers/common/token_accessor/client/ut/specs/external-secrets/spec.md)
 - [ydb/library/yql/providers/s3/actors/ut](../../../../../library/yql/providers/s3/actors/ut/specs/external-secrets/spec.md)
 - [ydb/library/yql/providers/s3/credentials/ut](../../../../../library/yql/providers/s3/credentials/ut/specs/external-secrets/spec.md)
 - [ydb/library/yql/providers/solomon/actors/ut](../../../../../library/yql/providers/solomon/actors/ut/specs/external-secrets/spec.md)
 
 Historical recovery and C1 runs used `ydb/core/security/iam_delegation_lifecycle` and `ydb/core/tx/iam_delegation`. Their external evidence remains unchanged. Current reproduction targets are `iam_delegation/ut`, `iam_delegation/lifecycle/ut` and `iam_delegation/tablet/ut` under `ydb/core/security`. The three libraries remain separate; consumer and driver verification follows in Task4.
 
-The durable [verification record](verification.md) records source identity, exact new-path commands/results and pending gates.
+The durable [verification record](verification.md) records source identity, exact commands/results, review closure and deployment validation limits.
 
 ## Inventory rollout and cleanup observation
 

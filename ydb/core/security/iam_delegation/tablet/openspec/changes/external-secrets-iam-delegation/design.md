@@ -6,7 +6,7 @@ Own intents, immutable bindings, atomic transitions, leased cleanup and revision
 
 ## Goals / Non-Goals
 
-Implement the local capability contracts without expanding this component's authority. The independent-tablet ownership model remains unchanged. The specification follow-up may add compatible durable fields and refactor temporary asynchronous state into coroutine frames; these changes remain planned until verified. Other providers and undocumented IAM replay guarantees are outside scope.
+Implement the local capability contracts without expanding this component's authority. The independent-tablet ownership model remains unchanged. The follow-up adds compatible durable fields and keeps temporary asynchronous state in coroutine frames. Component tasks and the shared verification record distinguish tested behavior from remaining validation. Other providers and undocumented IAM replay guarantees are outside scope.
 
 ## Decisions
 

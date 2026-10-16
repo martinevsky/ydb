@@ -20,9 +20,11 @@ Restored baseline: `c68a9f3b2cafbdee3c6a3f870cb002166dda3dd7`. Existing test res
 
 - [x] 3.1 Validate this local OpenSpec change and its links, and review the relocation; verify strict validation and preservation of every requirement/scenario from the reviewed specification.
 
-## 4. Specification follow-up (not yet implemented)
+## 4. Specification follow-up
 
-- [ ] 4.1 Persist bounded terminal setup diagnostics, revocation failure history and original cleanup age; verify replay, commit/reply loss and disk reopening.
-- [ ] 4.2 Use typed retry/pagination enums and support authenticated continuations with a durable signing key; verify tampering, identity reuse and mixed-version failure.
-- [ ] 4.3 Keep tablet cleanup ownership through actual tenant deletion; replace external settlement/handoff scenarios with retained-ownership and uncertain-state tests.
-- [ ] 4.4 Cover exact ACK replay after its original lease deadline and cold multi-record transitions; credit already implemented claim/pagination cases.
+- [x] 4.1 Persist bounded terminal setup diagnostics, revocation failure history and original cleanup age; verify replay, commit/reply loss and disk reopening.
+- [x] 4.2 Use typed retry/pagination enums and support authenticated continuations with a durable signing key; verify tampering, identity reuse and mixed-version failure.
+- [x] 4.3 Keep tablet cleanup ownership through actual tenant deletion; replace external settlement/handoff scenarios with retained-ownership and uncertain-state tests.
+- [x] 4.4 Cover exact ACK replay after its original lease deadline and cold multi-record transitions; credit already implemented claim/pagination cases.
+
+Follow-up evidence: `ydb/core/security/iam_delegation/tablet/ut` 123 GOOD at `969b11b16a9d`; `ydb/core/kqp/executer_actor/ut` 146 GOOD at `9a2b73490817`. Exact commands, mixed-run exits and review findings are recorded in the shared verification record.

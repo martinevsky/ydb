@@ -8,6 +8,8 @@ Authoritative contracts: [schema](../../../openspec/changes/external-secrets-iam
 
 ## Execution and evidence
 
+Latest recorded owning run: **146 GOOD** (full owning suite) at `9a2b73490817`, `final-fixtures-token-lifetime-green-parallel100`; actual combined command exit 0. Historical counts below retain their original revisions.
+
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/core/kqp/executer_actor/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
 
 Historical source revision: `66189ce6fa6a234fd7d20f32bda4fd41692c07ef`. Historical status: **implemented and verified**, 119/119 GOOD in the full owning executable, with exact command exit 0. Counts, trace hashes, source correspondence and fixture limits are recorded in the [durable verification record](../../../../../security/iam_delegation/docs/external-secrets/verification.md). These counts apply only to that source revision; added cases below require separate fresh execution.
@@ -32,10 +34,10 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `KqpIamDelegationSecretOrchestrator::AlterNeedsAlterSchemaWithoutDescribeOrValueAccess` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:424](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L424) | `ydb/core/kqp/executer_actor/ut` |
-| `KqpIamDelegationSecretOrchestrator::DescribeSchemaAndHiddenPathsDoNotAuthorizeAlter` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:453](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L453) | `ydb/core/kqp/executer_actor/ut` |
-| `KqpIamDelegationSecretOrchestrator::CreateOrReplaceRequiresParentCreateAndTargetAlterWithoutDescribe` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:548](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L548) | `ydb/core/kqp/executer_actor/ut` |
-| `KqpIamDelegationSecretOrchestrator::CreateOrReplaceMissingPathRequiresParentCreatePermission` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:600](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L600) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::AlterNeedsAlterSchemaWithoutDescribeOrValueAccess` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::DescribeSchemaAndHiddenPathsDoNotAuthorizeAlter` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::CreateOrReplaceRequiresParentCreateAndTargetAlterWithoutDescribe` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::CreateOrReplaceMissingPathRequiresParentCreatePermission` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
 
 #### Scenario: Revoked ACL and reused paths
 
@@ -49,9 +51,9 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `KqpIamDelegationSecretOrchestrator::AlterRechecksRevokedAclBeforeLifecycleMutation` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:481](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L481) | `ydb/core/kqp/executer_actor/ut` |
-| `KqpIamDelegationSecretOrchestrator::AlterCannotTouchRecreatedSecretDuringResolution` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:513](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L513) | `ydb/core/kqp/executer_actor/ut` |
-| `KqpIamDelegationSecretOrchestrator::AlterCannotTouchRecreatedSecretAfterAuthorization` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:1010](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L1010) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::AlterRechecksRevokedAclBeforeLifecycleMutation` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::AlterCannotTouchRecreatedSecretDuringResolution` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::AlterCannotTouchRecreatedSecretAfterAuthorization` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
 
 #### Scenario: Coordinator crash and durable recovery
 
@@ -65,10 +67,10 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `KqpIamDelegationSecretOrchestrator::WorkerResumesCrashAfterDurableStageBeforeSchemaSubmission` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:679](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L679) | `ydb/core/kqp/executer_actor/ut` |
-| `KqpIamDelegationSecretOrchestrator::WorkerRecoversLostStageReplyWithoutNewUserRequest` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:710](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L710) | `ydb/core/kqp/executer_actor/ut` |
-| `KqpIamDelegationSecretOrchestrator::WorkerResumesCrashAfterSchemaBeforeSetup` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:920](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L920) | `ydb/core/kqp/executer_actor/ut` |
-| `KqpIamDelegationSecretOrchestrator::WorkerPollsAcceptedSetupAfterClientAndTabletRestart` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:949](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L949) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::WorkerResumesCrashAfterDurableStageBeforeSchemaSubmission` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::WorkerRecoversLostStageReplyWithoutNewUserRequest` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::WorkerResumesCrashAfterSchemaBeforeSetup` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::WorkerPollsAcceptedSetupAfterClientAndTabletRestart` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
 
 #### Scenario: Delayed schema copies and consumed identities
 
@@ -82,11 +84,11 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `KqpIamDelegationSecretOrchestrator::DelayedOriginalCreateAndWorkerReplayUseOneSchemaIdentity` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:735](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L735) | `ydb/core/kqp/executer_actor/ut` |
-| `KqpIamDelegationSecretOrchestrator::DropBeforeBindingFencesEveryDelayedCreateCopy` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:764](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L764) | `ydb/core/kqp/executer_actor/ut` |
-| `KqpIamDelegationSecretOrchestrator::SiblingMutationConsumesSavedCreateFence` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:837](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L837) | `ydb/core/kqp/executer_actor/ut` |
-| `KqpIamDelegationSecretOrchestrator::ParentNameReuseCannotReplayOldCreateIntent` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:852](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L852) | `ydb/core/kqp/executer_actor/ut` |
-| `KqpIamDelegationSecretOrchestrator::DatabaseNameReuseCannotReplayOldCreateIntent` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:881](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L881) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::DelayedOriginalCreateAndWorkerReplayUseOneSchemaIdentity` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::DropBeforeBindingFencesEveryDelayedCreateCopy` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::SiblingMutationConsumesSavedCreateFence` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::ParentNameReuseCannotReplayOldCreateIntent` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::DatabaseNameReuseCannotReplayOldCreateIntent` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
 
 #### Scenario: Noops and ordinary SQL integration
 
@@ -100,9 +102,9 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `KqpIamDelegationSecretOrchestrator::NoopsNeedNoIamConfigurationOrLifecycleMutation` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:1043](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L1043) | `ydb/core/kqp/executer_actor/ut` |
-| `KqpIamDelegationSecretOrchestrator::ExplainCompilesWithoutLifecycleWritesOrIamConfiguration` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:1161](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L1161) | `ydb/core/kqp/executer_actor/ut` |
-| `KqpIamDelegationSecretOrchestrator::SqlCreateAlterAndDropReachTabletAndReader` | [kqp_iam_delegation_secret_orchestrator_ut.cpp:1182](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp#L1182) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::NoopsNeedNoIamConfigurationOrLifecycleMutation` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::ExplainCompilesWithoutLifecycleWritesOrIamConfiguration` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::SqlCreateAlterAndDropReachTabletAndReader` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
 
 #### Scenario: Setup subject and cloud authorization
 
@@ -110,7 +112,9 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** the caller is a builtin identity, IAM denies the initiating subject permission to delegate the account, or the account is not delegable in the recorded cloud.
 - **THEN** the builtin identity is rejected before any IAM dispatch; the two IAM-denial cases fail with the IAM error after dispatch, and no binding is activated in any case.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `KqpIamDelegationSecretOrchestrator::BuiltinSubjectWithSchemaRightsCannotStageDelegation` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)); `KqpIamDelegationSecretOrchestrator::CoordinatorOwnedPolledRefusalPersistsSafeDetails` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)).
 
 Contract coverage: external-secret-schema / "Delegation uses the initiating cloud subject" — scenarios "Builtin identity attempts setup", "Caller cannot delegate the account"; "Setup fails for an account not delegable in its cloud" — scenario "Account not delegable in the recorded cloud".
 
@@ -120,7 +124,9 @@ Contract coverage: external-secret-schema / "Delegation uses the initiating clou
 - **WHEN** setup resolves the cloud or ALTER omits it.
 - **THEN** the configured database fallback applies, an indeterminate cloud fails the setup, and ALTER retains the recorded cloud.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `KqpIamDelegationSecretOrchestrator::CloudLookupForwardsCallerCredentialAndAlterRetainsChosenCloud` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)); `KqpIamDelegationSecretOrchestrator::ConfiguredCloudLookupFailureWithoutDatabaseCloudNeverStages` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)); `KqpIamDelegationSecretOrchestrator::NoBearerUsesDatabaseCloudWithoutLookup` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)).
 
 Contract coverage: external-secret-schema / "Resource resolution is explicit or authorized" — scenarios "Discovery unavailable with database fallback", "No cloud can be determined", "ALTER retains the recorded cloud".
 
@@ -130,7 +136,9 @@ Contract coverage: external-secret-schema / "Resource resolution is explicit or 
 - **WHEN** DROP is executed.
 - **THEN** the DROP commits, subsequent acquisitions fail, and the confirmed delegation remains durable cleanup work until revocation succeeds.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `KqpIamDelegationSecretOrchestrator::DropCommitsDuringRevokeOutageAndWorkerLaterDrainsCleanup` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)).
 
 Contract coverage: iam-delegation-revocation / "DROP ends schema access independently of IAM" — scenario "DROP while IAM is unavailable".
 
@@ -140,7 +148,9 @@ Contract coverage: iam-delegation-revocation / "DROP ends schema access independ
 - **WHEN** admission is disabled before that intent completes.
 - **THEN** the in-flight intent completes or retires unaffected, while new setup is gated.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `969b11b16a9d`, `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `KqpIamDelegationSecretOrchestrator::AdmissionDisabledAfterStageStillRecoversCreate` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)); `KqpIamDelegationSecretOrchestrator::DisabledAdmissionRejectsFreshSqlMutations` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)); `IamDelegationTablet::DisabledAdmissionRejectsNewStageButAllowsExactReplay` ([source](../../../../../security/iam_delegation/tablet/ut/iam_delegation_ut.cpp)).
 
 Contract coverage: external-secret-schema / "Admission and cleanup have separate lifetimes" — scenarios "Disable feature after creation", "Admission is disabled between Stage and schema submission".
 
@@ -150,7 +160,9 @@ Contract coverage: external-secret-schema / "Admission and cleanup have separate
 - **WHEN** an authorized ALTER requests the active account/cloud unchanged.
 - **THEN** authenticated schema execution succeeds without touching pending/current records or revisions and without setup/revoke dispatch.
 
-Status: planned — no executable case yet; does not contribute to executed counts.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `KqpIamDelegationSecretOrchestrator::NoopAlterPreservesPendingNotStarted` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)); `KqpIamDelegationSecretOrchestrator::NoopAlterPreservesPendingSucceeded` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)); `KqpIamDelegationSecretOrchestrator::NoopAlterPreservesYoungUnknownAfterRestart` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)); `KqpIamDelegationSecretOrchestrator::NoopAlterPreservesExpiredUnknownAfterRestart` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)).
 
 Contract coverage: external-secret-schema / "Stored-secret compatibility" — scenario "No-op ALTER has a pending replacement".
 
@@ -160,7 +172,9 @@ Contract coverage: external-secret-schema / "Stored-secret compatibility" — sc
 - **WHEN** the coordinator resumes, including after storage restart, or is cancelled before a late result.
 - **THEN** recovery returns the recorded IAM status/issues with the old binding intact; a cancelled coordinator emits no late result.
 
-Status: partially covered by the refusal regressions listed below; follow-up RED evidence is recorded, with GREEN verification pending. Additional backoff or cancellation assertions remain planned and do not contribute to executed counts.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
+
+Executable coverage: `KqpIamDelegationSecretOrchestrator::WorkerOwnedSetupRefusalReturnsOriginalStatus` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)); `KqpIamDelegationSecretOrchestrator::WorkerOwnedPolledRefusalReturnsOriginalStatusAfterRestart` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)); `KqpIamDelegationSecretOrchestrator::ExecutorAbortAfterAdmissionPreservesDurableRecovery` ([source](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp)).
 
 Contract coverage: external-secret-schema / "DDL asynchronous state belongs to the coordinator coroutine" — scenario "Late response after coordinator cancellation"; "Setup fails for an account not delegable in its cloud" — scenario "Recovery owns the terminal refusal".
 
@@ -170,7 +184,7 @@ Contract coverage: external-secret-schema / "DDL asynchronous state belongs to t
 - **WHEN** the worker owns submission or polling and commits a refusal before the coordinator resumes, with or without tablet reboot.
 - **THEN** the statement returns saved UNAUTHORIZED and the refusal issue; the old active record and token remain intact; no revoke or extra setup is dispatched.
 
-Status: RED behavior observed in the follow-up validation; the production fix awaits GREEN verification. These cases do not contribute to the historical verified count above.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 Contract coverage: external-secret-schema / "Setup fails for an account not delegable in its cloud" — scenario "Recovery owns the terminal refusal".
 
@@ -187,7 +201,7 @@ Contract coverage: external-secret-schema / "Setup fails for an account not dele
 - **WHEN** submission or polling returns denial with safe typed reasons and a raw credential sentinel.
 - **THEN** the coordinator returns the mapped status without the sentinel, persists only safe diagnostics across reboot, and preserves the active binding and token.
 
-Status: RED behavior observed in the follow-up validation; the production fix awaits GREEN verification. These cases do not contribute to the historical verified count above.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics".
 
@@ -202,7 +216,7 @@ Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain th
 - **WHEN** the tablet restarts and the original coordinator resumes from its held Stage reply.
 - **THEN** the statement returns the generic UNAVAILABLE refusal without resubmitting setup, rewriting the terminal record or replacing the active binding.
 
-Status: RED behavior observed in the follow-up validation; the production fix awaits GREEN verification. These cases do not contribute to the historical verified count above.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics" (legacy compatibility).
 
@@ -216,7 +230,7 @@ Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain th
 - **WHEN** permissions, cloud discovery, active bindings or IAM availability change.
 - **THEN** metadata remains independent of minting, each value read rechecks authorization and identity, and durable cleanup survives an outage.
 
-Status: executable Task 8 regressions added; compilation and first execution pending. No behavior failure or passing result is claimed.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 Contract coverage: external-secret-schema; external-secret-consumers.
 
@@ -239,7 +253,7 @@ Contract coverage: external-secret-schema; external-secret-consumers.
 
 Contract coverage: iam-delegation-lifecycle / "Retiring pending work preserves responsibility" — scenario "Replacement attempted during the pending guard".
 
-Status: Task 9 regression source added; first execution pending. The fixture positions virtual time when the coordinator receives the durable state used by the guard, after authorization and pipe recovery.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
@@ -253,7 +267,7 @@ Status: Task 9 regression source added; first execution pending. The fixture pos
 
 Contract coverage: iam-delegation-lifecycle / "Durable ownership survives tenant deletion"; iam-delegation-revocation / "Cleanup uses the saved binding" and "Uncertain setup is excluded from cleanup claims".
 
-Status: Task 10 regression source added; first execution pending. The first runtime performs actual force-drop and name reuse. The second reopens the physical 8 GiB PDisk without formatting and runs the real tablet/worker, with controlled schema observations copied from the first runtime and controlled IAM outcomes. It does not reopen a full SchemeShard cluster or prove production placement. Deployment must place the service tablet outside the managed tenant.
+Status: mapped executable cases passed at `9a2b73490817`. See the verification record for exact commands, suite coverage and combined-run exits. The reopened PDisk is real; post-reopen schema/IAM replies are controlled. This does not reopen a full SchemeShard cluster or prove production placement.
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |

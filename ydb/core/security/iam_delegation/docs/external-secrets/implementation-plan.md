@@ -79,12 +79,12 @@ These are the plan's proposed resolutions of the review's contract questions, no
 
 **Interfaces:** Preserve `TTxRequest::Stage(NIceDb::TNiceDb&, const TStageRequest&, ui64)` and the current request schema. Stage commit is the durable admission boundary. Exact saved Stage replay is allowed after disabling admission; a new operation ID is not.
 
-- [ ] Add `AdmissionDisabledAfterStageStillRecoversCreate`, `DisabledAdmissionRejectsNewStageButAllowsExactReplay` and SQL-level disabled CREATE/ALTER/OR REPLACE cases. Hold original schema copies and replies, not only the coordinator actor.
-- [ ] Commit/push and run the new regressions; establish behavior failures against the current source.
-- [ ] Keep fresh admission gating in KQP and enforce it for a genuinely new tablet Stage after the exact-existing-intent replay branch. Do not gate outcome recording, promotion, DROP or revocation of admitted work.
-- [ ] Remove the second current-admission check from creation of an already resolved immutable schema reference. Keep unresolved user IAM parameters rejected, complete-reference/value checks, authentication and all saved parent/database fences. A fabricated/missing lifecycle reference must never dispatch setup or return a value. Do not add SchemeShard lifecycle storage or tablet lookups.
-- [ ] Cover a lost Stage reply, flag disable, delayed original CREATE plus worker replay, cold transaction retry and tablet restart. Verify one schema identity/setup owner and no orphaned grant.
-- [ ] Commit/push, then run the focused cases and the full affected KQP, tablet and SchemeShard targets. Record the exact schema-shell versus grant-admission boundary in their specs.
+- [x] Add `AdmissionDisabledAfterStageStillRecoversCreate`, `DisabledAdmissionRejectsNewStageButAllowsExactReplay` and SQL-level disabled CREATE/ALTER/OR REPLACE cases. Hold original schema copies and replies, not only the coordinator actor.
+- [x] Commit/push and run the new regressions; establish behavior failures against the current source.
+- [x] Keep fresh admission gating in KQP and enforce it for a genuinely new tablet Stage after the exact-existing-intent replay branch. Do not gate outcome recording, promotion, DROP or revocation of admitted work.
+- [x] Remove the second current-admission check from creation of an already resolved immutable schema reference. Keep unresolved user IAM parameters rejected, complete-reference/value checks, authentication and all saved parent/database fences. A fabricated/missing lifecycle reference must never dispatch setup or return a value. Do not add SchemeShard lifecycle storage or tablet lookups.
+- [x] Cover a lost Stage reply, flag disable, delayed original CREATE plus worker replay, cold transaction retry and tablet restart. Verify one schema identity/setup owner and no orphaned grant.
+- [x] Commit/push, then run the focused cases and the full affected KQP, tablet and SchemeShard targets. Record the exact schema-shell versus grant-admission boundary in their specs.
 
 ## Task 3: Preserve pending work on a no-op ALTER
 
@@ -92,11 +92,11 @@ These are the plan's proposed resolutions of the review's contract questions, no
 
 **Interfaces:** Preserve `async<TGenericResult> Replace(TString, const TExistingSecret&, NKikimrSchemeOp::TSecretSchemaOp&)`. Its computed `needsSetup == false` branch performs no lifecycle mutation.
 
-- [ ] Add `NoopAlterPreservesPendingNotStarted`, `NoopAlterPreservesPendingSucceeded` and young/expired UNKNOWN variants. Assert unchanged serialized secret/delegation records and revisions, zero added setup/revoke calls, and successful authenticated schema completion.
-- [ ] Commit/push and run RED cases.
-- [ ] Apply pending replacement guards only for a real binding change. After successful authenticated/fenced schema execution, return success for `!needsSetup` before `RetirePending`.
-- [ ] Retain the ten-minute guard and supersession behavior for actual replacements. Test ACL denial and path recreation on the no-op branch as well as meaningful ALTER.
-- [ ] Commit/push, run the coordinator suite, and record the intentional behavior change from cancellation to preservation.
+- [x] Add `NoopAlterPreservesPendingNotStarted`, `NoopAlterPreservesPendingSucceeded` and young/expired UNKNOWN variants. Assert unchanged serialized secret/delegation records and revisions, zero added setup/revoke calls, and successful authenticated schema completion.
+- [x] Commit/push and run RED cases.
+- [x] Apply pending replacement guards only for a real binding change. After successful authenticated/fenced schema execution, return success for `!needsSetup` before `RetirePending`.
+- [x] Retain the ten-minute guard and supersession behavior for actual replacements. Test ACL denial and path recreation on the no-op branch as well as meaningful ALTER.
+- [x] Commit/push, run the coordinator suite, and record the intentional behavior change from cancellation to preservation.
 
 ## Task 4: Persist terminal setup refusal details
 
@@ -108,12 +108,12 @@ These are the plan's proposed resolutions of the review's contract questions, no
 
 **Interfaces:** Add a bounded `TSetupFailure` containing mapped YDB status and safe issue details; use `TDelegation.SetupFailure = 18` and `TSetSetupResultRequest.SetupFailure = 5`. Existing records without it remain readable. Existing outcome/operation-ID fields retain their meanings.
 
-- [ ] Add `WorkerOwnedSetupRefusalReturnsOriginalStatus` with a held coordinator Stage reply, worker-owned refusal, persisted failure and coordinator reload. Add a restart before reload and a refusal returned through polling. Include legacy records with no diagnostic fields and oversized/invalid failure payloads.
-- [ ] Commit/push and run the behavior regression.
-- [ ] Persist the bounded terminal failure in the same transaction as SETUP_FAILED, from both coordinator and worker. Return durable diagnostics when the coordinator did not own the remote result. Keep the current generic fallback for legacy records with no details.
-- [ ] Preserve terminal-result replay semantics: identical results replay safely; conflicting terminal outcomes/details must not overwrite an established result. Keep failed replacement cleanup from clearing a newer pending slot.
-- [ ] Use existing issue conversion/redaction conventions; cap stored diagnostics and exclude bearer tokens, minted tokens and full raw IAM responses. Add oversized/credential-sentinel tests for the newly persisted surface.
-- [ ] Commit/push; run service/lifecycle/tablet/coordinator targets, including reopen and lost-reply cases.
+- [x] Add `WorkerOwnedSetupRefusalReturnsOriginalStatus` with a held coordinator Stage reply, worker-owned refusal, persisted failure and coordinator reload. Add a restart before reload and a refusal returned through polling. Include legacy records with no diagnostic fields and oversized/invalid failure payloads.
+- [x] Commit/push and run the behavior regression.
+- [x] Persist the bounded terminal failure in the same transaction as SETUP_FAILED, from both coordinator and worker. Return durable diagnostics when the coordinator did not own the remote result. Keep the current generic fallback for legacy records with no details.
+- [x] Preserve terminal-result replay semantics: identical results replay safely; conflicting terminal outcomes/details must not overwrite an established result. Keep failed replacement cleanup from clearing a newer pending slot.
+- [x] Use existing issue conversion/redaction conventions; cap stored diagnostics and exclude bearer tokens, minted tokens and full raw IAM responses. Add oversized/credential-sentinel tests for the newly persisted surface.
+- [x] Commit/push; run service/lifecycle/tablet/coordinator targets, including reopen and lost-reply cases.
 
 ## Task 5: Use standard backoff for durable revocation retries
 
@@ -125,14 +125,14 @@ These are the plan's proposed resolutions of the review's contract questions, no
 - Extend `TFinishRevocationRequest` with `RetryReason = 7`, an explicit retry classification: unspecified legacy behavior, retryable failure, or accepted/pending operation. Preserve legacy request defaults and exact serialized ACK receipts.
 - Add IAM-local `TDuration RevocationRetryDelay(ui32 consecutiveFailures)` using standard `TBackoff`. Start with the existing one-second base and a one-minute base cap; standard positive jitter is additional. Keep this policy in shared IAM settings.
 
-- [ ] Add failure growth/cap, pending-operation polling, independent record progress, restart/takeover and duplicate-ACK regressions. Observe persisted due times and real worker traffic rather than copy the helper algorithm into tests.
-- [ ] Commit/push and establish RED behavior.
-- [ ] Use the explicit outcome matrix: Succeeded acknowledges completion; Accepted records pending progress and resets the streak; Failed and Unknown count a failure. Preserve a known operation ID on Unknown and poll it on the next attempt. Only a definitive Failed result permits clearing that ID; absence of an ID alone never clears a saved one. Keep existing safe revoke retry semantics when no operation ID was obtained.
-- [ ] Advance the durable failure streak once per committed failure ACK and preserve it across lease/tablet/worker changes. Legacy unspecified ACKs retain their supplied delay and must not reset new history. Deploy the tablet's additive fields before relying on new-worker durable backoff; test both old-shaped ACKs and new-shaped records. Preserve all existing lease fences.
-- [ ] Reconstruct the capped standard backoff from durable state with bounded work, calculate the next due time, and persist it when finishing the lease. Do not sleep through backoff while holding a claim. Keep one-record worker claims.
-- [ ] Reuse standard jitter for worker scan/dispatch pacing without reducing the existing one-second minimum rescan interval. Apply delays before claiming, not after consuming a lease.
-- [ ] Set cleanup-queued time at the first transition into actionable cleanup; never replace it with the latest retry due time. Define legacy missing timestamps as unknown rather than fabricate precise age.
-- [ ] Commit/push, run lifecycle/tablet targets, then repeat the relevant fault schedules. Verify old generations and expired unfinished claims still cannot ACK.
+- [x] Add failure growth/cap, pending-operation polling, independent record progress, restart/takeover and duplicate-ACK regressions. Observe persisted due times and real worker traffic rather than copy the helper algorithm into tests.
+- [x] Commit/push and establish RED behavior.
+- [x] Use the explicit outcome matrix: Succeeded acknowledges completion; Accepted records pending progress and resets the streak; Failed and Unknown count a failure. Preserve a known operation ID on Unknown and poll it on the next attempt. Only a definitive Failed result permits clearing that ID; absence of an ID alone never clears a saved one. Keep existing safe revoke retry semantics when no operation ID was obtained.
+- [x] Advance the durable failure streak once per committed failure ACK and preserve it across lease/tablet/worker changes. Legacy unspecified ACKs retain their supplied delay and must not reset new history. Deploy the tablet's additive fields before relying on new-worker durable backoff; test both old-shaped ACKs and new-shaped records. Preserve all existing lease fences.
+- [x] Reconstruct the capped standard backoff from durable state with bounded work, calculate the next due time, and persist it when finishing the lease. Do not sleep through backoff while holding a claim. Keep one-record worker claims.
+- [x] Reuse standard jitter for worker scan/dispatch pacing without reducing the existing one-second minimum rescan interval. Apply delays before claiming, not after consuming a lease.
+- [x] Set cleanup-queued time at the first transition into actionable cleanup; never replace it with the latest retry due time. Define legacy missing timestamps as unknown rather than fabricate precise age.
+- [x] Commit/push, run lifecycle/tablet targets, then repeat the relevant fault schedules. Verify old generations and expired unfinished claims still cannot ACK.
 
 ## Task 6: Disperse healthy refreshes and share timeout policy bounds
 
@@ -140,13 +140,13 @@ These are the plan's proposed resolutions of the review's contract questions, no
 
 **Interfaces:** Keep the producer API and `TIamDelegationSettings::MintAttemptTimeout()`. Centralize token/RPC retry bounds in the IAM-local settings used by both the actual `TBackoff` constructors and the deterministic budget calculation. Proposed internal helper: `TDuration NextSuccessfulRefreshDelay(TDuration lifetime, TDuration usableRemaining, const TIamDelegationSettings&)`.
 
-- [ ] Add `SuccessfulRefreshesAreDispersed`, `NearBoundaryRefreshRemainsPaced`, exact usable-deadline cases and a long-lived real producer/reader acquisition case after the original creator bearer expires; assert that minting uses current platform credentials, never that bearer.
-- [ ] Commit/push and run the new cases against current timing behavior.
-- [ ] Keep the first demanded mint immediate. For healthy background refresh, choose a standard-helper jittered delay in an earlier bounded window ending at the current half-life/hourly/usable target; positive jitter must not push beyond that target. For targets below one second, keep the one-second floor and documented safe availability gap.
-- [ ] Continue using the existing error `TBackoff`, resetting after success. Do not back off healthy refreshes exponentially or extend token usability.
-- [ ] Derive reader allowance from shared retry configuration and deterministic worst-case jitter/credential/RPC bounds, rather than retaining separately embedded 75/14-second assumptions. Do not sample random backoff to calculate a deadline. Preserve finite storage/schema phases and caller cancellation.
-- [ ] Cover many entries/nodes with deterministic random/clock control, transient failure behind a usable cache, authoritative invalidation, idle eviction and waiter arrival on either side of eviction. Assert bounded windows, not exact random samples or strict growth of every jittered retry.
-- [ ] Commit/push; run IAM service and fast secret-service targets, including the existing backoff-over-sixty-seconds reader regression.
+- [x] Add `SuccessfulRefreshesAreDispersed`, `NearBoundaryRefreshRemainsPaced`, exact usable-deadline cases and a long-lived real producer/reader acquisition case after the original creator bearer expires; assert that minting uses current platform credentials, never that bearer.
+- [x] Commit/push and run the new cases against current timing behavior.
+- [x] Keep the first demanded mint immediate. For healthy background refresh, choose a standard-helper jittered delay in an earlier bounded window ending at the current half-life/hourly/usable target; positive jitter must not push beyond that target. For targets below one second, keep the one-second floor and documented safe availability gap.
+- [x] Continue using the existing error `TBackoff`, resetting after success. Do not back off healthy refreshes exponentially or extend token usability.
+- [x] Derive reader allowance from shared retry configuration and deterministic worst-case jitter/credential/RPC bounds, rather than retaining separately embedded 75/14-second assumptions. Do not sample random backoff to calculate a deadline. Preserve finite storage/schema phases and caller cancellation.
+- [x] Cover many entries/nodes with deterministic random/clock control, transient failure behind a usable cache, authoritative invalidation, idle eviction and waiter arrival on either side of eviction. Assert bounded windows, not exact random samples or strict growth of every jittered retry.
+- [x] Commit/push; run IAM service and fast secret-service targets, including the existing backoff-over-sixty-seconds reader regression.
 
 ## Task 7: Authenticate inventory continuations and expose cleanup health
 
@@ -162,15 +162,15 @@ These are the plan's proposed resolutions of the review's contract questions, no
 - Store a tablet-owned signing key durably in a small new tablet table; do not expose it to gRPC handlers or logs. Use an existing HMAC-SHA256 implementation and constant-time verification.
 - Extend public inventory records additively with staged time, cleanup-queued time and consecutive retryable failure data. Missing historical fields mean unknown/not recorded, not a fabricated zero-age claim.
 
-- [ ] Add valid continuation/reboot/reopen, altered payload/tag, wrong tablet/incarnation, stale revision, malformed/oversized token and administrative-revocation-between-pages cases. Add full exactly-once public enumeration with multiple records for the same account: never deduplicate distinct referrers. Add omitted/zero/1000/1001 public page-size cases and retain the tablet's independent zero rejection.
-- [ ] Commit/push before RED runs. For new token fields, keep the scaffold compilable and establish an observable integrity failure rather than count a compilation failure as the regression.
-- [ ] Initialize/read the signing key before advertising the tablet active; cold reads and transaction retries must not publish partial startup state. Keep the key stable over restart and on-disk reopen. Bound token bytes and nested payload parsing before allocation; verify the authenticated payload before using its revision/cursor. If the RPC inspects routing fields, treat them as untrusted until tablet verification. A cursor-signing key is internal service state, not a caller bearer or minted token.
-- [ ] Keep first-page path/incarnation discovery through the existing RPC registry flow. For a continuation, skip that discovery and forward requested path, optional explicit incarnation and opaque token directly to the tablet; it verifies the signature and derives the saved incarnation before listing. This must continue the original incarnation after path reuse even when the client omitted an explicit incarnation.
-- [ ] Move public token generation/verification to the authenticated tablet mode and reject tampering. Require the response capability enum to confirm authenticated support even on an empty/final page: a new RPC talking to an old tablet fails closed with an availability/upgrade error, never falls back to unsigned mode. Trusted internal structured mode remains separate. Upgrade the tablet before new RPC handlers and complete frontend rollout before claiming cluster-wide enforcement; test both mixed-version directions.
-- [ ] Reject old unsigned v1 public tokens with a clear restart-enumeration response. Ordinary public request/response schemas remain compatible and listing stays read-only with respect to delegation ownership.
-- [ ] Project the existing staged timestamp and Task 5 cleanup fields into administrative inventory. Public enum/field documentation must explicitly state that uncertain setup cannot safely be revoked until an authoritative outcome, even when its saved operation ID is present. Document external age/failure thresholds and the existing mint-failure warning/counters. Add suitable aggregate counters only if the selected operator integration cannot use these existing/new surfaces; avoid per-account metric cardinality.
-- [ ] Test a low-threshold observer against aged pending work and repeated cleanup failures, recovery/progress clearing the unhealthy condition, retained uncertain state, and mint warnings while a usable cache still serves.
-- [ ] Commit/push, run tablet and feature-filtered gRPC targets, and verify pagination still uses bounded full pages and fresh authorization on every RPC.
+- [x] Add valid continuation/reboot/reopen, altered payload/tag, wrong tablet/incarnation, stale revision, malformed/oversized token and administrative-revocation-between-pages cases. Add full exactly-once public enumeration with multiple records for the same account: never deduplicate distinct referrers. Add omitted/zero/1000/1001 public page-size cases and retain the tablet's independent zero rejection.
+- [x] Commit/push before RED runs. For new token fields, keep the scaffold compilable and establish an observable integrity failure rather than count a compilation failure as the regression.
+- [x] Initialize/read the signing key before advertising the tablet active; cold reads and transaction retries must not publish partial startup state. Keep the key stable over restart and on-disk reopen. Bound token bytes and nested payload parsing before allocation; verify the authenticated payload before using its revision/cursor. If the RPC inspects routing fields, treat them as untrusted until tablet verification. A cursor-signing key is internal service state, not a caller bearer or minted token.
+- [x] Keep first-page path/incarnation discovery through the existing RPC registry flow. For a continuation, skip that discovery and forward requested path, optional explicit incarnation and opaque token directly to the tablet; it verifies the signature and derives the saved incarnation before listing. This must continue the original incarnation after path reuse even when the client omitted an explicit incarnation.
+- [x] Move public token generation/verification to the authenticated tablet mode and reject tampering. Require the response capability enum to confirm authenticated support even on an empty/final page: a new RPC talking to an old tablet fails closed with an availability/upgrade error, never falls back to unsigned mode. Trusted internal structured mode remains separate. Upgrade the tablet before new RPC handlers and complete frontend rollout before claiming cluster-wide enforcement; test both mixed-version directions.
+- [x] Reject old unsigned v1 public tokens with a clear restart-enumeration response. Ordinary public request/response schemas remain compatible and listing stays read-only with respect to delegation ownership.
+- [x] Project the existing staged timestamp and Task 5 cleanup fields into administrative inventory. Public enum/field documentation must explicitly state that uncertain setup cannot safely be revoked until an authoritative outcome, even when its saved operation ID is present. Document external age/failure thresholds and the existing mint-failure warning/counters. Add suitable aggregate counters only if the selected operator integration cannot use these existing/new surfaces; avoid per-account metric cardinality.
+- [x] Test a low-threshold observer against aged pending work and repeated cleanup failures, recovery/progress clearing the unhealthy condition, retained uncertain state, and mint warnings while a usable cache still serves.
+- [x] Commit/push, run tablet and feature-filtered gRPC targets, and verify pagination still uses bounded full pages and fresh authorization on every RPC.
 
 ## Task 8: Complete shared-reader, identity and consumer scenarios
 
@@ -184,15 +184,15 @@ These are the plan's proposed resolutions of the review's contract questions, no
 
 **Interfaces:** Preserve public consumer APIs with small adapters where callbacks are required. Internally use owned `NActors::async` acquisition coroutines and typed modes/outcomes. Request-local verified identity, revisions, deadlines and intermediate replies belong to coroutine frames; shared cache/provider ownership and cross-thread cancellation synchronization remain in their shared owners.
 
-- [ ] Verify coroutine refactoring releases waits/subscriptions on cancellation and ignores late events without a second result. Preserve post-suspension identity/ACL checks and synchronous tablet transaction boundaries; implementation review must check that phase state is not duplicated in actor Boolean flags.
-- [ ] Add two concurrent real readers sharing a producer: cancel one, allow the survivor to succeed, and assert one mint. Repeat with principals having different ACLs and with distinct references to the same account.
-- [ ] Test SelectRow-only value access and DescribeSchema-only denied value access, ACL changes while mint is held, and stale schema/tablet timers arriving after token-phase transition.
-- [ ] Extend real long-lived S3/Solomon/provider use to a later request after ALTER, ACL loss and token refresh; assert current resolution or failure, never fallback to stale credentials. Keep transport retries of an already authorized request distinct from a new request.
-- [ ] Persist at least two secret pins, recreate only one path, and assert each path is checked against its own immutable identity. Credit the existing batch-cache version/reordering test rather than relabel it as a recreation test.
-- [ ] Grant ordinary schema rights to a builtin identity and assert subject validation rejects setup before lifecycle writes. Verify caller credential forwarding for discovery, fallback warning severity, public chosen-cloud metadata, and retained cloud without discovery on ALTER. Cover configured discovery failure with no database cloud: actionable error, zero activation and no IAM setup.
-- [ ] Test public metadata/EXPLAIN during IAM outage without mint/setup, and DROP committing during a revoke outage while cleanup remains durable for later recovery. Test retryable failure status/issues with an empty token cache and a token crossing its usable deadline while final identity/ACL validation is held.
-- [ ] Add supported diagnostic-channel sentinel assertions without inventing a claim that the current implementation leaks credentials. Controlled sibling-referrer cases must preserve the account-scoped cache/API behavior; obtain authoritative IAM semantics or live integration evidence separately, without treating a mock as proof of remote authorization.
-- [ ] Commit/push each test batch before its first run; execute focused cases followed by each affected owning target. Preserve the existing cancellation regression and its real cross-mailbox ordering.
+- [x] Verify coroutine refactoring releases waits/subscriptions on cancellation and ignores late events without a second result. Preserve post-suspension identity/ACL checks and synchronous tablet transaction boundaries; implementation review must check that phase state is not duplicated in actor Boolean flags.
+- [x] Add two concurrent real readers sharing a producer: cancel one, allow the survivor to succeed, and assert one mint. Repeat with principals having different ACLs and with distinct references to the same account.
+- [x] Test SelectRow-only value access and DescribeSchema-only denied value access, ACL changes while mint is held, and stale schema/tablet timers arriving after token-phase transition.
+- [x] Extend real long-lived S3/Solomon/provider use to a later request after ALTER, ACL loss and token refresh; assert current resolution or failure, never fallback to stale credentials. Keep transport retries of an already authorized request distinct from a new request.
+- [x] Persist at least two secret pins, recreate only one path, and assert each path is checked against its own immutable identity. Credit the existing batch-cache version/reordering test rather than relabel it as a recreation test.
+- [x] Grant ordinary schema rights to a builtin identity and assert subject validation rejects setup before lifecycle writes. Verify caller credential forwarding for discovery, fallback warning severity, public chosen-cloud metadata, and retained cloud without discovery on ALTER. Cover configured discovery failure with no database cloud: actionable error, zero activation and no IAM setup.
+- [x] Test public metadata/EXPLAIN during IAM outage without mint/setup, and DROP committing during a revoke outage while cleanup remains durable for later recovery. Test retryable failure status/issues with an empty token cache and a token crossing its usable deadline while final identity/ACL validation is held.
+- [x] Add supported diagnostic-channel sentinel assertions without inventing a claim that the current implementation leaks credentials. Controlled sibling-referrer cases must preserve the account-scoped cache/API behavior; obtain authoritative IAM semantics or live integration evidence separately, without treating a mock as proof of remote authorization.
+- [x] Commit/push each test batch before its first run; execute focused cases followed by each affected owning target. Preserve the existing cancellation regression and its real cross-mailbox ordering.
 
 ## Task 9: Add exact boundary, restart and chaos coverage
 
@@ -200,13 +200,13 @@ These are the plan's proposed resolutions of the review's contract questions, no
 
 **Interfaces:** Reuse existing fault hooks and independent state model; extend the model for diagnostics, failure streak and cleanup age. Do not replace it with assertions copied from production transitions.
 
-- [ ] Test committed success and retry ACK replay after the old lease deadline in the same generation with no later claim. Test that a newer claim/generation still fences the replay.
-- [ ] Test the original durable pending timestamp after restart at one microsecond before and exactly ten minutes. No-op behavior follows Task 3; a real replacement follows the guard.
-- [ ] Add a cold multi-record promotion/drop transition case distinct from the existing atomic cold claim test. Assert no partial canonical/index writes and no duplicated effects after Execute retry.
-- [ ] Exercise new diagnostic/backoff state at before-commit, after-commit-before-Complete, dropped response, worker death, tablet restart and fresh-runtime on-disk reopen boundaries.
-- [ ] Extend seeded independent-model chaos with delayed setup outcomes, pending replacement, repeated revoke failure, identity reuse and lease takeover. Assert unresolved setup is never revoked, every successful retired binding remains accountable, and no old actor completes new work.
-- [ ] Insert a database registration behind an active scan cursor and verify eventual discovery with the existing minimum pause and fairness for other databases.
-- [ ] Commit/push before test execution. Repeat the targeted recovery schedules with recorded seeds; broaden repetition only for new failures or unresolved nondeterminism.
+- [x] Test committed success and retry ACK replay after the old lease deadline in the same generation with no later claim. Test that a newer claim/generation still fences the replay.
+- [x] Test the original durable pending timestamp after restart at one microsecond before and exactly ten minutes. No-op behavior follows Task 3; a real replacement follows the guard.
+- [x] Add a cold multi-record promotion/drop transition case distinct from the existing atomic cold claim test. Assert no partial canonical/index writes and no duplicated effects after Execute retry.
+- [x] Exercise new diagnostic/backoff state at before-commit, after-commit-before-Complete, dropped response, worker death, tablet restart and fresh-runtime on-disk reopen boundaries.
+- [x] Extend seeded independent-model chaos with delayed setup outcomes, pending replacement, repeated revoke failure, identity reuse and lease takeover. Assert unresolved setup is never revoked, every successful retired binding remains accountable, and no old actor completes new work.
+- [x] Insert a database registration behind an active scan cursor and verify eventual discovery with the existing minimum pause and fairness for other databases.
+- [x] Commit/push before test execution. Repeat the targeted recovery schedules with recorded seeds; broaden repetition only for new failures or unresolved nondeterminism.
 
 ## Task 10: Test cleanup through actual tenant teardown
 
@@ -214,23 +214,23 @@ These are the plan's proposed resolutions of the review's contract questions, no
 
 **Interfaces:** Uses the already provisioned service-owned tablet and configured tablet ID. Does not introduce per-tenant tablet provisioning or ownership-transfer APIs.
 
-- [ ] Create delegated secrets with active, pending and unknown outcomes; delete the tenant/database while preserving the service-owned delegation tablet, then continue recovery using the saved immutable bindings.
-- [ ] Verify known successful retired bindings drain authoritatively, known operation IDs are polled, unknown first replies remain visible and unclaimed, and explicit-incarnation inventory remains available after schema removal.
-- [ ] Recreate the same tenant/path names and ensure old cleanup cannot mutate new identities. Restart the service tablet and worker during cleanup and repeat with actual on-disk reopening.
-- [ ] Commit/push before running. If the existing fixture cannot perform real tenant deletion, extend it and its owning target; do not rename a secret-DROP/runtime-restart case as tenant-teardown evidence.
-- [ ] Document the remaining deployment prerequisite: production storage must actually be owned outside the managed tenant. Local tests do not prove production placement or live IAM/control-plane behavior.
+- [x] Create delegated secrets with active, pending and unknown outcomes; delete the tenant/database while preserving the service-owned delegation tablet, then continue recovery using the saved immutable bindings.
+- [x] Verify known successful retired bindings drain authoritatively, known operation IDs are polled, unknown first replies remain visible and unclaimed, and explicit-incarnation inventory remains available after schema removal.
+- [x] Recreate the same tenant/path names and ensure old cleanup cannot mutate new identities. Restart the service tablet and worker during cleanup and repeat with actual on-disk reopening.
+- [x] Commit/push before running. If the existing fixture cannot perform real tenant deletion, extend it and its owning target; do not rename a secret-DROP/runtime-restart case as tenant-teardown evidence.
+- [x] Document the remaining deployment prerequisite: production storage must actually be owned outside the managed tenant. Local tests do not prove production placement or live IAM/control-plane behavior.
 
 ## Task 11: Final review, evidence and fork delivery
 
 **Files:** Update only affected component test-owned specs/tasks and shared [verification.md](verification.md) after real execution.
 
-- [ ] Reconcile every requirement/scenario with implemented code and exact executable assertions. Keep any unexecuted scenario explicitly planned; record external IAM guarantees separately.
-- [ ] Run `ydb-code-review` over the full implementation delta using independent Strict/Defender/Judge roles. Resolve substantiated findings and add regressions where needed; push each fix before rerunning its tests.
-- [ ] Run a separate independent strict OOP architecture agent review over the completed feature, focusing on testability and modularity: ownership and invariants, cohesive component boundaries, minimal SchemeShard coupling, coroutine-local operation state, typed interfaces, independently controllable IAM/time/randomness/storage failure boundaries, and meaningful tests of production behavior. Require concrete code anchors and impact; resolve substantiated findings with regressions rather than adding abstractions only to satisfy style preferences. This review and the YDB PR review are explicit user completion requirements.
-- [ ] Verify the final source snapshot with the affected targets listed below. Use sequential groups for large links; do not rerun unaffected broad suites solely to increase counts.
-- [ ] Build `ydb/core/driver_lib/run` for changed shared settings, protobufs and wiring.
-- [ ] Archive dereferenced result directories, commands, source manifests, real exit codes and chaos seeds. Keep the historical 407 GOOD record separate from the new evidence.
-- [ ] Commit the final evidence/spec updates, push to the user's fork and verify remote branch SHA equals delivered HEAD. Do not merge or publish a GitHub review merely as a side effect of this plan.
+- [x] Reconcile every requirement/scenario with implemented code and exact executable assertions. Keep any unexecuted scenario explicitly planned; record external IAM guarantees separately.
+- [x] Run `ydb-code-review` over the full implementation delta using independent Strict/Defender/Judge roles. Resolve substantiated findings and add regressions where needed; push each fix before rerunning its tests.
+- [x] Run a separate independent strict OOP architecture agent review over the completed feature, focusing on testability and modularity: ownership and invariants, cohesive component boundaries, minimal SchemeShard coupling, coroutine-local operation state, typed interfaces, independently controllable IAM/time/randomness/storage failure boundaries, and meaningful tests of production behavior. Require concrete code anchors and impact; resolve substantiated findings with regressions rather than adding abstractions only to satisfy style preferences. This review and the YDB PR review are explicit user completion requirements.
+- [x] Verify the final source snapshot with the affected targets listed below. Use sequential groups for large links; do not rerun unaffected broad suites solely to increase counts.
+- [x] Build `ydb/core/driver_lib/run` for changed shared settings, protobufs and wiring.
+- [x] Archive dereferenced result directories, commands, source manifests, real exit codes and chaos seeds. Keep the historical 407 GOOD record separate from the new evidence.
+- [x] Commit the final evidence/spec updates, push to the user's fork and verify remote branch SHA equals delivered HEAD. Do not merge or publish a GitHub review merely as a side effect of this plan.
 
 ## Commands and completion evidence
 
@@ -260,6 +260,6 @@ For focused regressions append `-F '*SuiteName::CaseName*'` using the actual dec
 | `ydb/library/yql/providers/s3/credentials/ut` | Credential integration changes/cases |
 | `ydb/library/yql/providers/solomon/actors/ut` | Later-request refresh/ACL cases |
 
-Build-only final command: `./ya make --build relwithdebinfo ydb/core/driver_lib/run`, with the same full-log/exit handling.
+Build-only final command: `./ya make --build relwithdebinfo --ignore-recurses ydb/core/driver_lib/run`, with the same full-log/exit handling.
 
 This plan does not include a new external cleanup handoff, unknown-operation replay guarantees, revocation of already issued tokens, terminal-record garbage collection or automatic tablet provisioning. Those are separate design/deployment work. Controlled tests can verify saved subjects and local transitions; live IAM authorization and sibling-referrer semantics still need authoritative external evidence.

@@ -15,8 +15,10 @@ Restored baseline: `c68a9f3b2cafbdee3c6a3f870cb002166dda3dd7`. Reader timing is 
 
 - [x] 2.1 Validate this local OpenSpec change and its links, and review the relocation; verify strict validation and preservation of every requirement/scenario from the reviewed specification.
 
-## 3. Coroutine acquisition follow-up (not yet implemented)
+## 3. Coroutine acquisition follow-up
 
-- [ ] 3.1 Refactor feature-owned asynchronous acquisition into co_await coroutines with operation-local caller/identity/deadline state and typed modes.
-- [ ] 3.2 Keep shared producer/provider state separate; verify cancellation releases only one acquisition and late replies cannot return credentials.
-- [ ] 3.3 Cover per-caller ACLs, multiple persisted identities, token expiry during revalidation and later requests after ALTER or ACL loss.
+- [x] 3.1 Refactor feature-owned asynchronous acquisition into co_await coroutines with operation-local caller/identity/deadline state and typed modes.
+- [x] 3.2 Keep shared producer/provider state separate; verify cancellation releases only one acquisition and late replies cannot return credentials.
+- [x] 3.3 Cover per-caller ACLs, multiple persisted identities, token expiry during revalidation and later requests after ALTER or ACL loss.
+
+Follow-up evidence: `ydb/services/scheme_secret/ut/fast` 48 GOOD at `1373e723886e`. Exact commands, mixed-run exits and review findings are recorded in the shared verification record.

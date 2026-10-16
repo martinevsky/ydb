@@ -14,8 +14,10 @@ Restored baseline: `c68a9f3b2cafbdee3c6a3f870cb002166dda3dd7`. The complete-atte
 
 - [x] 2.1 Validate this local OpenSpec change and its links, and review the relocation; verify strict validation and preservation of every requirement/scenario from the reviewed specification.
 
-## 3. Coroutine and scheduling follow-up (not yet implemented)
+## 3. Coroutine and scheduling follow-up
 
-- [ ] 3.1 Keep refresh/IAM-operation temporary state in owned co_await coroutines and use typed operation/outcome enums; verify cancellation and late replies.
-- [ ] 3.2 Reuse standard TBackoff for failures and bounded healthy-refresh dispersion, with immediate first mint and a safe minimum-pacing gap for subsecond usability.
-- [ ] 3.3 Derive producer/reader timeout bounds from shared retry policy and test original-bearer expiry, idle eviction, shared waiters and credential-free diagnostics.
+- [x] 3.1 Keep refresh/IAM-operation temporary state in owned co_await coroutines and use typed operation/outcome enums; verify cancellation and late replies.
+- [x] 3.2 Reuse standard TBackoff for failures and bounded healthy-refresh dispersion, with immediate first mint and a safe minimum-pacing gap for subsecond usability.
+- [x] 3.3 Derive producer/reader timeout bounds from shared retry policy and test original-bearer expiry, idle eviction, shared waiters and credential-free diagnostics.
+
+Follow-up evidence: `ydb/core/security/iam_delegation/ut` 73 GOOD at `9a2b73490817`. Exact commands, mixed-run exits and review findings are recorded in the shared verification record.

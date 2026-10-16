@@ -8,11 +8,13 @@ Authoritative contracts: [consumers](../../../../../../../../services/scheme_sec
 
 ## Execution and evidence
 
+Latest recorded owning run: **32 GOOD** (selected cases) at `a746ead6f12b`, `final-review-consumer-green-executor-red-parallel100`; actual combined command exit 254. Historical counts below retain their original revisions.
+
 Run from the repository root: `./ya make --build relwithdebinfo -tA --ignore-recurses --link-threads=1 ydb/library/yql/providers/solomon/actors/ut`. A focused reproduction appends `-F 'Suite::Test'` using an exact mapping below. Test source location and build target are separate: `UNITTEST_FOR` can resolve a source from its parent library.
 
 Source baseline: `67a530cc28eb2269e75fe0b83f2bacf73a1cbe2a`, including C1 product commit `8795e8bd1b186fc53051e5dd79126d9347a0e1b3`. This component received coverage documentation only during the security relocation; historical source/evidence limits are recorded in the [durable verification record](../../../../../../../../core/security/iam_delegation/docs/external-secrets/verification.md).
 
-Status: **historical executable coverage; no new execution claimed here**. The 166/166 post-relocation result covers only the three security targets, not this executable. Use the linked verification record for the actual historical commands and revisions. Planned scenarios have no executable case and do not contribute to executed counts.
+Historical evidence note: The 166/166 post-relocation result covers only the three security targets, not this executable. Use the linked verification record for the actual historical commands and revisions. Planned scenarios have no executable case and do not contribute to executed counts.
 
 Fixture boundary: TAsyncWriter drives the real Solomon write actor with asynchronous credentials, counted HTTP requests and callback/free-space observation. HTTP and credential responses are controlled; no live Solomon service is used.
 
@@ -34,7 +36,7 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `SolomonAsynchronousCredentials::HeldCredentialsDelayHttpAndCompletion` | [dq_solomon_async_credentials_ut.cpp:83](../../dq_solomon_async_credentials_ut.cpp#L83) | `ydb/library/yql/providers/solomon/actors/ut` |
+| `SolomonAsynchronousCredentials::HeldCredentialsDelayHttpAndCompletion` | [dq_solomon_async_credentials_ut.cpp](../../dq_solomon_async_credentials_ut.cpp) | `ydb/library/yql/providers/solomon/actors/ut` |
 
 #### Scenario: Denied credentials restore backpressure
 
@@ -48,7 +50,7 @@ Executable mapping (status: implemented; execution per verification record):
 
 | Executable case | Test source | Command target |
 | --- | --- | --- |
-| `SolomonAsynchronousCredentials::DeniedCredentialsRestoreBackpressureAndNeverSendHttp` | [dq_solomon_async_credentials_ut.cpp:97](../../dq_solomon_async_credentials_ut.cpp#L97) | `ydb/library/yql/providers/solomon/actors/ut` |
+| `SolomonAsynchronousCredentials::DeniedCredentialsRestoreBackpressureAndNeverSendHttp` | [dq_solomon_async_credentials_ut.cpp](../../dq_solomon_async_credentials_ut.cpp) | `ydb/library/yql/providers/solomon/actors/ut` |
 
 #### Scenario: Later batches acquire current credentials
 
@@ -56,7 +58,7 @@ Executable mapping (status: implemented; execution per verification record):
 - **WHEN** a later batch follows credential rotation or authorization denial.
 - **THEN** the batch uses current credentials or fails without reusing the earlier token.
 
-Status: executable Task 8 regressions added; compilation and first execution pending. No behavior failure or passing result is claimed.
+Status: mapped executable cases passed at `a746ead6f12b`. See the verification record for exact commands, suite coverage and combined-run exits.
 
 Contract coverage: external-secret-consumers / Credentials are acquired for new external requests.
 
