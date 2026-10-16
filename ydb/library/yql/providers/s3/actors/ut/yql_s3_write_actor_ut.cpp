@@ -122,18 +122,19 @@ Y_UNIT_TEST_SUITE(S3WriterAsynchronousCredentials) {
         writer.Pump();
         UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Creates, 1);
         UNIT_ASSERT_C(writer.Callbacks.Errors == 0, writer.Callbacks.Issues);
-        UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Parts, 1);
+        UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Parts, 0);
         const auto calls = writer.Credentials->State->Calls;
         writer.Credentials->State->Held = true;
-        // Multipart initialization is complete. This batch enters Go directly
-        // from the compute actor, rather than from the file actor's event loop.
+        // The output queue retains its final unsealed buffer. A second buffer
+        // releases the first part through Go directly from the compute actor,
+        // after multipart initialization has completed.
         writer.Write(TS3Writer::ECompletion::Continue, 8 * 1024 * 1024);
         writer.Pump();
         UNIT_ASSERT_VALUES_EQUAL(writer.Credentials->State->Calls, calls + 1);
-        UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Parts, 1);
+        UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Parts, 0);
         writer.Credentials->Release("later-token");
         writer.Pump();
-        UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Parts, 2);
+        UNIT_ASSERT_VALUES_EQUAL(writer.Gateway->Parts, 1);
         UNIT_ASSERT_VALUES_EQUAL(writer.Callbacks.Errors, 0);
         UNIT_ASSERT(!writer.Callbacks.Finished);
     }

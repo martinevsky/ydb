@@ -405,6 +405,55 @@ Y_UNIT_TEST_SUITE(IamDelegatedTokenActor) {
         f.Reply(*firstRetry, TDuration::Minutes(10));
     }
 
+    Y_UNIT_TEST(DemandBeforeIdleEvictionPreservesCurrentEntry) {
+        TFixture f;
+        TInstant refreshAt;
+        f.Runtime.SetScheduledEventFilter([&](auto&, auto& event, TDuration delay, TInstant& deadline) {
+            if (!refreshAt && event->GetRecipientRewrite() == f.Service && delay > TDuration::Minutes(10)) {
+                refreshAt = deadline;
+            }
+            return false;
+        });
+        f.InitialToken();
+        UNIT_ASSERT(refreshAt > f.Runtime.GetCurrentTime() + TDuration::Minutes(10));
+        // Position a request immediately before the actual scheduled refresh,
+        // where the idle check would otherwise remove this entry.
+        f.Runtime.UpdateCurrentTime(refreshAt - TDuration::MicroSeconds(1));
+        f.Get(2);
+        UNIT_ASSERT_VALUES_EQUAL(f.Result(2).Token, "delegated-token");
+        f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
+        auto refresh = f.Mint();
+        UNIT_ASSERT(f.Results.empty());
+        f.Reply(*refresh, TDuration::Hours(12), "refreshed-live-entry");
+        f.Runtime.SimulateSleep(TDuration::MilliSeconds(1));
+        f.Get(3);
+        UNIT_ASSERT_VALUES_EQUAL(f.Result(3).Token, "refreshed-live-entry");
+        UNIT_ASSERT(f.Mints.empty());
+        UNIT_ASSERT_VALUES_EQUAL(f.Subscriptions, 1);
+    }
+
+    Y_UNIT_TEST(ProducerShutdownDisarmsMintAndBackoffWaiters) {
+        enum class EWait { Mint, Backoff };
+        for (const auto wait : {EWait::Mint, EWait::Backoff}) {
+            TFixture f;
+            f.Get(1);
+            auto mint = f.Mint();
+            if (wait == EWait::Backoff) {
+                f.Reply(*mint, TDuration::Hours(12), {}, grpc::StatusCode::PERMISSION_DENIED);
+                UNIT_ASSERT(!f.Result(1).IsSuccess());
+            }
+            f.Get(2);
+            f.Runtime.Send(new IEventHandle(f.Service, {}, new TEvents::TEvPoison));
+            f.Until([&] { return !f.Runtime.FindActor(f.Service); });
+            if (wait == EWait::Mint) {
+                f.Reply(*mint, TDuration::Hours(12), "late-after-shutdown");
+            }
+            f.Runtime.SimulateSleep(TDuration::Minutes(2));
+            UNIT_ASSERT(f.Results.empty());
+            UNIT_ASSERT(f.Mints.empty());
+        }
+    }
+
     // Coverage control: idle eviction must survive the new healthy-refresh jitter.
     Y_UNIT_TEST(IdleEntryStopsBackgroundMintingAndNextDemandStartsImmediately) {
         TFixture f;

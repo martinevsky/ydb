@@ -1528,7 +1528,8 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
         ui32 forged = 0;
         f.Intercept = [&](auto& event) {
             if (event->GetTypeRewrite() == NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult::EventType
-                && event->GetRecipientRewrite() == orchestrator && !forged) {
+                && event->GetRecipientRewrite() == orchestrator && !forged
+                && event->template Get<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult>()->GetRecord().GetPath() == "/Root/secret") {
                 auto& record = *event->template Get<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult>()->MutableRecord();
                 record.SetStatus(NKikimrScheme::StatusPathDoesNotExist);
                 record.ClearPathDescription();

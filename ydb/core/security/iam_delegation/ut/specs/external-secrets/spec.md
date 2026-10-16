@@ -244,3 +244,19 @@ Contract coverage: iam-delegated-token-acquisition; iam-delegation-revocation.
 | `IamDelegationRecovery::CompletedOperationIssuesExcludeRawMessageAndDescriptions` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
 | `IamDelegationRecovery::PollTransportIssuesStayRedactedWithoutResolvingUncertainty` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
 | `IamDelegationRecovery::SubmissionIssuesRetainSafeHintWithoutRawTransportDiagnostics` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+
+#### Scenario: Demand around idle eviction and producer shutdown
+
+- **GIVEN** the real token producer and its actual scheduled refresh, or readers suspended during minting/backoff.
+- **WHEN** demand arrives immediately before the idle check, after eviction, or the producer receives Poison before a late mint reply.
+- **THEN** recent demand preserves the current entry, demand after eviction starts a fresh mint, and shutdown cancels readers and refresh work without publishing late results.
+
+Status: two preservation cases added; first execution pending. The existing after-eviction case previously passed in the full IAM suite at `1373e723`.
+
+Contract coverage: iam-delegated-token-acquisition / "Idle entries expire in bounded time" — scenario "Waiter arrives during eviction"; "Refresh operation state belongs to its coroutine" — scenario "Producer stops with a mint outstanding".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegatedTokenActor::DemandBeforeIdleEvictionPreservesCurrentEntry` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::IdleEntryStopsBackgroundMintingAndNextDemandStartsImmediately` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::ProducerShutdownDisarmsMintAndBackoffWaiters` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
