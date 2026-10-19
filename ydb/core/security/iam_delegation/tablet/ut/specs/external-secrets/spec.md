@@ -345,3 +345,15 @@ Status: mapped executable cases passed at `969b11b16a9d`. See the verification r
 | `IamDelegationRecoveryChaos::Seed1` | [recovery_chaos_ut.cpp](../../recovery_chaos_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationRecoveryChaos::Seed330` | [recovery_chaos_ut.cpp](../../recovery_chaos_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
 | `IamDelegationRecoveryChaos::Seed20261013` | [recovery_chaos_ut.cpp](../../recovery_chaos_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |
+
+#### Scenario: Authentication refusal kind survives disk reopening
+
+- **GIVEN** a setup failure with an allowlisted authentication or permission reason committed in the real disk fixture.
+- **WHEN** all actors are discarded, the same disk is reopened in a fresh runtime, and the exact setup result is replayed.
+- **THEN** the serialized refusal kind and public UNAUTHORIZED status remain unchanged; fixed hints distinguish authentication from missing setup rights without remote text.
+
+Contract coverage: iam-delegation-lifecycle / "Authentication and permission refusals have distinct reasons"; "Recovery preserves committed state under storage failures".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamDelegationStorageReopen::AuthenticationFailureKindsSurviveWholeRuntimeDiskReopen` | [storage_reopen_ut.cpp](../../storage_reopen_ut.cpp) | `ydb/core/security/iam_delegation/tablet/ut` |

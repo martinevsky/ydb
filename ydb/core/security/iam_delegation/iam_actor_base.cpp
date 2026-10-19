@@ -1,4 +1,5 @@
 #include "iam_actor_base.h"
+#include "policy/diagnostics.h"
 
 #include <ydb/library/actors/async/wait_for_event.h>
 
@@ -67,6 +68,14 @@ constexpr TIamFailureType SafeFailureTypes[] = {
 
 TVector<EDelegationFailureReason> ExtractIamFailureReasons(const google::rpc::Status& status) {
     TVector<EDelegationFailureReason> reasons;
+    if (status.code() == grpc::StatusCode::UNAUTHENTICATED) {
+        // Rejected credentials cannot establish a business prerequisite failure.
+        reasons.push_back(EDelegationFailureReason::AuthenticationFailed);
+        return reasons;
+    }
+    if (status.code() == grpc::StatusCode::PERMISSION_DENIED) {
+        reasons.push_back(EDelegationFailureReason::PermissionDenied);
+    }
     if (status.ByteSizeLong() > MaxIamFailureDetailsBytes) {
         return reasons;
     }
@@ -90,17 +99,33 @@ TVector<EDelegationFailureReason> ExtractIamFailureReasons(const google::rpc::St
 }
 
 TVector<EDelegationFailureReason> ExtractIamFailureReasons(const NYdbGrpc::TGrpcStatus& status) {
-    google::rpc::Status details;
-    if (status.Details.size() > MaxIamFailureDetailsBytes || !details.ParseFromString(status.Details)) {
+    if (status.InternalError) {
         return {};
     }
+    google::rpc::Status details;
+    if (status.Details.size() > MaxIamFailureDetailsBytes || !details.ParseFromString(status.Details)) {
+        details.Clear();
+    }
+    // The actual reply code wins over an untrusted or malformed details payload.
+    details.set_code(status.GRpcStatusCode);
     return ExtractIamFailureReasons(details);
 }
 
 namespace {
-TString ExplainFailureReasons(const TVector<EDelegationFailureReason>& reasons) {
+TString ExplainFailureReasons(const TVector<EDelegationFailureReason>& reasons, TStringBuf method) {
     TStringBuilder out;
     for (const auto reason : reasons) {
+        if (reason == EDelegationFailureReason::AuthenticationFailed) {
+            out << "; " << NDiagnostics::AuthenticationFailed;
+            continue;
+        }
+        if (reason == EDelegationFailureReason::PermissionDenied) {
+            out << "; " << NDiagnostics::PermissionDenied;
+            if (const auto rights = NDiagnostics::RequiredRights(method); !rights.empty()) {
+                out << "; " << rights;
+            }
+            continue;
+        }
         for (const auto& known : SafeFailureTypes) {
             if (known.Reason == reason) {
                 out << "; " << known.Type << ": " << HintForIamFailureType(known.Type);
@@ -112,12 +137,12 @@ TString ExplainFailureReasons(const TVector<EDelegationFailureReason>& reasons) 
 }
 } // namespace
 
-TString ExplainIamFailure(const google::rpc::Status& status) {
-    return ExplainFailureReasons(ExtractIamFailureReasons(status));
+TString ExplainIamFailure(const google::rpc::Status& status, TStringBuf method) {
+    return ExplainFailureReasons(ExtractIamFailureReasons(status), method);
 }
 
-TString ExplainIamFailure(const NYdbGrpc::TGrpcStatus& status) {
-    return ExplainFailureReasons(ExtractIamFailureReasons(status));
+TString ExplainIamFailure(const NYdbGrpc::TGrpcStatus& status, TStringBuf method) {
+    return ExplainFailureReasons(ExtractIamFailureReasons(status), method);
 }
 
 Ydb::StatusIds::StatusCode MapGrpcStatus(int code) {

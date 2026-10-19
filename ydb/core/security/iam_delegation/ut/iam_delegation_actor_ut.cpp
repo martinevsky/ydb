@@ -300,11 +300,11 @@ void CheckSafeFailureReasons(EFailureDelivery delivery) {
     }
     const auto result = f.OperationResult(EDelegationOperationOutcome::Failed);
     UNIT_ASSERT_VALUES_EQUAL(result.Status, Ydb::StatusIds::UNAUTHORIZED);
-    UNIT_ASSERT_VALUES_EQUAL(result.FailureReasons.size(), 5);
+    UNIT_ASSERT_VALUES_EQUAL(result.FailureReasons.size(), 6);
     for (const auto reason : {
         EDelegationFailureReason::WrongCloud, EDelegationFailureReason::ServiceNotEnabled,
         EDelegationFailureReason::CloudNotFound, EDelegationFailureReason::ServiceAccountNotFound,
-        EDelegationFailureReason::SubjectNotDelegatable}) {
+        EDelegationFailureReason::SubjectNotDelegatable, EDelegationFailureReason::PermissionDenied}) {
         UNIT_ASSERT(std::find(result.FailureReasons.begin(), result.FailureReasons.end(), reason) != result.FailureReasons.end());
     }
     UNIT_ASSERT(f.Setups.empty());
@@ -808,6 +808,13 @@ Y_UNIT_TEST_SUITE(IamDelegationRecovery) {
             UNIT_ASSERT_VALUES_EQUAL(result.FailureReasons.size(), 1);
             UNIT_ASSERT_STRING_CONTAINS(result.Issues.ToOneLineString(), code == grpc::StatusCode::UNAUTHENTICATED
                 ? "authentication failed" : "permission denied");
+            const auto message = result.Issues.ToOneLineString();
+            if (code == grpc::StatusCode::PERMISSION_DENIED) {
+                UNIT_ASSERT_STRING_CONTAINS(message, "original initiating system service account");
+                UNIT_ASSERT_STRING_CONTAINS(message, "<service>.<resource>.get");
+            }
+            UNIT_ASSERT(!message.Contains("iam.serviceAccounts.use"));
+            UNIT_ASSERT(!message.Contains("internal.service-control.delegator"));
             UNIT_ASSERT(f.Setups.empty());
             UNIT_ASSERT(f.Revokes.empty());
         }

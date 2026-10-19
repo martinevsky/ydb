@@ -288,3 +288,17 @@ Contract coverage: iam-delegated-token-acquisition / "Idle entries expire in bou
 | `IamDelegatedTokenActor::DemandBeforeIdleEvictionPreservesCurrentEntry` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
 | `IamDelegatedTokenActor::IdleEntryStopsBackgroundMintingAndNextDemandStartsImmediately` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
 | `IamDelegatedTokenActor::ProducerShutdownDisarmsMintAndBackoffWaiters` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+
+#### Scenario: Authentication refusal is distinct from permission denial
+
+- **GIVEN** real IAM actors and controlled cloud replies, including contradictory details and internal client errors.
+- **WHEN** setup, revoke, polling or minting receives an authentication or permission refusal.
+- **THEN** public status remains compatible while safe reasons and required-right hints distinguish the refusal; rejected node credentials preserve usable tokens, authoritative permission denial invalidates the key, and polling refusal preserves uncertainty without mutation replay.
+
+Contract coverage: iam-delegation-lifecycle / "Terminal setup failures retain their diagnostics", "Unknown setup is not a failed setup"; iam-delegated-token-acquisition / "Transient failures preserve usable cached tokens".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `IamAuthenticationFailures::AuthenticationAndPermissionFailuresHaveDifferentDurableReasons`; `IamAuthenticationFailures::TransportCodeTakesPrecedenceOverContradictoryDetails`; `IamAuthenticationFailures::InternalTransportErrorsDoNotBlameCredentialsOrPermissions` | [iam_auth_failure_ut.cpp](../../iam_auth_failure_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegationRecovery::SetupPermissionRefusalNamesUserAndServiceRights`; `IamDelegationRecovery::RevokePermissionRefusalNamesTheServiceRole`; `IamDelegationRecovery::PollPermissionFailurePreservesUnknownOperation` | [iam_delegation_actor_ut.cpp](../../iam_delegation_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |
+| `IamDelegatedTokenActor::RejectedSystemCredentialsKeepTheUsableDelegatedToken`; `IamDelegatedTokenActor::MintPermissionRefusalNamesTheRegisteredIdentityAndDelegationRequirements`; `IamDelegatedTokenActor::InternalTransportFailureDoesNotRevokeTheCachedToken`; `IamDelegatedTokenActor::InternalTransportFailureCannotBeReportedAsMissingPermissions` | [iam_delegated_token_actor_ut.cpp](../../iam_delegated_token_actor_ut.cpp) | `ydb/core/security/iam_delegation/ut` |

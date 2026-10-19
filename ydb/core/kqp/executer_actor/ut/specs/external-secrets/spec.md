@@ -293,3 +293,16 @@ Executable coverage: `CreateIfNotExistsNeedsParentCreateWithoutTargetDescribe`, 
 - **AND** after tablet reboot an independent worker polls the saved operation, activates the same secret and never resubmits setup
 
 Executable coverage: `ExecutorAbortAfterAdmissionPreservesDurableRecovery`.
+
+#### Scenario: Coordinator preserves distinct authentication and permission refusals
+
+- **GIVEN** an active binding and a coordinator-owned replacement setup.
+- **WHEN** submission or a completed polled operation returns an authentication or permission refusal.
+- **THEN** the statement returns UNAUTHORIZED with distinct safe hints, permission refusal names required setup rights, and the typed refusal survives tablet reboot without replacing the active binding or exposing remote text.
+
+Contract coverage: iam-delegation-lifecycle / "Authentication and permission refusals have distinct reasons"; "Permission hints identify the required principal and resource".
+
+| Executable case | Test source | Command target |
+| --- | --- | --- |
+| `KqpIamDelegationSecretOrchestrator::SetupPermissionRefusalReportsRequiredRightsAndPersistsItsKind` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |
+| `KqpIamDelegationSecretOrchestrator::SetupAuthenticationRefusalDoesNotBlameUserPermissions` | [kqp_iam_delegation_secret_orchestrator_ut.cpp](../../../kqp_iam_delegation_secret_orchestrator_ut.cpp) | `ydb/core/kqp/executer_actor/ut` |

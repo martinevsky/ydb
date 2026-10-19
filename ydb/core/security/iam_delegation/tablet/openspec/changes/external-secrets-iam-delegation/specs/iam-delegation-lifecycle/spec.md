@@ -74,6 +74,29 @@ A known terminal IAM refusal SHALL persist its mapped status and bounded credent
 - **WHEN** a recovery worker wins setup dispatch, commits a terminal IAM refusal and the original coordinator resumes after reply loss or restart
 - **THEN** the coordinator reports the recorded IAM status and issues without repeating setup or replacing the active binding.
 
+### Requirement: Authentication and permission refusals have distinct reasons
+Shared IAM handling SHALL distinguish authoritative `UNAUTHENTICATED` (`AuthenticationFailed`) from `PERMISSION_DENIED` (`PermissionDenied`). Both SHALL retain public YDB `UNAUTHORIZED` and be nonretryable within one RPC. Durable setup diagnostics SHALL use additive allowlisted reasons and fixed hints without remote text.
+
+#### Scenario: A typed refusal survives restart
+- **WHEN** setup fails with either refusal and its diagnostics are persisted
+- **THEN** recovery retains the distinct reason and reconstructs its fixed hint; new durable values do not renumber existing values.
+
+#### Scenario: Transport and detail status disagree
+- **WHEN** a reply contains contradictory detail status or is marked as an internal client transport error
+- **THEN** authoritative transport status takes precedence over details; an internal client transport error establishes neither authentication nor permission refusal.
+
+### Requirement: Permission hints identify the required principal and resource
+Permission-denied hints SHALL name relevant required roles or permissions with their principal and resource, using fixed method-specific text.
+
+#### Scenario: Setup lacks required rights
+- **WHEN** IAM refuses setup with `PERMISSION_DENIED`
+- **THEN** the hint names the initiating subject's `iam.serviceAccounts.use` (role `iam.serviceAccounts.user`) on the target service account and the calling system service account's `internal.service-control.delegator` role on the service registry's `iam.gizmo` resource.
+- **AND** calls with references also name the calling service account's `service-control.services.referenceUpdater` role on the referrer resource type.
+
+#### Scenario: Revoke lacks service rights
+- **WHEN** IAM refuses revoke with `PERMISSION_DENIED`
+- **THEN** the hint names the calling system service account's `internal.service-control.delegator` role on the service registry's `iam.gizmo` resource without blaming initiating-subject use rights.
+
 ### Requirement: Unknown setup is not a failed setup
 A setup whose outcome is uncertain SHALL remain visible and ineligible for revocation while it could still grant access. A saved IAM operation identifier SHALL be used to recover the outcome. Without an authoritative replay or lookup contract, absence of that identifier MUST NOT authorize blind setup replay or timeout-based revocation.
 
@@ -85,6 +108,11 @@ A setup whose outcome is uncertain SHALL remain visible and ineligible for revoc
 #### Scenario: Known operation survives restart
 - **WHEN** the IAM operation identifier is durable but its final outcome is not
 - **THEN** recovery polls that operation and records its definitive result before promotion or cleanup.
+
+#### Scenario: Poll transport refuses access
+- **WHEN** polling receives an authentication or permission refusal
+- **THEN** the outcome remains unknown with the saved operation identifier and no setup or revoke replay.
+- **AND** a permission hint names the original initiating system identity, or `<service>.<resource>.get` on the associated resource for another identity; an opaque operation identifier does not identify a concrete permission or the original mutation kind.
 
 ### Requirement: Retiring pending work preserves responsibility
 Binding-changing replacements SHALL be blocked while unresolved pending work is younger than ten minutes, using its durable staging timestamp across restart; retirement is allowed at equality. A no-op ALTER MUST preserve pending work without applying this guard. Detachment SHALL retain cleanup responsibility and the active binding; late outcomes MUST affect only their original operation, never a newer pending replacement.

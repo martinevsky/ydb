@@ -47,16 +47,17 @@ bool IsRetryableGrpcStatus(const NYdbGrpc::TGrpcStatus& status);
 // service_control.proto) that the user can act on; empty for the rest.
 TStringBuf HintForIamFailureType(TStringBuf type);
 
-// IAM reports the failure type as Violation.type of a google.rpc.PreconditionFailure in the error
-// details. Returns bounded, deduplicated allowlisted types and fixed hints. Remote
-// messages, violation descriptions and unknown types are never returned.
-TString ExplainIamFailure(const google::rpc::Status& status);
+// Explain authoritative authentication/permission codes and allowlisted
+// google.rpc.PreconditionFailure types using fixed text. Known method names
+// add the corresponding IAM requirements; remote text is never returned.
+TString ExplainIamFailure(const google::rpc::Status& status, TStringBuf method = {});
 
 // The gRPC error details carry a serialized google.rpc.Status.
-TString ExplainIamFailure(const NYdbGrpc::TGrpcStatus& status);
+TString ExplainIamFailure(const NYdbGrpc::TGrpcStatus& status, TStringBuf method = {});
 
 // Bounded allowlist for durable diagnostics. Unknown types and oversized or
-// malformed remote details contribute no reason; no remote text is returned.
+// malformed details contribute no prerequisite reason. The authoritative reply
+// code retains its authentication/permission reason without those details.
 TVector<EDelegationFailureReason> ExtractIamFailureReasons(const google::rpc::Status& status);
 TVector<EDelegationFailureReason> ExtractIamFailureReasons(const NYdbGrpc::TGrpcStatus& status);
 
@@ -162,11 +163,17 @@ NActors::async<typename TResponseEv::TPtr> IamCallWithRetry(const TIamDelegation
                 }
                 const auto grpcCode = static_cast<grpc::StatusCode>(status.GRpcStatusCode);
                 if (!IsRetryableGrpcStatus(status)) {
-                    throw TIamCallError(MapGrpcStatus(status.GRpcStatusCode), grpcCode) << method << " failed: " << status.GRpcStatusCode << ExplainIamFailure(status);
+                    throw TIamCallError(MapGrpcStatus(status.GRpcStatusCode), grpcCode) << method << " failed: " << status.GRpcStatusCode << ExplainIamFailure(status, method);
                 }
-                retryableError = TStringBuilder() << "gRPC status " << status.GRpcStatusCode << ExplainIamFailure(status);
-                retryableStatus = MapGrpcStatus(status.GRpcStatusCode);
-                retryableGrpcCode = grpcCode;
+                if (status.InternalError) {
+                    // No authoritative IAM response: the coincident gRPC code
+                    // must not turn a transport error into success or revocation.
+                    retryableError = "internal client transport error";
+                } else {
+                    retryableError = TStringBuilder() << "gRPC status " << status.GRpcStatusCode << ExplainIamFailure(status, method);
+                    retryableStatus = MapGrpcStatus(status.GRpcStatusCode);
+                    retryableGrpcCode = grpcCode;
+                }
             }
         }
 

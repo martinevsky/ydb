@@ -1,5 +1,7 @@
 #include "setup_failure.h"
 
+#include <ydb/core/security/iam_delegation/policy/diagnostics.h>
+
 #include <util/string/builder.h>
 
 #include <array>
@@ -14,7 +16,7 @@ struct TFailureReason {
     TStringBuf Hint;
 };
 
-constexpr std::array<TFailureReason, 5> Reasons{{
+constexpr std::array<TFailureReason, 7> Reasons{{
     {EDelegationFailureReason::WrongCloud, P::SETUP_FAILURE_WRONG_CLOUD,
         "the service account does not belong to the cloud of the delegation, set RESOURCE to the cloud of the service account"},
     {EDelegationFailureReason::ServiceNotEnabled, P::SETUP_FAILURE_SERVICE_NOT_ENABLED,
@@ -25,6 +27,10 @@ constexpr std::array<TFailureReason, 5> Reasons{{
         "check SERVICE_ACCOUNT_ID"},
     {EDelegationFailureReason::SubjectNotDelegatable, P::SETUP_FAILURE_SUBJECT_NOT_DELEGATABLE,
         "the user running the statement is not a subject a delegation can be made on behalf of"},
+    {EDelegationFailureReason::AuthenticationFailed, P::SETUP_FAILURE_AUTHENTICATION_FAILED,
+        NDiagnostics::AuthenticationFailed},
+    {EDelegationFailureReason::PermissionDenied, P::SETUP_FAILURE_PERMISSION_DENIED,
+        NDiagnostics::PermissionDenied},
 }};
 
 bool IsFailureStatus(Ydb::StatusIds::StatusCode status) {
@@ -36,7 +42,7 @@ bool IsFailureStatus(Ydb::StatusIds::StatusCode status) {
 } // namespace
 
 bool IsValidSetupFailure(const P::TSetupFailure& failure) {
-    // Five enums and a status fit well below this bound. Reject unknown fields
+    // Allowlisted enums and a status fit well below this bound. Reject unknown fields
     // even when small: they can carry arbitrary remote text through a replay.
     if (!failure.HasStatus() || !IsFailureStatus(failure.GetStatus())
         || static_cast<size_t>(failure.ReasonsSize()) > Reasons.size() || failure.ByteSizeLong() > 128
@@ -87,6 +93,9 @@ TString DescribeSetupFailure(const P::TSetupFailure& failure) {
             for (const auto& known : Reasons) {
                 if (reason == known.Durable) {
                     message << "; " << known.Hint;
+                    if (reason == P::SETUP_FAILURE_PERMISSION_DENIED) {
+                        message << "; " << NDiagnostics::SetupRequiredRights;
+                    }
                     break;
                 }
             }

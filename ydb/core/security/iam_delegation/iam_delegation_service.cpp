@@ -131,6 +131,8 @@ private:
         TDelegationOperationResult result;
         result.OperationId = operationId;
         const bool polling = !operationId.empty();
+        const TStringBuf method = polling ? "OperationService.Get"
+            : kind == EDelegationOperationKind::Setup ? "ServiceControl.SetupDelegation" : "ServiceControl.RevokeDelegation";
         bool dispatched = false;
         try {
             const auto deadline = TActivationContext::Monotonic() + Settings.RequestTimeout * 2 + TDuration::Seconds(1);
@@ -164,19 +166,24 @@ private:
             typename TResponse::TPtr typed(reinterpret_cast<TEventHandle<TResponse>*>(response->Release()));
             const auto& status = typed->Get()->Status;
             if (!status.Ok()) {
-                SetOperationError(result, status.InternalError ? Ydb::StatusIds::UNAVAILABLE : MapGrpcStatus(status.GRpcStatusCode),
-                    TStringBuilder() << "IAM request failed with gRPC status " << status.GRpcStatusCode << ExplainIamFailure(status));
-                if (!polling && !status.InternalError) {
+                if (status.InternalError) {
+                    SetOperationError(result, Ydb::StatusIds::UNAVAILABLE, "IAM client transport failed; outcome is unknown");
+                    co_return result;
+                }
+                result.FailureReasons = ExtractIamFailureReasons(status);
+                SetOperationError(result, MapGrpcStatus(status.GRpcStatusCode),
+                    TStringBuilder() << "IAM request failed with gRPC status " << status.GRpcStatusCode << ExplainIamFailure(status, method));
+                if (!polling) {
                     const auto code = static_cast<grpc::StatusCode>(status.GRpcStatusCode);
                     if (kind == EDelegationOperationKind::Revoke && code == grpc::StatusCode::NOT_FOUND) {
                         result.Outcome = EDelegationOperationOutcome::Succeeded;
                         result.Status = Ydb::StatusIds::SUCCESS;
                         result.Issues.Clear();
+                        result.FailureReasons.clear();
                     } else if (code == grpc::StatusCode::PERMISSION_DENIED || code == grpc::StatusCode::UNAUTHENTICATED
                             || code == grpc::StatusCode::INVALID_ARGUMENT || code == grpc::StatusCode::OUT_OF_RANGE
                             || code == grpc::StatusCode::NOT_FOUND || code == grpc::StatusCode::UNIMPLEMENTED) {
                         result.Outcome = EDelegationOperationOutcome::Failed;
-                        result.FailureReasons = ExtractIamFailureReasons(status);
                     }
                     // ALREADY_EXISTS and FAILED_PRECONDITION can describe an earlier, still
                     // unfinished delegation. They do not establish that setup failed.
@@ -201,8 +208,11 @@ private:
                 } else {
                     result.Outcome = EDelegationOperationOutcome::Failed;
                     result.FailureReasons = ExtractIamFailureReasons(operation.error());
+                    // Polling does not reveal the original mutation kind. Only
+                    // its durable owner can add the corresponding requirements.
                     SetOperationError(result, MapGrpcStatus(operation.error().code()),
-                        TStringBuilder() << "IAM operation failed with gRPC status " << operation.error().code() << ExplainIamFailure(operation.error()));
+                        TStringBuilder() << "IAM operation failed with gRPC status " << operation.error().code()
+                            << ExplainIamFailure(operation.error(), polling ? TStringBuf() : method));
                 }
             } else {
                 result.Outcome = EDelegationOperationOutcome::Succeeded;
@@ -322,7 +332,7 @@ private:
                     break;
             }
             if (operation) {
-                co_await WaitOperation(*operation, call == ECall::Revoke ? "RevokeDelegation" : "SetupDelegation");
+                co_await WaitOperation(*operation, call == ECall::Revoke ? "ServiceControl.RevokeDelegation" : "ServiceControl.SetupDelegation");
             }
             co_return TDelegationResult::Success();
         } catch (const TIamCallError& e) {
@@ -387,7 +397,8 @@ private:
             operation = response->Get()->Response;
         }
         if (operation.has_error()) {
-            throw TIamCallError(MapGrpcStatus(operation.error().code())) << method << ": operation failed with gRPC status " << operation.error().code() << ExplainIamFailure(operation.error());
+            throw TIamCallError(MapGrpcStatus(operation.error().code()), static_cast<grpc::StatusCode>(operation.error().code()))
+                << method << ": operation failed with gRPC status " << operation.error().code() << ExplainIamFailure(operation.error(), method);
         }
     }
 

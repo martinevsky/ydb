@@ -69,7 +69,11 @@ An idle entry MUST NOT be evicted while callers await its next result. An entry 
 - **THEN** the caller awaits a fresh result and is not attached to the evicted entry.
 
 ### Requirement: Transient failures preserve usable cached tokens
-A transient IAM or platform-credential failure SHALL retain an existing token while it remains usable. An authoritative permission denial or not-found result for the delegated account identity MUST invalidate cached use. Retryable failures MUST retain their status and issues when no usable token is available.
+Transient IAM and platform-credential failures SHALL preserve still-usable cached tokens. Authoritative `PERMISSION_DENIED` or not-found results for the delegated account identity MUST invalidate cached use. Rejected node credentials and internal client transport errors MUST NOT invalidate usable cached tokens. Failures with no usable token SHALL retain their mapped status and safe issues.
+
+#### Scenario: Node credentials are rejected during refresh
+- **WHEN** refresh receives `UNAUTHENTICATED` while the delegated token is still usable
+- **THEN** the RPC does not retry that refusal and authorized readers can continue receiving the cached delegated token until its usable deadline.
 
 #### Scenario: Temporary IAM outage with a usable cache entry
 - **WHEN** refresh fails transiently before the cached token's usable deadline
@@ -82,6 +86,17 @@ A transient IAM or platform-credential failure SHALL retain an existing token wh
 #### Scenario: Retryable failure with an empty cache
 - **WHEN** minting fails with a retryable status and no usable token exists
 - **THEN** the acquisition surfaces the retained retryable status and issues so the caller's retry policy can classify it.
+
+#### Scenario: Internal client error carries a coincident authorization code
+- **WHEN** a client transport error carries an authentication, permission or not-found gRPC code
+- **THEN** it establishes no IAM authorization refusal and preserves a still-usable cached token.
+
+### Requirement: Mint refusal hints identify service delegation requirements
+Mint permission-denied hints SHALL describe the required service identity, enabled cloud, active delegation and agent permissions using fixed text.
+
+#### Scenario: IAM refuses to mint the delegated account token
+- **WHEN** minting receives an authoritative `PERMISSION_DENIED`
+- **THEN** the hint describes use of the registered system service account for the configured service/microservice, the enabled service in the delegated account's cloud, an active delegation, and the agent service account's `iam.serviceAccounts.tokenCreator` role on the target customer service account.
 
 ### Requirement: Token serving is account-scoped
 Minting and caching are scoped to the account identity rather than an individual referrer; referrer-level revocation is not visible to minting while the account's grant survives. While any live delegation for the same account exists, the system SHALL continue minting and serving tokens for references to that account through the remaining delegation. Dropping a secret SHALL still end its access through schema authorization.
