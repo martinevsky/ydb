@@ -33,8 +33,9 @@ public:
 private:
     TBackoff Backoff;
     ui64 Version = 0;
-    NActors::TMonotonic NextAllowedAt;
+    NActors::TMonotonic NextAllowedAt = NActors::TMonotonic::Zero();
     NActors::TAsyncEvent Changed;
+    bool WakeupActive = false;
 };
 
 } // namespace NKikimr
