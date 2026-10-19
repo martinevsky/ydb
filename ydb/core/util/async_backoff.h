@@ -35,7 +35,6 @@ private:
     ui64 Version = 0;
     NActors::TMonotonic NextAllowedAt;
     NActors::TAsyncEvent Changed;
-    bool WakeupActive = false;
 };
 
 } // namespace NKikimr
