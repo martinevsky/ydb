@@ -1,0 +1,41 @@
+#pragma once
+
+#include "backoff.h"
+
+#include <ydb/library/actors/async/event.h>
+#include <library/cpp/monotonic/monotonic.h>
+
+namespace NKikimr {
+
+// One dependency's shared backoff, accessed only from its owning actor.
+// The owner must outlive all Wait() coroutines. This is volatile state;
+// callers remain responsible for durable recovery and RPC timeouts.
+class TAsyncBackoff {
+public:
+    enum class EUpdate {
+        Applied,
+        Stale,
+    };
+
+    explicit TAsyncBackoff(TDuration initialDelay = TBackoff::DefaultInitialDelay,
+                           TDuration maxDelay = TBackoff::DefaultMaxDelay);
+
+    // Healthy calls proceed concurrently. During recovery, advance the version
+    // before admitting one call; allow another after requestTimeout without an
+    // outcome. Apply this same finite, positive timeout to the actual request.
+    NActors::async<ui64> Wait(TDuration requestTimeout);
+    EUpdate OnFailure(ui64 version);
+    EUpdate OnSuccess(ui64 version);
+
+    ui64 GetVersion() const;
+    TMonotonic GetNextAllowedAt() const;
+
+private:
+    TBackoff Backoff;
+    ui64 Version = 0;
+    TMonotonic NextAllowedAt;
+    NActors::TAsyncEvent Changed;
+    bool WakeupActive = false;
+};
+
+} // namespace NKikimr

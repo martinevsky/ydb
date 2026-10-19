@@ -5,6 +5,7 @@ SRCS(
     actor_monotonic_time_provider.h
     activeactors.h
     address_classifier.cpp
+    async_backoff.cpp
     backoff.cpp
     cache.cpp
     cache.h
@@ -70,6 +71,7 @@ SRCS(
 )
 
 PEERDIR(
+    ydb/library/actors/async
     ydb/library/actors/core
     ydb/library/actors/interconnect/mock
     ydb/library/actors/util
@@ -91,6 +93,7 @@ PEERDIR(
 END()
 
 RECURSE_FOR_TESTS(
+    async_backoff_ut
     btree_benchmark
     ut
 )
