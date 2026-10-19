@@ -3,7 +3,7 @@
 #include "backoff.h"
 
 #include <ydb/library/actors/async/event.h>
-#include <library/cpp/monotonic/monotonic.h>
+#include <ydb/library/actors/core/monotonic.h>
 
 namespace NKikimr {
 
@@ -28,12 +28,12 @@ public:
     EUpdate OnSuccess(ui64 version);
 
     ui64 GetVersion() const;
-    TMonotonic GetNextAllowedAt() const;
+    NActors::TMonotonic GetNextAllowedAt() const;
 
 private:
     TBackoff Backoff;
     ui64 Version = 0;
-    TMonotonic NextAllowedAt;
+    NActors::TMonotonic NextAllowedAt;
     NActors::TAsyncEvent Changed;
     bool WakeupActive = false;
 };

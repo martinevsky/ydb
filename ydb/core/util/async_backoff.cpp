@@ -22,7 +22,7 @@ ui64 TAsyncBackoff::GetVersion() const {
     return Version;
 }
 
-TMonotonic TAsyncBackoff::GetNextAllowedAt() const {
+NActors::TMonotonic TAsyncBackoff::GetNextAllowedAt() const {
     return NextAllowedAt;
 }
 
