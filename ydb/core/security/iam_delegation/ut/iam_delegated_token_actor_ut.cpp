@@ -561,6 +561,38 @@ Y_UNIT_TEST_SUITE(IamDelegatedTokenActor) {
         }
     }
 
+    Y_UNIT_TEST(RejectedSystemCredentialsKeepTheUsableDelegatedToken) {
+        TFixture f;
+        f.InitialToken();
+        auto refresh = f.Refresh();
+        f.Reply(*refresh, TDuration::Hours(12), {}, grpc::StatusCode::UNAUTHENTICATED);
+        f.Get();
+        const auto cached = f.Result();
+        UNIT_ASSERT(cached.IsSuccess());
+        UNIT_ASSERT_VALUES_EQUAL(cached.Token, "delegated-token");
+        f.Update("rotated-system-token");
+        auto retry = f.Mint();
+        UNIT_ASSERT_VALUES_EQUAL(retry->Get<TCloudToken::TEvCreateForServiceRequest>()->Token, "rotated-system-token");
+        f.Reply(*retry, TDuration::Hours(12), "fresh-delegated-token");
+        f.Get();
+        UNIT_ASSERT_VALUES_EQUAL(f.Result().Token, "fresh-delegated-token");
+    }
+
+    Y_UNIT_TEST(CacheMissDistinguishesBadCredentialsFromInsufficientPermissions) {
+        for (auto code : {grpc::StatusCode::UNAUTHENTICATED, grpc::StatusCode::PERMISSION_DENIED}) {
+            TFixture f;
+            f.Get();
+            auto request = f.Mint();
+            f.Reply(*request, TDuration::Hours(12), {}, code);
+            const auto result = f.Result();
+            UNIT_ASSERT_VALUES_EQUAL(result.Status, Ydb::StatusIds::UNAUTHORIZED);
+            UNIT_ASSERT(result.Token.empty());
+            UNIT_ASSERT_STRING_CONTAINS(result.Issues, code == grpc::StatusCode::UNAUTHENTICATED
+                ? "authentication failed" : "permission denied");
+            UNIT_ASSERT(f.Mints.empty());
+        }
+    }
+
     Y_UNIT_TEST(RotatedSystemTokenAuthorizesBackgroundRefresh) {
         TFixture f;
         f.InitialToken();

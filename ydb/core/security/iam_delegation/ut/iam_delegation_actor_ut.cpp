@@ -767,6 +767,52 @@ Y_UNIT_TEST_SUITE(IamDelegationRecovery) {
         UNIT_ASSERT(f.Setups.empty());
     }
 
+    Y_UNIT_TEST(LegacyCallsDistinguishCredentialsFromPermissionsWithoutRetry) {
+        for (auto code : {grpc::StatusCode::UNAUTHENTICATED, grpc::StatusCode::PERMISSION_DENIED}) {
+            TFixture f;
+            f.Update();
+            f.Setup();
+            auto request = f.Take(f.Setups);
+            f.Reply<TControl::TEvSetupDelegationResponse>(*request, true, code);
+            const auto result = f.Result(Ydb::StatusIds::UNAUTHORIZED).Result;
+            UNIT_ASSERT_STRING_CONTAINS(result.Issues.ToOneLineString(), code == grpc::StatusCode::UNAUTHENTICATED
+                ? "authentication failed" : "permission denied");
+            UNIT_ASSERT(f.Setups.empty());
+        }
+    }
+
+    Y_UNIT_TEST(SubmissionRefusalsKeepDistinctSafeAuthenticationReasons) {
+        for (auto code : {grpc::StatusCode::UNAUTHENTICATED, grpc::StatusCode::PERMISSION_DENIED}) {
+            TFixture f;
+            f.Update();
+            f.Submit();
+            auto request = f.Take(f.Setups);
+            f.Reply<TControl::TEvSetupDelegationResponse>(*request, true, code);
+            const auto result = f.OperationResult(EDelegationOperationOutcome::Failed);
+            UNIT_ASSERT_VALUES_EQUAL(result.FailureReasons.size(), 1);
+            UNIT_ASSERT_STRING_CONTAINS(result.Issues.ToOneLineString(), code == grpc::StatusCode::UNAUTHENTICATED
+                ? "authentication failed" : "permission denied");
+            UNIT_ASSERT(f.Setups.empty());
+        }
+    }
+
+    Y_UNIT_TEST(PollAuthenticationRefusalsKeepTheRemoteOutcomeUnknown) {
+        for (auto code : {grpc::StatusCode::UNAUTHENTICATED, grpc::StatusCode::PERMISSION_DENIED}) {
+            TFixture f;
+            f.Update();
+            f.Poll("saved-operation");
+            auto request = f.Take(f.Polls);
+            f.Reply<TOperation::TEvGetOperationResponse>(*request, false, code);
+            const auto result = f.OperationResult(EDelegationOperationOutcome::Unknown);
+            UNIT_ASSERT_VALUES_EQUAL(result.OperationId, "saved-operation");
+            UNIT_ASSERT_VALUES_EQUAL(result.FailureReasons.size(), 1);
+            UNIT_ASSERT_STRING_CONTAINS(result.Issues.ToOneLineString(), code == grpc::StatusCode::UNAUTHENTICATED
+                ? "authentication failed" : "permission denied");
+            UNIT_ASSERT(f.Setups.empty());
+            UNIT_ASSERT(f.Revokes.empty());
+        }
+    }
+
     Y_UNIT_TEST(PollPermissionFailurePreservesUnknownOperation) {
         TFixture f;
         f.Update();

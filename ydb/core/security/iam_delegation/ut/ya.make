@@ -7,6 +7,7 @@ SIZE(MEDIUM)
 PEERDIR(
     library/cpp/testing/unittest
     ydb/core/kqp/common
+    ydb/core/security/iam_delegation/tablet/public
     ydb/core/testlib/default
     ydb/library/testlib/service_mocks
 )
@@ -14,6 +15,7 @@ PEERDIR(
 YQL_LAST_ABI_VERSION()
 
 SRCS(
+    iam_auth_failure_ut.cpp
     iam_delegated_token_actor_ut.cpp
     iam_delegation_actor_ut.cpp
     iam_delegation_ut.cpp
