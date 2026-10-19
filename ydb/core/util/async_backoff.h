@@ -7,9 +7,10 @@
 
 namespace NKikimr {
 
-// One dependency's shared backoff, accessed only from its owning actor.
+// One dependency's shared standard TBackoff, accessed only from its owning actor.
 // The owner must outlive all Wait() coroutines. This is volatile state;
 // callers remain responsible for durable recovery and RPC timeouts.
+// Delays have millisecond precision; initialDelay must be at least 1 ms.
 class TAsyncBackoff {
 public:
     enum class EUpdate {

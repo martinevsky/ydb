@@ -12,15 +12,16 @@ using namespace NAsyncTest;
 struct TFixture {
     static constexpr TDuration RequestTimeout = TDuration::Seconds(10);
 
-    TAsyncBackoff Backoff{TDuration::Seconds(1), TDuration::Seconds(8)};
+    TAsyncBackoff Backoff;
     TVector<ui64> Admitted;
     size_t ScheduledWakeups = 0;
     TAsyncTestActor::TState State;
     TAsyncTestActorRuntime Runtime;
     TAsyncTestActorRuntime::TAsyncActorOperations Actor;
 
-    TFixture()
-        : Actor(Runtime.StartAsyncActor(State))
+    explicit TFixture(TDuration initial = TDuration::Seconds(1), TDuration maximum = TDuration::Seconds(8))
+        : Backoff(initial, maximum)
+        , Actor(Runtime.StartAsyncActor(State))
     {
         Runtime.SetScheduledEventFilter([this](auto&, auto& ev, auto, auto&) {
             if (ev->GetTypeRewrite() == TEvents::TSystem::ResumeRunnable) {
@@ -173,12 +174,15 @@ Y_UNIT_TEST_SUITE(AsyncBackoff) {
         TFixture f;
         f.Fail();
         std::optional<ui64> result;
+        bool finished = false;
         f.Actor.RunAsync([&]() -> async<void> {
             result = co_await WithTimeout(TDuration::MilliSeconds(100),
                 f.Backoff.Wait(TFixture::RequestTimeout));
+            finished = true;
         });
         f.Wait();
         f.Runtime.SimulateSleep(TDuration::MilliSeconds(100));
+        UNIT_ASSERT(finished);
         UNIT_ASSERT(!result);
         UNIT_ASSERT(f.Admitted.empty());
         f.AdvanceTo(f.Backoff.GetNextAllowedAt());
@@ -194,6 +198,51 @@ Y_UNIT_TEST_SUITE(AsyncBackoff) {
         UNIT_ASSERT(f.State.Destroyed);
         f.Runtime.SimulateSleep(TDuration::Minutes(1));
         UNIT_ASSERT(f.Admitted.empty());
+    }
+
+    Y_UNIT_TEST(HardMailboxTeardownDestroysWaitersWithoutActorContext) {
+        TFixture f;
+        f.Fail();
+        f.Wait();
+        f.Wait();
+        f.Runtime.CleanupNode();
+        UNIT_ASSERT(f.State.Destroyed);
+        UNIT_ASSERT(f.Admitted.empty());
+    }
+
+    Y_UNIT_TEST(CancellingAllWaitersAllowsAFreshWaiter) {
+        TFixture f;
+        f.Fail();
+        TAsyncCancellationScope cancel;
+        for (size_t i = 0; i < 3; ++i) {
+            f.Actor.RunAsync([&]() -> async<void> {
+                co_await cancel.Wrap([&]() -> async<void> {
+                    f.Admitted.push_back(co_await f.Backoff.Wait(TFixture::RequestTimeout));
+                });
+            });
+        }
+        f.Actor.RunSync([&] { cancel.Cancel(); });
+        f.Wait();
+        UNIT_ASSERT(f.Admitted.empty());
+        f.AdvanceTo(f.Backoff.GetNextAllowedAt());
+        UNIT_ASSERT_VALUES_EQUAL(f.Admitted.size(), 1);
+    }
+
+    Y_UNIT_TEST(RetiredTimerCannotAdmitACallInANewerCooldown) {
+        TFixture f(TDuration::Seconds(20), TDuration::Seconds(20));
+        f.Fail();
+        f.Wait();
+        f.Wait();
+        f.AdvanceTo(f.Backoff.GetNextAllowedAt());
+        UNIT_ASSERT_VALUES_EQUAL(f.Admitted.size(), 1);
+        const auto retiredDeadline = f.Backoff.GetNextAllowedAt();
+        f.Fail();
+        const auto due = f.Backoff.GetNextAllowedAt();
+        UNIT_ASSERT(due > retiredDeadline);
+        f.AdvanceTo(retiredDeadline);
+        UNIT_ASSERT_VALUES_EQUAL(f.Admitted.size(), 1);
+        f.AdvanceTo(due);
+        UNIT_ASSERT_VALUES_EQUAL(f.Admitted.size(), 2);
     }
 
     Y_UNIT_TEST(SharedFailuresUseStandardJitterAndCap) {
