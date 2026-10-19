@@ -2,6 +2,7 @@
 #include <ydb/core/security/iam_delegation/tablet/public/setup_failure.h>
 
 #include <library/cpp/testing/unittest/registar.h>
+#include <google/rpc/error_details.pb.h>
 
 namespace NKikimr::NIamDelegation {
 namespace {
@@ -44,6 +45,20 @@ Y_UNIT_TEST_SUITE(IamAuthenticationFailures) {
         UNIT_ASSERT(authentication != ExtractIamFailureReasons(status));
     }
 
+    Y_UNIT_TEST(SerializedPermissionFailureNamesBothPrincipalsAndRequiredRights) {
+        NYdbGrpc::TGrpcStatus status;
+        status.GRpcStatusCode = grpc::StatusCode::PERMISSION_DENIED;
+        TDelegationOperationResult result;
+        result.Status = Ydb::StatusIds::UNAUTHORIZED;
+        result.FailureReasons = ExtractIamFailureReasons(status);
+        const auto message = DescribeSetupFailure(MakeSetupFailure(result));
+        UNIT_ASSERT_STRING_CONTAINS(message, "iam.serviceAccounts.use");
+        UNIT_ASSERT_STRING_CONTAINS(message, "iam.serviceAccounts.user");
+        UNIT_ASSERT_STRING_CONTAINS(message, "target service account");
+        UNIT_ASSERT_STRING_CONTAINS(message, "internal.service-control.delegator");
+        UNIT_ASSERT_STRING_CONTAINS(message, "iam.gizmo");
+    }
+
     Y_UNIT_TEST(TransportCodeTakesPrecedenceOverContradictoryDetails) {
         for (auto code : {grpc::StatusCode::UNAUTHENTICATED, grpc::StatusCode::PERMISSION_DENIED}) {
             NYdbGrpc::TGrpcStatus status;
@@ -68,6 +83,20 @@ Y_UNIT_TEST_SUITE(IamAuthenticationFailures) {
                     ? "authentication failed" : "permission denied");
             }
         }
+    }
+
+    Y_UNIT_TEST(AuthenticationFailureIgnoresUntrustedBusinessPrerequisites) {
+        NYdbGrpc::TGrpcStatus status;
+        status.GRpcStatusCode = grpc::StatusCode::UNAUTHENTICATED;
+        google::rpc::Status details;
+        details.set_code(grpc::StatusCode::PERMISSION_DENIED);
+        google::rpc::PreconditionFailure prerequisites;
+        auto* violation = prerequisites.add_violations();
+        violation->set_type("SUBJECT_NOT_FOUND");
+        details.add_details()->PackFrom(prerequisites);
+        status.Details = details.SerializeAsString();
+        CheckAuthenticationFailure(status, "authentication failed");
+        UNIT_ASSERT(!ExplainIamFailure(status).Contains("subject"));
     }
 
     Y_UNIT_TEST(InternalTransportErrorsDoNotBlameCredentialsOrPermissions) {

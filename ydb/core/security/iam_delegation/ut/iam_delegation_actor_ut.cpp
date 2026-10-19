@@ -813,6 +813,33 @@ Y_UNIT_TEST_SUITE(IamDelegationRecovery) {
         }
     }
 
+    Y_UNIT_TEST(SetupPermissionRefusalNamesUserAndServiceRights) {
+        TFixture f;
+        f.Update();
+        f.Submit();
+        auto request = f.Take(f.Setups);
+        f.Reply<TControl::TEvSetupDelegationResponse>(*request, true, grpc::StatusCode::PERMISSION_DENIED);
+        const auto result = f.OperationResult(EDelegationOperationOutcome::Failed);
+        const auto message = result.Issues.ToOneLineString();
+        UNIT_ASSERT_STRING_CONTAINS(message, "iam.serviceAccounts.use");
+        UNIT_ASSERT_STRING_CONTAINS(message, "iam.serviceAccounts.user");
+        UNIT_ASSERT_STRING_CONTAINS(message, "internal.service-control.delegator");
+        UNIT_ASSERT_STRING_CONTAINS(message, "iam.gizmo");
+        UNIT_ASSERT_STRING_CONTAINS(message, "service-control.services.referenceUpdater");
+    }
+
+    Y_UNIT_TEST(RevokePermissionRefusalNamesTheServiceRole) {
+        TFixture f;
+        f.Update();
+        f.Revoke();
+        auto request = f.Take(f.Revokes);
+        f.Reply<TControl::TEvRevokeDelegationResponse>(*request, true, grpc::StatusCode::PERMISSION_DENIED);
+        const auto message = f.Result(Ydb::StatusIds::UNAUTHORIZED, 43).Result.Issues.ToOneLineString();
+        UNIT_ASSERT_STRING_CONTAINS(message, "internal.service-control.delegator");
+        UNIT_ASSERT_STRING_CONTAINS(message, "iam.gizmo");
+        UNIT_ASSERT(!message.Contains("iam.serviceAccounts.use"));
+    }
+
     Y_UNIT_TEST(PollPermissionFailurePreservesUnknownOperation) {
         TFixture f;
         f.Update();

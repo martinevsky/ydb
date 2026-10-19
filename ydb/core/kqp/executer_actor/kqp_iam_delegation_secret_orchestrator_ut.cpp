@@ -466,18 +466,21 @@ void CheckWorkerOwnedRefusal(ERefusalDelivery delivery, ERefusalReload reload) {
     UNIT_ASSERT(f.RevokeBindings.empty());
 }
 
-void ReplyCredentialBearingRefusal(TOrchestratorFixture& f, const IEventHandle& request) {
+void ReplyCredentialBearingRefusal(TOrchestratorFixture& f, const IEventHandle& request,
+        EDelegationFailureReason reason = EDelegationFailureReason::SubjectNotDelegatable) {
     TDelegationOperationResult result;
     result.Outcome = EDelegationOperationOutcome::Failed;
     result.Status = Ydb::StatusIds::UNAUTHORIZED;
     result.OperationId = "refused-setup-operation";
     result.Issues.AddIssue("credential-sentinel-do-not-persist");
-    result.FailureReasons = {EDelegationFailureReason::SubjectNotDelegatable};
+    result.FailureReasons = {reason};
     f.Runtime.Send(new IEventHandle(request.Sender, f.Iam,
         new TEvIamDelegation::TEvDelegationOperationResult(std::move(result)), 0, request.Cookie));
 }
 
-void CheckCoordinatorOwnedRefusal(ERefusalDelivery delivery) {
+void CheckCoordinatorOwnedRefusal(ERefusalDelivery delivery,
+        EDelegationFailureReason reason = EDelegationFailureReason::SubjectNotDelegatable,
+        P::ESetupFailureReason durableReason = P::SETUP_FAILURE_SUBJECT_NOT_DELEGATABLE) {
     TOrchestratorFixture f;
     const auto currentId = f.Create();
     const auto current = f.Delegation(currentId).GetDelegation();
@@ -490,19 +493,28 @@ void CheckCoordinatorOwnedRefusal(ERefusalDelivery delivery) {
         UNIT_ASSERT_VALUES_EQUAL(request->Get<TEvIamDelegation::TEvPollDelegationOperation>()->OperationId,
             "refused-setup-operation");
     }
-    ReplyCredentialBearingRefusal(f, *request);
+    ReplyCredentialBearingRefusal(f, *request, reason);
     const auto result = f.Finish(altering);
     UNIT_ASSERT_C(result.Status() == NYql::YqlStatusFromYdbStatus(Ydb::StatusIds::UNAUTHORIZED),
         result.Issues().ToString());
     UNIT_ASSERT(result.Issues().ToString().Contains("IAM refused delegation setup"));
     UNIT_ASSERT(!result.Issues().ToString().Contains("credential-sentinel-do-not-persist"));
+    if (reason == EDelegationFailureReason::PermissionDenied) {
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues().ToString(), "iam.serviceAccounts.use");
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues().ToString(), "iam.serviceAccounts.user");
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues().ToString(), "internal.service-control.delegator");
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues().ToString(), "iam.gizmo");
+    } else if (reason == EDelegationFailureReason::AuthenticationFailed) {
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues().ToString(), "authentication failed");
+        UNIT_ASSERT(!result.Issues().ToString().Contains("iam.serviceAccounts.user"));
+    }
     f.RebootTablet();
     const auto saved = f.Delegation(pendingId);
     UNIT_ASSERT(saved.GetDelegation().HasSetupFailure());
     UNIT_ASSERT_VALUES_EQUAL(saved.GetDelegation().GetSetupFailure().GetStatus(), Ydb::StatusIds::UNAUTHORIZED);
     UNIT_ASSERT_VALUES_EQUAL(saved.GetDelegation().GetSetupFailure().ReasonsSize(), 1);
     UNIT_ASSERT_VALUES_EQUAL(saved.GetDelegation().GetSetupFailure().GetReasons(0),
-        P::SETUP_FAILURE_SUBJECT_NOT_DELEGATABLE);
+        durableReason);
     UNIT_ASSERT(!TString(saved.SerializeAsString()).Contains("credential-sentinel-do-not-persist"));
     UNIT_ASSERT(saved.GetSecret().GetPendingOperationId().empty());
     UNIT_ASSERT_VALUES_EQUAL(saved.GetSecret().GetCurrentOperationId(), currentId);
@@ -769,6 +781,20 @@ Y_UNIT_TEST(LongLivedProviderReadsAlteredBindingAndRejectsLaterAclLoss) {
 
     Y_UNIT_TEST(CoordinatorOwnedPolledRefusalPersistsSafeDetails) {
         CheckCoordinatorOwnedRefusal(ERefusalDelivery::Poll);
+    }
+
+    Y_UNIT_TEST(SetupPermissionRefusalReportsRequiredRightsAndPersistsItsKind) {
+        for (auto delivery : {ERefusalDelivery::Submission, ERefusalDelivery::Poll}) {
+            CheckCoordinatorOwnedRefusal(delivery, EDelegationFailureReason::PermissionDenied,
+                P::SETUP_FAILURE_PERMISSION_DENIED);
+        }
+    }
+
+    Y_UNIT_TEST(SetupAuthenticationRefusalDoesNotBlameUserPermissions) {
+        for (auto delivery : {ERefusalDelivery::Submission, ERefusalDelivery::Poll}) {
+            CheckCoordinatorOwnedRefusal(delivery, EDelegationFailureReason::AuthenticationFailed,
+                P::SETUP_FAILURE_AUTHENTICATION_FAILED);
+        }
     }
 
     Y_UNIT_TEST(LegacyWorkerRefusalKeepsGenericFallbackAfterRestart) {

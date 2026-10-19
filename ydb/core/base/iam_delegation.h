@@ -71,6 +71,8 @@ enum class EDelegationFailureReason {
     CloudNotFound,
     ServiceAccountNotFound,
     SubjectNotDelegatable,
+    AuthenticationFailed,
+    PermissionDenied,
 };
 
 struct TDelegationOperationResult {

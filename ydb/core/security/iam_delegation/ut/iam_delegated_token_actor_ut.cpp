@@ -593,6 +593,62 @@ Y_UNIT_TEST_SUITE(IamDelegatedTokenActor) {
         }
     }
 
+    Y_UNIT_TEST(MintPermissionRefusalNamesTheRegisteredIdentityAndDelegationRequirements) {
+        TFixture f;
+        f.Get();
+        auto request = f.Mint();
+        f.Reply(*request, TDuration::Hours(12), {}, grpc::StatusCode::PERMISSION_DENIED);
+        const auto result = f.Result();
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues, "registered system service account");
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues, "enabled");
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues, "active delegation");
+        UNIT_ASSERT_STRING_CONTAINS(result.Issues, "iam.serviceAccounts.tokenCreator");
+        UNIT_ASSERT(!result.Issues.Contains("iam.serviceAccounts.user"));
+    }
+
+    Y_UNIT_TEST(InternalTransportFailureDoesNotRevokeTheCachedToken) {
+        for (auto code : {grpc::StatusCode::OK, grpc::StatusCode::UNAUTHENTICATED,
+                grpc::StatusCode::PERMISSION_DENIED, grpc::StatusCode::NOT_FOUND}) {
+            TFixture f;
+            f.InitialToken();
+            auto request = f.Refresh();
+            for (ui32 attempt = 0; attempt < TIamDelegationSettings::MaxRetries; ++attempt) {
+                auto response = MakeHolder<TCloudToken::TEvCreateForServiceResponse>();
+                response->Status.InternalError = true;
+                response->Status.GRpcStatusCode = code;
+                f.Runtime.Send(new IEventHandle(request->Sender, request->Recipient, response.Release(), 0, request->Cookie));
+                if (attempt + 1 < TIamDelegationSettings::MaxRetries) {
+                    request = f.Mint();
+                }
+            }
+            f.Get();
+            // Dispatch the next background request: the cached result must arrive
+            // first, without needing an outcome for that new attempt.
+            auto next = f.Mint();
+            UNIT_ASSERT(next);
+            UNIT_ASSERT(!f.Results.empty());
+            UNIT_ASSERT_VALUES_EQUAL(f.Result().Token, "delegated-token");
+        }
+    }
+
+    Y_UNIT_TEST(InternalTransportFailureCannotBeReportedAsMissingPermissions) {
+        for (auto code : {grpc::StatusCode::OK, grpc::StatusCode::UNAUTHENTICATED,
+                grpc::StatusCode::PERMISSION_DENIED, grpc::StatusCode::NOT_FOUND}) {
+            TFixture f;
+            f.Get();
+            for (ui32 attempt = 0; attempt < TIamDelegationSettings::MaxRetries; ++attempt) {
+                auto request = f.Mint();
+                auto response = MakeHolder<TCloudToken::TEvCreateForServiceResponse>();
+                response->Status.InternalError = true;
+                response->Status.GRpcStatusCode = code;
+                f.Runtime.Send(new IEventHandle(request->Sender, request->Recipient, response.Release(), 0, request->Cookie));
+            }
+            const auto result = f.Result();
+            UNIT_ASSERT_VALUES_EQUAL(result.Status, Ydb::StatusIds::UNAVAILABLE);
+            UNIT_ASSERT(!result.Issues.Contains("permission denied"));
+        }
+    }
+
     Y_UNIT_TEST(RotatedSystemTokenAuthorizesBackgroundRefresh) {
         TFixture f;
         f.InitialToken();

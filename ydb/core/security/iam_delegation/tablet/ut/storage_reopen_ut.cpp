@@ -1,4 +1,5 @@
 #include "requests.h"
+#include <ydb/core/security/iam_delegation/tablet/public/setup_failure.h>
 
 #include <util/folder/tempdir.h>
 
@@ -79,6 +80,39 @@ Y_UNIT_TEST_SUITE(IamDelegationStorageReopen) {
         }
     }
 
+
+    Y_UNIT_TEST(AuthenticationFailureKindsSurviveWholeRuntimeDiskReopen) {
+        for (auto reason : {NProto::SETUP_FAILURE_AUTHENTICATION_FAILED, NProto::SETUP_FAILURE_PERMISSION_DENIED}) {
+            TTempDir directory;
+            NProto::TRequest request;
+            NProto::TDelegation saved;
+            {
+                TTestContext ctx(DiskStorage(directory, EStorageOpenMode::Format));
+                ctx.Call(RegisterRequest(DatabaseIdentity()));
+                auto pending = ctx.Call(StageCreateRequest()).GetDelegation();
+                pending = ctx.Call(BindRequest(pending)).GetDelegation();
+                pending = ctx.Call(StartRequest(pending)).GetDelegation();
+                request = SetupResultRequest(pending, NProto::SETUP_FAILED);
+                auto* failure = request.MutableSetSetupResult()->MutableSetupFailure();
+                failure->SetStatus(Ydb::StatusIds::UNAUTHORIZED);
+                failure->AddReasons(reason);
+                saved = ctx.Call(request).GetDelegation();
+            }
+            TTestContext ctx(DiskStorage(directory, EStorageOpenMode::Reopen));
+            const auto restored = GetDelegation(ctx, "create-1");
+            UNIT_ASSERT_VALUES_EQUAL(restored.SerializeAsString(), saved.SerializeAsString());
+            UNIT_ASSERT_VALUES_EQUAL(restored.GetSetupFailure().ReasonsSize(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(restored.GetSetupFailure().GetReasons(0), reason);
+            const auto message = DescribeSetupFailure(restored.GetSetupFailure());
+            UNIT_ASSERT_STRING_CONTAINS(message, reason == NProto::SETUP_FAILURE_AUTHENTICATION_FAILED
+                ? "authentication failed" : "permission denied");
+            if (reason == NProto::SETUP_FAILURE_PERMISSION_DENIED) {
+                UNIT_ASSERT_STRING_CONTAINS(message, "iam.serviceAccounts.user");
+                UNIT_ASSERT_STRING_CONTAINS(message, "internal.service-control.delegator");
+            }
+            UNIT_ASSERT_VALUES_EQUAL(ctx.Call(request).GetDelegation().SerializeAsString(), saved.SerializeAsString());
+        }
+    }
 
     Y_UNIT_TEST(SetupFailureDetailsSurviveWholeRuntimeReplacement) {
         TTempDir directory;
