@@ -2,6 +2,7 @@ GTEST()
 
 SRCS(
     wasm_ut.cpp
+    review_56233_ut.cpp
     clock_ut.cpp
     linking_ut.cpp
 )
