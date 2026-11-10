@@ -89,6 +89,24 @@ Y_UNIT_TEST_SUITE(TFqWasmManifestTest) {
         }
     }
 
+    Y_UNIT_TEST(ServiceManifestAcceptsOutputAtResultByteLimit) {
+        // The result header is 16 bytes, and a String adds a 4-byte length.
+        // 16 + 4 + 32748 == 32768, so this output fits exactly.
+        const TString manifest = R"({
+            "module_type": "module", "module_kind": "wasm", "module_name": "Boundary",
+            "module_extension": "wasm", "service_abi_version": 2,
+            "service_methods": [{
+                "name": "Read", "batch": false, "max_batch_rows": 1,
+                "input": [{"name": "id", "type": "Uint64"}],
+                "output": [{"name": "value", "type": "String", "max_bytes": 32748}],
+                "max_output_row_bytes": 32752
+            }]
+        })";
+        const auto parsed = ParseServiceManifest(manifest);
+        UNIT_ASSERT_VALUES_EQUAL(parsed.Methods.at("Read").MaxOutputRowBytes, 32752);
+        UNIT_ASSERT_VALUES_EQUAL(parsed.Methods.at("Read").Output.at(0).MaxBytes, 32748);
+    }
+
     Y_UNIT_TEST(ServiceRowWireBounds) {
         using namespace NYdb::NWasm::NServices;
         char buffer[128];

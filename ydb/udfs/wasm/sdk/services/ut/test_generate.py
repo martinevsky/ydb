@@ -79,6 +79,16 @@ def test_rejects_oversized_output_schema():
         generate_header(source)
 
 
+def test_accepts_output_at_result_byte_limit():
+    source = manifest()
+    method = source['service_methods'][0]
+    # A 16-byte result header plus the 4-byte String length and 32748 bytes
+    # of data is exactly the 32768-byte service result limit.
+    method['output'] = [{'name': 'value', 'type': 'String', 'max_bytes': 32748}]
+    method['max_output_row_bytes'] = 32752
+    assert 'MethodEcho' in generate_header(source)
+
+
 def test_cli_outputs_only_header_and_preserves_manifest(tmp_path, monkeypatch):
     source = tmp_path / 'manifest.json'
     output = tmp_path / 'service_methods.h'
