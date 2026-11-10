@@ -2,7 +2,56 @@
 
 using namespace NFq::NWasmServices::NTestHelpers;
 
+namespace {
+
+void CheckProfileRejectsNulSuffix(bool batch) {
+    using namespace NYdb::NWasm::NServices;
+    THttpMock http;
+    TGrpcMock grpc;
+    TEnv env(Bindings(http, grpc));
+    const TString json =
+        batch ? "[{\"id\":42,\"name\":\"Ada\",\"score\":97,\"version\":1}]" : "{\"id\":42,\"name\":\"Ada\",\"score\":97,\"version\":1}";
+    for (size_t exchange = 0; exchange < 2; ++exchange) {
+        char arguments[64];
+        TRowWriter writer(arguments, sizeof(arguments));
+        UNIT_ASSERT(writer.Put(
+            TServiceRequest{ ServiceMagic, ServiceVersion, NGenerated::NModuleWASM_PROFILE::MethodProfile, 2, 0, 1, 32768, batch ? 1u : 0u }));
+        UNIT_ASSERT(writer.Put(ui64(42)));
+        const auto call = env.Runtime->Start(TStringBuf(arguments, writer.Size()), TInstant::Now() + TDuration::Seconds(30));
+        UNIT_ASSERT(env.Runtime->Poll(call).Status == ECallStatus::Waiting);
+        http.State->Wait(exchange);
+        TString response = json;
+        if (exchange) {
+            response.push_back('\0');
+            response += "trailing-garbage";
+        }
+        http.State->Reply(exchange, response, 200);
+        const auto result = env.AwaitTerminal(call);
+        UNIT_ASSERT(result.Status == ECallStatus::Completed);
+        TRowReader reader(View(result.Data));
+        TServiceResult reply;
+        UNIT_ASSERT(reader.Get(reply));
+        const ui32 expected = exchange ? static_cast<ui32>(EServiceError::Decode) : 0;
+        UNIT_ASSERT_C(
+            reply.Error == expected, "batch=" << batch << ", suffix=" << exchange << ", expected=" << expected << ", actual=" << reply.Error);
+        if (!exchange) {
+            UNIT_ASSERT_VALUES_EQUAL(reply.Count, 1);
+        }
+        env.Clean(call);
+    }
+}
+
+}   // namespace
+
 Y_UNIT_TEST_SUITE(TFqWasmModuleTest) {
+    Y_UNIT_TEST(ProfileScalarRejectsNulAndTrailingBytes) {
+        CheckProfileRejectsNulSuffix(false);
+    }
+
+    Y_UNIT_TEST(ProfileBatchRejectsNulAndTrailingBytes) {
+        CheckProfileRejectsNulSuffix(true);
+    }
+
     Y_UNIT_TEST(ProfileJsonStackHandlesLongStringsWithinResponseLimit) {
         using namespace NYdb::NWasm::NServices;
         THttpMock http;

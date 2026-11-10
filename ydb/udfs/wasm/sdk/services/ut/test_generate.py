@@ -79,6 +79,13 @@ def test_rejects_oversized_output_schema():
         generate_header(source)
 
 
+def test_defaults_omitted_module_extension_to_wasm():
+    source = manifest()
+    with_explicit_extension = generate_header(source)
+    del source['module_extension']
+    assert generate_header(source) == with_explicit_extension
+
+
 def test_cli_outputs_only_header_and_preserves_manifest(tmp_path, monkeypatch):
     source = tmp_path / 'manifest.json'
     output = tmp_path / 'service_methods.h'
