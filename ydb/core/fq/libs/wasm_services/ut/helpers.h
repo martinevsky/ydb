@@ -142,6 +142,7 @@ struct TExchange {
     bool Ready = false;
     bool Abort = false;
     bool Cancelled = false;
+    SOCKET Socket = INVALID_SOCKET;
 };
 
 class TMockState {
@@ -151,12 +152,14 @@ public:
     TVector<std::shared_ptr<TExchange>> Requests;
     bool Closing = false;
 
-    std::shared_ptr<TExchange> Record(TString payload, TString method, TVector<std::pair<TString, TString>> headers = {}) {
+    std::shared_ptr<TExchange> Record(TString payload, TString method, TVector<std::pair<TString, TString>> headers = {},
+        SOCKET socket = INVALID_SOCKET) {
         std::lock_guard lock(Mutex);
         auto exchange = std::make_shared<TExchange>();
         exchange->Payload = std::move(payload);
         exchange->Method = std::move(method);
         exchange->Headers = std::move(headers);
+        exchange->Socket = socket;
         Requests.push_back(exchange);
         Changed.notify_all();
         return exchange;
@@ -232,7 +235,7 @@ class THttpMock: public THttpServer::ICallBack {
             if (!head && !ProcessHeaders()) {
                 return true;
             }
-            auto exchange = Owner.State->Record(TString(Buf.AsCharPtr(), Buf.Size()), RequestString, ParsedHeaders);
+            auto exchange = Owner.State->Record(TString(Buf.AsCharPtr(), Buf.Size()), RequestString, ParsedHeaders, Socket());
             if (!Owner.State->AwaitReply(exchange)) {
                 ResetConnection();
                 return true;

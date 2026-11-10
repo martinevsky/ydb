@@ -75,6 +75,62 @@ Y_UNIT_TEST_SUITE(TFqWasmTransportTest) {
         env.Clean(call);
     }
 
+    Y_UNIT_TEST(HttpPreservesEmptyNativeHeader) {
+        THttpMock http;
+        TBinding binding;
+        binding.Endpoint = http.Url();
+        binding.Headers = { { "X-Required", "" }, { "X-Control", "present" } };
+        TTransport transport({ binding }, TestExecutor());
+        auto reply = StartDirectHttp(transport, std::make_shared<TDirectReply>());
+        auto request = http.State->Wait();
+        http.State->Reply(0, "ok", 200);
+        {
+            std::unique_lock lock(reply->Mutex);
+            UNIT_ASSERT(reply->Changed.wait_for(lock, std::chrono::seconds(10), [&] { return reply->Done; }));
+            UNIT_ASSERT(reply->Status == EOperationStatus::Ready);
+        }
+        UNIT_ASSERT(HasHeader(*request, "X-Control", "present"));
+        UNIT_ASSERT_C(HasHeader(*request, "X-Required", ""), "Configured empty header was not received");
+    }
+
+    Y_UNIT_TEST(HttpDoesNotReplayPostAfterAmbiguousDisconnect) {
+        THttpMock http(true);
+        TBinding binding;
+        binding.Endpoint = http.Url();
+        TTransport transport({ binding }, TestExecutor());
+        auto firstReply = StartDirectHttp(transport, std::make_shared<TDirectReply>());
+        auto first = http.State->Wait();
+        http.State->Reply(0, "ok", 200);
+        {
+            std::unique_lock lock(firstReply->Mutex);
+            UNIT_ASSERT(firstReply->Changed.wait_for(lock, std::chrono::seconds(10), [&] { return firstReply->Done; }));
+            UNIT_ASSERT(firstReply->Status == EOperationStatus::Ready);
+        }
+
+        auto secondReply = StartDirectHttp(transport, std::make_shared<TDirectReply>());
+        auto second = http.State->Wait(1);
+        UNIT_ASSERT_VALUES_EQUAL(second->Payload, "{\"id\":42}");
+        // The server has consumed the POST before dropping the connection without a response.
+        http.State->Reply(1, {}, 0, true);
+        Eventually([&] {
+            std::lock_guard lock(secondReply->Mutex);
+            return secondReply->Done || http.State->Count() >= 3;
+        });
+        const auto count = http.State->Count();
+        if (count >= 3) {
+            auto replay = http.State->Wait(2);
+            UNIT_ASSERT_VALUES_EQUAL(replay->Payload, second->Payload);
+            http.State->Reply(2, "ok", 200);
+        }
+        {
+            std::unique_lock lock(secondReply->Mutex);
+            UNIT_ASSERT(secondReply->Changed.wait_for(lock, std::chrono::seconds(10), [&] { return secondReply->Done; }));
+        }
+        UNIT_ASSERT_C(count == 2, "POST was replayed after disconnect; request count=" << count
+            << ", first socket=" << first->Socket << ", second socket=" << second->Socket);
+        UNIT_ASSERT(secondReply->Status == EOperationStatus::Failed);
+    }
+
     Y_UNIT_TEST(GenericGrpcThroughWasmAndNativeCredentials) {
         THttpMock http;
         TGrpcMock grpc;
