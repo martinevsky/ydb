@@ -22,7 +22,7 @@ using TTokenStatus = TEvTokenManager::TStatus;
 using TControl = NCloud::TEvServiceControlService;
 using TOperation = NCloud::TEvOperationService;
 
-// Real delegation actor and coroutine scheduler, virtual monotonic time. Only external actor
+// Real delegation actor and event scheduler, virtual monotonic time. Only external actor
 // requests are intercepted: no injected production factories, clocks or timeout settings.
 struct TFixture {
     // Unlike edge mailboxes, an ordinary mailbox is observed even when a reply was already
@@ -493,7 +493,7 @@ Y_UNIT_TEST_SUITE(IamDelegationActor) {
         f.Runtime.SimulateSleep(TDuration::Seconds(1));
         UNIT_ASSERT(f.Setups.empty());
         UNIT_ASSERT(f.Results.empty());
-        // Destruction tears down the actor system with a live async event wait.
+        // Destruction tears down the actor system with a live credential wait.
     }
 }
 
