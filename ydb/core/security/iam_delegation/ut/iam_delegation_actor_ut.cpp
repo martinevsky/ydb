@@ -653,6 +653,95 @@ Y_UNIT_TEST_SUITE(IamSharedRetries) {
     }
 }
 
+Y_UNIT_TEST_SUITE(IamEventLifecycle) {
+    Y_UNIT_TEST(LatePollReplyCannotCompleteNewerAttempt) {
+        TFixture f;
+        f.BeginPolling();
+        auto old = f.Take(f.Polls);
+        f.Reply<TOperation::TEvGetOperationResponse>(*old, false, grpc::StatusCode::UNAVAILABLE);
+        auto current = f.Take(f.Polls);
+        UNIT_ASSERT(old->Cookie != current->Cookie);
+        f.Reply<TOperation::TEvGetOperationResponse>(*old);
+        f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
+        UNIT_ASSERT(f.Results.empty());
+        f.Reply<TOperation::TEvGetOperationResponse>(*current);
+        f.Result();
+        f.Reply<TOperation::TEvGetOperationResponse>(*old, false, grpc::StatusCode::UNAVAILABLE);
+        f.Runtime.SimulateSleep(TDuration::Seconds(20));
+        UNIT_ASSERT(f.Results.empty());
+        UNIT_ASSERT(f.Polls.empty());
+    }
+
+    Y_UNIT_TEST(BulkCredentialDeadlinesLeaveLaterCallerAlive) {
+        for (const size_t count : {512, 4096}) {
+            TFixture f;
+            for (size_t i = 0; i < count; ++i) {
+                f.Setup(100 + i);
+            }
+            f.Runtime.SimulateSleep(TDuration::Seconds(9));
+            f.Setup(9000);
+            f.Runtime.SimulateSleep(TDuration::Seconds(1));
+            UNIT_ASSERT_VALUES_EQUAL(f.Results.size(), count);
+            for (const auto& result : f.Results) {
+                UNIT_ASSERT_VALUES_EQUAL(result.Result.Status, Ydb::StatusIds::UNAVAILABLE);
+                UNIT_ASSERT(result.Cookie != 9000);
+            }
+            f.Results.clear();
+            f.Update();
+            auto survivor = f.Take(f.Setups);
+            UNIT_ASSERT(f.Setups.empty());
+            f.Reply<TControl::TEvSetupDelegationResponse>(*survivor);
+            f.Result(Ydb::StatusIds::SUCCESS, 9000);
+            f.Runtime.SimulateSleep(TDuration::Seconds(20));
+            UNIT_ASSERT(f.Results.empty());
+        }
+    }
+
+    Y_UNIT_TEST(BulkBackoffDeadlinesLeaveLaterCallerAlive) {
+        for (const size_t count : {512, 4096}) {
+            TFixture f;
+            f.Update();
+            // Reach the standard backoff's 60-second floor (with jitter).
+            for (size_t i = 0; i < 11; ++i) {
+                f.Setup();
+                auto request = f.Take(f.Setups);
+                f.Reply<TControl::TEvSetupDelegationResponse>(*request, false, grpc::StatusCode::UNAVAILABLE);
+                f.Result(Ydb::StatusIds::UNAVAILABLE);
+            }
+            for (size_t i = 0; i < count; ++i) {
+                f.Setup(100 + i);
+            }
+            f.Runtime.SimulateSleep(TDuration::Seconds(30));
+            f.Setup(9000);
+            f.Runtime.SimulateSleep(TDuration::Seconds(30));
+            UNIT_ASSERT_VALUES_EQUAL(f.Results.size(), count);
+            for (const auto& result : f.Results) {
+                UNIT_ASSERT_VALUES_EQUAL(result.Result.Status, Ydb::StatusIds::TIMEOUT);
+                UNIT_ASSERT(result.Cookie != 9000);
+            }
+            f.Results.clear();
+            auto survivor = f.Take(f.Setups);
+            UNIT_ASSERT(f.Setups.empty());
+            f.Reply<TControl::TEvSetupDelegationResponse>(*survivor);
+            f.Result(Ydb::StatusIds::SUCCESS, 9000);
+            f.Runtime.SimulateSleep(TDuration::Minutes(2));
+            UNIT_ASSERT(f.Results.empty());
+            UNIT_ASSERT(f.Setups.empty());
+        }
+    }
+
+    Y_UNIT_TEST(HardShutdownWithRpcAndCredentialWaiters) {
+        TFixture f;
+        f.BeginPolling();
+        auto poll = f.Take(f.Polls);
+        f.Update(TTokenStatus::ECode::NOT_READY);
+        f.Setup(44);
+        f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
+        f.Runtime.CleanupNode();
+        UNIT_ASSERT(f.Results.empty());
+    }
+}
+
 Y_UNIT_TEST_SUITE(IamDelegationSettings) {
     Y_UNIT_TEST(ProtobufAndReplicationFallbackPreserveIdentity) {
         NKikimrConfig::TIamConfig config;
