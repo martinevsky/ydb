@@ -205,7 +205,7 @@ private:
         // belonging to another request cannot expire this request's queued reply.
         auto event = MakeHolder<TEvents::TEvWakeup>(request.TimerGeneration);
         auto handle = std::make_unique<IEventHandle>(SelfId(), SelfId(), event.Get(), 0, request.Id);
-        event.Release();
+        Y_UNUSED(event.Release());
         request.TimerCookie.Reset(ISchedulerCookie::Make2Way());
         TActivationContext::Schedule(deadline, std::move(handle), request.TimerCookie.Get());
     }
