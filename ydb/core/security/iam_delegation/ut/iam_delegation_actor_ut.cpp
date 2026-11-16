@@ -654,6 +654,29 @@ Y_UNIT_TEST_SUITE(IamSharedRetries) {
 }
 
 Y_UNIT_TEST_SUITE(IamEventLifecycle) {
+    Y_UNIT_TEST(LateCredentialsCannotOverrunDispatchDeadline) {
+        TFixture f;
+        f.Update();
+        f.Setup();
+        auto failed = f.Take(f.Setups);
+        f.Reply<TControl::TEvSetupDelegationResponse>(*failed, false, grpc::StatusCode::UNAVAILABLE);
+        f.Result(Ydb::StatusIds::UNAVAILABLE);
+        f.Setup(44);
+        f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
+        f.Update(TTokenStatus::ECode::NOT_READY);
+        f.Runtime.SimulateSleep(TDuration::Seconds(2));
+        UNIT_ASSERT(f.Setups.empty());
+        // Delivery is delayed past the dispatch reservation, but not past the
+        // overall call budget. Deliver credentials ahead of the queued timer.
+        f.Runtime.AdvanceCurrentTime(TDuration::Seconds(30));
+        const auto tokenAt = f.Now();
+        f.Update();
+        const auto result = f.Result(Ydb::StatusIds::TIMEOUT, 44);
+        UNIT_ASSERT_VALUES_EQUAL(result.Time, tokenAt);
+        UNIT_ASSERT_STRING_CONTAINS(result.Result.Issues.ToOneLineString(), "polling deadline");
+        UNIT_ASSERT(f.Setups.empty());
+    }
+
     Y_UNIT_TEST(LatePollReplyCannotCompleteNewerAttempt) {
         TFixture f;
         f.BeginPolling();
