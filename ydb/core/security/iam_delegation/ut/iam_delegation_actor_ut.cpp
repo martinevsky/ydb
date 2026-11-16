@@ -768,6 +768,165 @@ Y_UNIT_TEST_SUITE(IamEventLifecycle) {
     }
 }
 
+Y_UNIT_TEST_SUITE(IamEventArbitration) {
+    // Publish captured scheduler events without processing the service mailbox.
+    // Both implementations use their real timers; only the delivery order is controlled.
+    static void Publish(TFixture& f, const TScheduledEventQueueItem& item) {
+        if (item.Event && item.Event->Recipient == f.Service
+                && (!item.Cookie->Get() || item.Cookie->Detach())) {
+            f.Runtime.Send(item.Event, 0, true);
+        }
+    }
+
+    Y_UNIT_TEST(DelayedPollWakePreservesQueuedMutationReply) {
+        for (const auto call : {TFixture::ECall::Setup, TFixture::ECall::Revoke}) {
+            TFixture f;
+            f.BeginPolling();
+            f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
+            if (call == TFixture::ECall::Setup) {
+                f.Setup(99);
+            } else {
+                f.Revoke(99);
+            }
+            auto request = f.Take(call == TFixture::ECall::Setup ? f.Setups : f.Revokes);
+            auto scheduled = f.Runtime.CaptureScheduledEvents();
+            const auto pollLimit = TInstant::MicroSeconds((f.Now() + TDuration::Seconds(2)).GetValue());
+            f.Runtime.AdvanceCurrentTime(TDuration::Seconds(1));
+            size_t early = 0;
+            for (const auto& item : scheduled) {
+                if (item.Event->Recipient == f.Service && item.Deadline < pollLimit) {
+                    Publish(f, item);
+                    ++early;
+                }
+            }
+            UNIT_ASSERT_VALUES_EQUAL(early, 1);
+            f.Runtime.AdvanceCurrentTime(TDuration::Seconds(4));
+            if (call == TFixture::ECall::Setup) {
+                f.Reply<TControl::TEvSetupDelegationResponse>(*request);
+            } else {
+                f.Reply<TControl::TEvRevokeDelegationResponse>(*request);
+            }
+            f.Runtime.AdvanceCurrentTime(TDuration::Seconds(7));
+            for (const auto& item : scheduled) {
+                Publish(f, item);
+            }
+            f.Result(Ydb::StatusIds::SUCCESS, 99);
+        }
+    }
+
+    Y_UNIT_TEST(OwnTimeoutAheadOfReplyStillWins) {
+        TFixture f;
+        f.Update();
+        f.Setup();
+        auto request = f.Take(f.Setups);
+        auto scheduled = f.Runtime.CaptureScheduledEvents();
+        f.Runtime.AdvanceCurrentTime(TDuration::Seconds(12));
+        for (const auto& item : scheduled) {
+            Publish(f, item);
+        }
+        f.Reply<TControl::TEvSetupDelegationResponse>(*request);
+        const auto result = f.Result(Ydb::StatusIds::TIMEOUT);
+        UNIT_ASSERT_STRING_CONTAINS(result.Result.Issues.ToOneLineString(), "outcome is unknown");
+    }
+
+    Y_UNIT_TEST(DelayedPollWakePreservesQueuedCredentials) {
+        TFixture f;
+        f.BeginPolling();
+        f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
+        f.Update(TTokenStatus::ECode::NOT_READY);
+        f.Setup(99);
+        f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
+        auto scheduled = f.Runtime.CaptureScheduledEvents();
+        const auto pollLimit = TInstant::MicroSeconds((f.Now() + TDuration::Seconds(2)).GetValue());
+        f.Runtime.AdvanceCurrentTime(TDuration::Seconds(1));
+        for (const auto& item : scheduled) {
+            if (item.Event->Recipient == f.Service && item.Deadline < pollLimit) {
+                Publish(f, item);
+            }
+        }
+        f.Runtime.AdvanceCurrentTime(TDuration::Seconds(4));
+        f.Update();
+        f.Runtime.AdvanceCurrentTime(TDuration::Seconds(7));
+        for (const auto& item : scheduled) {
+            Publish(f, item);
+        }
+        f.Until([&] { return !f.Setups.empty() || !f.Results.empty(); });
+        UNIT_ASSERT_C(f.Results.empty(), "An unrelated poll wake expired the credential waiter");
+        auto request = f.Take(f.Setups);
+        f.Reply<TControl::TEvSetupDelegationResponse>(*request);
+        f.Result(Ydb::StatusIds::SUCCESS, 99);
+    }
+
+    Y_UNIT_TEST(RetiredTimerCannotExpireLaterPoll) {
+        TFixture f;
+        f.Update();
+        f.Setup();
+        auto request = f.Take(f.Setups);
+        auto retired = f.Runtime.CaptureScheduledEvents();
+        // Release the scheduler's references now: these events may already be queued.
+        for (const auto& item : retired) {
+            if (item.Cookie->Get()) {
+                item.Cookie->Detach();
+            }
+        }
+        f.Reply<TControl::TEvSetupDelegationResponse>(*request, false);
+        auto poll = f.Take(f.Polls);
+        for (const auto& item : retired) {
+            Publish(f, item);
+        }
+        f.Reply<TOperation::TEvGetOperationResponse>(*poll);
+        f.Result();
+        UNIT_ASSERT(f.Results.empty());
+    }
+
+    Y_UNIT_TEST(ObsoleteReplyCannotStealRecoveryFromQueuedSuccess) {
+        TFixture f;
+        f.Update();
+        f.Setup();
+        auto failed = f.Take(f.Setups);
+        f.Reply<TControl::TEvSetupDelegationResponse>(*failed, false, grpc::StatusCode::UNAVAILABLE);
+        f.Result(Ydb::StatusIds::UNAVAILABLE);
+        for (ui64 cookie : {44, 45, 46}) {
+            f.Setup(cookie);
+        }
+        f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
+        f.Update(TTokenStatus::ECode::NOT_READY);
+        f.Runtime.SimulateSleep(TDuration::Seconds(9));
+        f.Update();
+        auto probe = f.Take(f.Setups);
+        UNIT_ASSERT(f.Setups.empty());
+        auto scheduled = f.Runtime.CaptureScheduledEvents();
+        f.Runtime.AdvanceCurrentTime(TDuration::Seconds(9));
+        // An obsolete RPC reply cannot wake callers still waiting on the gate.
+        f.Reply<TControl::TEvSetupDelegationResponse>(*failed);
+        f.Reply<TControl::TEvSetupDelegationResponse>(*probe);
+        f.Runtime.AdvanceCurrentTime(TDuration::Seconds(6));
+        const auto now = TInstant::MicroSeconds(f.Now().GetValue());
+        for (const auto& item : scheduled) {
+            if (item.Deadline <= now) {
+                Publish(f, item);
+            }
+        }
+        f.Until([&] { return !f.Results.empty(); });
+        UNIT_ASSERT_VALUES_EQUAL_C(f.Results.front().Result.Status, Ydb::StatusIds::SUCCESS,
+            f.Results.front().Result.Issues.ToOneLineString());
+        f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
+        UNIT_ASSERT_VALUES_EQUAL_C(f.Setups.size(), 2,
+            "Queued successful recovery must release both remaining callers");
+    }
+
+    Y_UNIT_TEST(UnknownReplyAfterAbsoluteDeadlineReportsTimeout) {
+        TFixture f;
+        f.Update();
+        f.Setup();
+        auto request = f.Take(f.Setups);
+        f.Runtime.AdvanceCurrentTime(TDuration::Seconds(61));
+        f.Runtime.Send(new IEventHandle(f.Service, request->Recipient, new TEvents::TEvPing(), 0, request->Cookie));
+        const auto result = f.Result(Ydb::StatusIds::TIMEOUT);
+        UNIT_ASSERT_STRING_CONTAINS(result.Result.Issues.ToOneLineString(), "polling deadline");
+    }
+}
+
 Y_UNIT_TEST_SUITE(IamDelegationSettings) {
     Y_UNIT_TEST(ProtobufAndReplicationFallbackPreserveIdentity) {
         NKikimrConfig::TIamConfig config;
