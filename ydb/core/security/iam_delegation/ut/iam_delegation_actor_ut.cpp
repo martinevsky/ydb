@@ -703,6 +703,9 @@ Y_UNIT_TEST_SUITE(IamEventLifecycle) {
             f.Update();
             // Reach the standard backoff's 60-second floor (with jitter).
             for (size_t i = 0; i < 11; ++i) {
+                // Let part of the previous cooldown elapse before creating a
+                // call, so jitter cannot exhaust its own admission budget.
+                f.Runtime.SimulateSleep(TDuration::Seconds(30));
                 f.Setup();
                 auto request = f.Take(f.Setups);
                 f.Reply<TControl::TEvSetupDelegationResponse>(*request, false, grpc::StatusCode::UNAVAILABLE);
@@ -737,8 +740,8 @@ Y_UNIT_TEST_SUITE(IamEventLifecycle) {
         f.Update(TTokenStatus::ECode::NOT_READY);
         f.Setup(44);
         f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
-        f.Runtime.CleanupNode();
         UNIT_ASSERT(f.Results.empty());
+        // Fixture destruction forces node teardown with both kinds of work live.
     }
 }
 
