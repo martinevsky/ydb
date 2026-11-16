@@ -10,6 +10,8 @@
 
 #include <google/rpc/error_details.pb.h>
 
+#include <util/generic/yexception.h>
+
 #include <algorithm>
 #include <deque>
 #include <optional>
@@ -654,6 +656,35 @@ Y_UNIT_TEST_SUITE(IamSharedRetries) {
 }
 
 Y_UNIT_TEST_SUITE(IamEventLifecycle) {
+    Y_UNIT_TEST(DispatchExceptionDoesNotStrandOtherRequests) {
+        TFixture f;
+        f.Update();
+        f.Setup();
+        auto failed = f.Take(f.Setups);
+        f.Reply<TControl::TEvSetupDelegationResponse>(*failed, false, grpc::StatusCode::UNAVAILABLE);
+        f.Result(Ydb::StatusIds::UNAVAILABLE);
+        f.Runtime.SetEventFilter([service = f.Service, inject = true](auto&, auto& ev) mutable {
+            if (inject && ev->Sender == service && ev->GetTypeRewrite() == TControl::TEvSetupDelegationRequest::EventType) {
+                inject = false;
+                ythrow yexception() << "injected-dispatch-error";
+            }
+            return false;
+        });
+        f.Setup(44);
+        f.Revoke(45);
+        // Drive the cooldown wake, the injected exception and the next probe
+        // reservation without relying on an indefinitely pending Result().
+        f.Runtime.SimulateSleep(TDuration::Seconds(30));
+        f.Runtime.SetEventFilter(TTestActorRuntimeBase::DefaultFilterFunc);
+        UNIT_ASSERT_VALUES_EQUAL(f.Results.size(), 1u);
+        const auto result = f.Result(Ydb::StatusIds::INTERNAL_ERROR, 44);
+        UNIT_ASSERT(!result.Result.Issues.ToOneLineString().Contains("injected-dispatch-error"));
+        auto survivor = f.Take(f.Revokes);
+        f.Reply<TControl::TEvRevokeDelegationResponse>(*survivor);
+        f.Result(Ydb::StatusIds::SUCCESS, 45);
+        UNIT_ASSERT(f.Setups.empty());
+    }
+
     Y_UNIT_TEST(LateCredentialsCannotOverrunDispatchDeadline) {
         TFixture f;
         f.Update();
@@ -673,8 +704,8 @@ Y_UNIT_TEST_SUITE(IamEventLifecycle) {
         f.Update();
         const auto result = f.Result(Ydb::StatusIds::TIMEOUT, 44);
         UNIT_ASSERT_VALUES_EQUAL(result.Time, tokenAt);
-        UNIT_ASSERT_STRING_CONTAINS(result.Result.Issues.ToOneLineString(), "polling deadline");
         UNIT_ASSERT(f.Setups.empty());
+        UNIT_ASSERT_STRING_CONTAINS(result.Result.Issues.ToOneLineString(), "polling deadline");
     }
 
     Y_UNIT_TEST(LatePollReplyCannotCompleteNewerAttempt) {
