@@ -51,6 +51,7 @@ SRCS(
     queue_inplace.h
     queue_oneone_inplace.h
     random.cpp
+    shared_backoff.cpp
     simple_cache.h
     source_location.cpp
     spsc_circular_queue.h
@@ -93,6 +94,7 @@ END()
 
 RECURSE_FOR_TESTS(
     async_backoff_ut
+    shared_backoff_ut
     btree_benchmark
     ut
 )
