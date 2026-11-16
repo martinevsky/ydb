@@ -769,6 +769,21 @@ Y_UNIT_TEST_SUITE(IamEventLifecycle) {
 }
 
 Y_UNIT_TEST_SUITE(IamEventArbitration) {
+    template<class TResponse>
+    static void QueueReply(TFixture& f, const IEventHandle& request, bool done = true,
+            grpc::StatusCode code = grpc::StatusCode::OK) {
+        auto response = MakeHolder<TResponse>();
+        response->Response.set_id("operation");
+        response->Response.set_done(done);
+        response->Status.GRpcStatusCode = code;
+        f.Runtime.Send(new IEventHandle(request.Sender, request.Recipient, response.Release(), 0, request.Cookie), 0, true);
+    }
+
+    static void QueueToken(TFixture& f, TTokenStatus::ECode code = TTokenStatus::ECode::SUCCESS) {
+        f.Runtime.Send(new IEventHandle(f.Service, f.Manager,
+            new TEvTokenManager::TEvUpdateToken("delegation-system-account", "first-token", {code, {}})), 0, true);
+    }
+
     // Publish captured scheduler events without processing the service mailbox.
     // Both implementations use their real timers; only the delivery order is controlled.
     static void Publish(TFixture& f, const TScheduledEventQueueItem& item) {
@@ -802,9 +817,9 @@ Y_UNIT_TEST_SUITE(IamEventArbitration) {
             UNIT_ASSERT_VALUES_EQUAL(early, 1);
             f.Runtime.AdvanceCurrentTime(TDuration::Seconds(4));
             if (call == TFixture::ECall::Setup) {
-                f.Reply<TControl::TEvSetupDelegationResponse>(*request);
+                QueueReply<TControl::TEvSetupDelegationResponse>(f, *request);
             } else {
-                f.Reply<TControl::TEvRevokeDelegationResponse>(*request);
+                QueueReply<TControl::TEvRevokeDelegationResponse>(f, *request);
             }
             f.Runtime.AdvanceCurrentTime(TDuration::Seconds(7));
             for (const auto& item : scheduled) {
@@ -816,7 +831,7 @@ Y_UNIT_TEST_SUITE(IamEventArbitration) {
 
     Y_UNIT_TEST(OwnTimeoutAheadOfReplyStillWins) {
         TFixture f;
-        f.Update();
+        QueueToken(f);
         f.Setup();
         auto request = f.Take(f.Setups);
         auto scheduled = f.Runtime.CaptureScheduledEvents();
@@ -824,7 +839,7 @@ Y_UNIT_TEST_SUITE(IamEventArbitration) {
         for (const auto& item : scheduled) {
             Publish(f, item);
         }
-        f.Reply<TControl::TEvSetupDelegationResponse>(*request);
+        QueueReply<TControl::TEvSetupDelegationResponse>(f, *request);
         const auto result = f.Result(Ydb::StatusIds::TIMEOUT);
         UNIT_ASSERT_STRING_CONTAINS(result.Result.Issues.ToOneLineString(), "outcome is unknown");
     }
@@ -833,7 +848,7 @@ Y_UNIT_TEST_SUITE(IamEventArbitration) {
         TFixture f;
         f.BeginPolling();
         f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
-        f.Update(TTokenStatus::ECode::NOT_READY);
+        QueueToken(f, TTokenStatus::ECode::NOT_READY);
         f.Setup(99);
         f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
         auto scheduled = f.Runtime.CaptureScheduledEvents();
@@ -845,7 +860,7 @@ Y_UNIT_TEST_SUITE(IamEventArbitration) {
             }
         }
         f.Runtime.AdvanceCurrentTime(TDuration::Seconds(4));
-        f.Update();
+        QueueToken(f);
         f.Runtime.AdvanceCurrentTime(TDuration::Seconds(7));
         for (const auto& item : scheduled) {
             Publish(f, item);
@@ -853,13 +868,13 @@ Y_UNIT_TEST_SUITE(IamEventArbitration) {
         f.Until([&] { return !f.Setups.empty() || !f.Results.empty(); });
         UNIT_ASSERT_C(f.Results.empty(), "An unrelated poll wake expired the credential waiter");
         auto request = f.Take(f.Setups);
-        f.Reply<TControl::TEvSetupDelegationResponse>(*request);
+        QueueReply<TControl::TEvSetupDelegationResponse>(f, *request);
         f.Result(Ydb::StatusIds::SUCCESS, 99);
     }
 
     Y_UNIT_TEST(RetiredTimerCannotExpireLaterPoll) {
         TFixture f;
-        f.Update();
+        QueueToken(f);
         f.Setup();
         auto request = f.Take(f.Setups);
         auto retired = f.Runtime.CaptureScheduledEvents();
@@ -869,37 +884,37 @@ Y_UNIT_TEST_SUITE(IamEventArbitration) {
                 item.Cookie->Detach();
             }
         }
-        f.Reply<TControl::TEvSetupDelegationResponse>(*request, false);
+        QueueReply<TControl::TEvSetupDelegationResponse>(f, *request, false);
         auto poll = f.Take(f.Polls);
         for (const auto& item : retired) {
             Publish(f, item);
         }
-        f.Reply<TOperation::TEvGetOperationResponse>(*poll);
+        QueueReply<TOperation::TEvGetOperationResponse>(f, *poll);
         f.Result();
         UNIT_ASSERT(f.Results.empty());
     }
 
     Y_UNIT_TEST(ObsoleteReplyCannotStealRecoveryFromQueuedSuccess) {
         TFixture f;
-        f.Update();
+        QueueToken(f);
         f.Setup();
         auto failed = f.Take(f.Setups);
-        f.Reply<TControl::TEvSetupDelegationResponse>(*failed, false, grpc::StatusCode::UNAVAILABLE);
+        QueueReply<TControl::TEvSetupDelegationResponse>(f, *failed, false, grpc::StatusCode::UNAVAILABLE);
         f.Result(Ydb::StatusIds::UNAVAILABLE);
         for (ui64 cookie : {44, 45, 46}) {
             f.Setup(cookie);
         }
         f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
-        f.Update(TTokenStatus::ECode::NOT_READY);
+        QueueToken(f, TTokenStatus::ECode::NOT_READY);
         f.Runtime.SimulateSleep(TDuration::Seconds(9));
-        f.Update();
+        QueueToken(f);
         auto probe = f.Take(f.Setups);
         UNIT_ASSERT(f.Setups.empty());
         auto scheduled = f.Runtime.CaptureScheduledEvents();
         f.Runtime.AdvanceCurrentTime(TDuration::Seconds(9));
         // An obsolete RPC reply cannot wake callers still waiting on the gate.
-        f.Reply<TControl::TEvSetupDelegationResponse>(*failed);
-        f.Reply<TControl::TEvSetupDelegationResponse>(*probe);
+        QueueReply<TControl::TEvSetupDelegationResponse>(f, *failed);
+        QueueReply<TControl::TEvSetupDelegationResponse>(f, *probe);
         f.Runtime.AdvanceCurrentTime(TDuration::Seconds(6));
         const auto now = TInstant::MicroSeconds(f.Now().GetValue());
         for (const auto& item : scheduled) {
@@ -915,13 +930,100 @@ Y_UNIT_TEST_SUITE(IamEventArbitration) {
             "Queued successful recovery must release both remaining callers");
     }
 
+    Y_UNIT_TEST(GateAndAttemptTimeoutKeepEventOrder) {
+        enum class EOrder { GateFirst, AttemptTimeoutFirst };
+        for (auto order : {EOrder::GateFirst, EOrder::AttemptTimeoutFirst}) {
+            TFixture f;
+            QueueToken(f);
+            f.Setup();
+            auto failed = f.Take(f.Setups);
+            QueueReply<TControl::TEvSetupDelegationResponse>(f, *failed, false, grpc::StatusCode::UNAVAILABLE);
+            f.Result(Ydb::StatusIds::UNAVAILABLE);
+            f.Setup(44);
+            f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
+            auto scheduled = f.Runtime.CaptureScheduledEvents();
+            const auto gateLimit = TInstant::MicroSeconds((f.Now() + TDuration::Seconds(2)).GetValue());
+            f.Runtime.AdvanceCurrentTime(TDuration::Seconds(61));
+            for (bool gate : {order == EOrder::GateFirst, order != EOrder::GateFirst}) {
+                for (const auto& item : scheduled) {
+                    if ((item.Deadline < gateLimit) == gate) {
+                        Publish(f, item);
+                    }
+                }
+            }
+            const auto result = f.Result(Ydb::StatusIds::TIMEOUT, 44);
+            UNIT_ASSERT_STRING_CONTAINS(result.Result.Issues.ToOneLineString(),
+                order == EOrder::GateFirst ? "polling deadline" : "service retry deadline");
+            UNIT_ASSERT(f.Setups.empty());
+            const auto expiredAt = f.Now();
+            f.Setup(45);
+            auto next = f.Take(f.Setups);
+            const auto reservation = TIamDelegationSettings::RequestTimeout * 2 + TDuration::Seconds(1);
+            UNIT_ASSERT_VALUES_EQUAL(f.Now(), expiredAt + (order == EOrder::GateFirst ? reservation : TDuration::Zero()));
+            QueueReply<TControl::TEvSetupDelegationResponse>(f, *next);
+            f.Result(Ydb::StatusIds::SUCCESS, 45);
+        }
+    }
+
+    Y_UNIT_TEST(ExpiringBackoffOwnerWakesSuccessorBeforeNextMailboxEvent) {
+        TFixture f;
+        QueueToken(f);
+        for (size_t i = 0; i < 10; ++i) {
+            f.Runtime.SimulateSleep(TDuration::Seconds(30));
+            f.Setup();
+            auto failed = f.Take(f.Setups);
+            QueueReply<TControl::TEvSetupDelegationResponse>(f, *failed, false, grpc::StatusCode::UNAVAILABLE);
+            f.Result(Ydb::StatusIds::UNAVAILABLE);
+        }
+        f.Runtime.SimulateSleep(TDuration::Seconds(30));
+        f.Setup();
+        auto failingProbe = f.Take(f.Setups);
+        const auto ownerStarted = f.Now();
+        f.Setup(44);
+        f.Runtime.SimulateSleep(TDuration::Seconds(1));
+        QueueReply<TControl::TEvSetupDelegationResponse>(f, *failingProbe, false, grpc::StatusCode::UNAVAILABLE);
+        f.Result(Ydb::StatusIds::UNAVAILABLE);
+        f.Runtime.SimulateSleep(TDuration::Seconds(29));
+        auto setup = [&](TString referrer, ui64 cookie) {
+            auto spec = TFixture::Spec();
+            spec.ReferrerId = std::move(referrer);
+            f.Runtime.Send(new IEventHandle(f.Service, f.Sender,
+                new TEvIamDelegation::TEvSetupDelegation(spec, "user-subject"), 0, cookie), 0, true);
+        };
+        setup("successor", 45);
+        f.Runtime.SimulateSleep(TDuration::MicroSeconds(1));
+        auto scheduled = f.Runtime.CaptureScheduledEvents();
+        const auto ownerTimeout = TInstant::MicroSeconds((ownerStarted + TIamDelegationSettings::RequestRetryTimeout).GetValue());
+        f.Runtime.AdvanceCurrentTime(TDuration::Seconds(47));
+        size_t ownerTimers = 0;
+        for (const auto& item : scheduled) {
+            if (item.Event->Recipient == f.Service && item.Deadline == ownerTimeout) {
+                Publish(f, item);
+                ++ownerTimers;
+            }
+        }
+        UNIT_ASSERT_VALUES_EQUAL(ownerTimers, 1);
+        setup("newcomer", 46);
+        const auto now = TInstant::MicroSeconds(f.Now().GetValue());
+        for (const auto& item : scheduled) {
+            if (item.Deadline <= now) {
+                Publish(f, item);
+            }
+        }
+        f.Result(Ydb::StatusIds::TIMEOUT, 44);
+        auto next = f.Take(f.Setups);
+        UNIT_ASSERT_VALUES_EQUAL(next->Get<TControl::TEvSetupDelegationRequest>()->Request.referrer().id(), "successor");
+        QueueReply<TControl::TEvSetupDelegationResponse>(f, *next);
+        f.Result(Ydb::StatusIds::SUCCESS, 45);
+    }
+
     Y_UNIT_TEST(UnknownReplyAfterAbsoluteDeadlineReportsTimeout) {
         TFixture f;
-        f.Update();
+        QueueToken(f);
         f.Setup();
         auto request = f.Take(f.Setups);
         f.Runtime.AdvanceCurrentTime(TDuration::Seconds(61));
-        f.Runtime.Send(new IEventHandle(f.Service, request->Recipient, new TEvents::TEvPing(), 0, request->Cookie));
+        f.Runtime.Send(new IEventHandle(f.Service, request->Recipient, new TEvents::TEvPing(), 0, request->Cookie), 0, true);
         const auto result = f.Result(Ydb::StatusIds::TIMEOUT);
         UNIT_ASSERT_STRING_CONTAINS(result.Result.Issues.ToOneLineString(), "polling deadline");
     }
