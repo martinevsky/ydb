@@ -16,21 +16,35 @@ Review focus: concurrent cookies and late replies; credentials changing during c
 
 Files: replace core/util/async_backoff.{h,cpp} and async_backoff_ut with shared_backoff.{h,cpp} and shared_backoff_ut; update core/util/ya.make.
 Interface: TSharedBackoff::TryAcquire(now, reservation) returns optional generation; OnFailure(generation, now), OnSuccess(generation), GetVersion(), GetNextAllowedAt(). The owner schedules events and retries admission; the helper has no actor/coroutine callbacks.
-- [ ] Write deterministic tests for healthy concurrency, exact admission boundaries, stale outcomes, a missing probe outcome, early success releasing waiters and standard jitter/cap.
-- [ ] Run tests against the empty admission stub and observe failure.
-- [ ] Implement admission and fenced standard backoff; rerun the helper tests.
+- [x] Write deterministic tests for healthy concurrency, exact admission boundaries, stale outcomes, a missing probe outcome, early success releasing waiters and standard jitter/cap.
+- [x] Run tests against the empty admission stub and observe failure.
+- [x] Implement admission and fenced standard backoff; rerun the helper tests.
 
 ## Task 2: Classic IAM service
 
 Files: iam_delegation_service.cpp; replace iam_actor_base with iam_errors (retain error classification); update owning build files and README. Preserve the existing IAM test bodies, except comments reflecting the new implementation.
 Interface: unchanged CreateIamDelegationService(settings), public request/result messages and token-manager subscription. Internal records contain call kind, phase, caller/cookie, binding/subject, operation ID, deadlines, RPC cookie and backoff generation.
-- [ ] Add behavior tests for stale RPC replies during a later poll, concurrent deadline expiry with a survivor and forced teardown with pending RPC/backoff work. These should also pass for the reference implementation.
-- [ ] Implement classic dispatch, credential waiting, one shared backoff admission queue, bounded RPC response waiting, polling and shutdown.
-- [ ] Run all IAM and helper tests plus driver build. Preserve all existing assertions; diagnose differences against the reference.
+- [x] Add behavior tests for stale RPC replies during a later poll, concurrent deadline expiry with a survivor and forced teardown with pending RPC/backoff work. These should also pass for the reference implementation.
+- [x] Implement classic dispatch, credential waiting, one shared backoff admission queue, bounded RPC response waiting, polling and shutdown.
+- [x] Run all IAM and helper tests plus driver build. Preserve all existing assertions; diagnose differences against the reference.
 
 ## Task 3: Verification and comparison
 
-- [ ] Independently review the complete final delta against f0689fbf5b9, especially state ownership and test equivalence; address actionable findings with regressions.
-- [ ] Run relevant ASAN tests and the existing nine-node row-KV rolling upgrade/downgrade with this branch as current. Clearly distinguish disabled-feature cluster smoke from live IAM.
-- [ ] Verify no co_await/co_return/NActors::async/TAsyncEvent remains in the analogue's production or test changes; preserve config/event numbering and startup behavior.
-- [ ] Commit final work, retain local backup and give branch/commit, diff, test results and limitations. No publication of an alternative PR without an explicit request.
+- [x] Independently review the complete final delta against f0689fbf5b9, especially state ownership and test equivalence; address actionable findings with regressions.
+- [x] Run relevant ASAN tests and the existing nine-node row-KV rolling upgrade/downgrade with this branch as current. Clearly distinguish disabled-feature cluster smoke from live IAM.
+- [x] Verify no co_await/co_return/NActors::async/TAsyncEvent remains in the analogue's production or test changes; preserve config/event numbering and startup behavior.
+- [x] Commit final work, retain local backup and give branch/commit, diff, test results and limitations. No publication of an alternative PR without an explicit request.
+
+## Completion evidence
+
+Implemented and validated at `4bd00d04ab0f2f90a96aa9446caafa961bdffaf2` on local branch `restore/pr53712-classic-events`. Final documentation commits do not change the tested implementation.
+
+- The seven new helper tests failed against the empty admission stub and passed after implementation. Four actor parity scenarios also passed on the original coroutine implementation before replacement.
+- The full regular build passed 57 IAM tests, seven shared-backoff tests and one nine-node row-KV rolling upgrade/downgrade scenario. The driver, server and CLI built successfully. All nine upgrades and nine downgrades ran between stable-26-4-1 and this implementation.
+- Independent review identified a delayed-credential dispatch deadline race and conditional loss of per-request exception containment. The deadline regression failed before the fix and passed afterwards. Request-scoped exception completion and shared timer rearming were restored. An attempted throw from noexcept Send was an invalid recovery probe and was removed; recoverable allocation-failure injection remains unverified.
+- ASAN passed all 64 IAM/helper tests. The first IAM sanitizer link exceeded a 32-bit debug relocation limit; retrying with link-time `--strip-debug` preserved sanitizer instrumentation and passed. No production source workaround was needed.
+- The owning production and test targets contain no coroutine operations or direct coroutine dependency introduced by this feature. Public events, startup configuration and wire/persisted representations are unchanged from the reference PR.
+
+The rolling scenario leaves IAM delegation disabled: it validates cluster integration, not live IAM mixed-version operation. Live IAM setup/revoke, rights and token rotation were not executed. The rolling harness reported approximately 11.6 GiB peak usage against its existing 8 GiB estimate; the run passed without OOM. Direct injection of a retired service timer remains optional deferred coverage; the generation guard was reviewed and related deadline/stale-outcome scenarios passed.
+
+Logs, immutable review and patches, traces, and a Git bundle checkpoint are preserved beside the worktree in `../pr53712-classic-validation/`. The original PR branch is preserved; this analogue has not been published.
