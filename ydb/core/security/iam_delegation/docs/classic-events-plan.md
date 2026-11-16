@@ -48,3 +48,14 @@ Implemented and validated at `4bd00d04ab0f2f90a96aa9446caafa961bdffaf2` on local
 The rolling scenario leaves IAM delegation disabled: it validates cluster integration, not live IAM mixed-version operation. Live IAM setup/revoke, rights and token rotation were not executed. The rolling harness reported approximately 11.6 GiB peak usage against its existing 8 GiB estimate; the run passed without OOM. Direct injection of a retired service timer remains optional deferred coverage; the generation guard was reviewed and related deadline/stale-outcome scenarios passed.
 
 Logs, immutable review and patches, traces, and a Git bundle checkpoint are preserved beside the worktree in `../pr53712-classic-validation/`. The original PR branch is preserved; this analogue has not been published.
+
+## Task 4: Restore event arbitration parity
+
+The equivalence audit found that batching all overdue requests in one wake changes a queued successful response into a timeout after an unrelated polling wake. The original completion evidence above describes the pre-correction snapshot, not complete equivalence.
+
+Architecture correction: each request owns a cancellable, generation-fenced event for its current wait. A separate shared timer serves only IAM backoff admission; request timeout events never expire unrelated requests. Preserve original response-first behavior for shorter credential/RPC waits and strict absolute attempt/poll deadlines. Keep standard shared backoff, typed phases and the public API. Restore original log messages and check the absolute attempt deadline before classifying unknown correlated replies.
+
+- [ ] Add deterministic queued-event tests for reply/timeout order, credential readiness behind an unrelated poll wake, retired request timers and wrong-type replies after the attempt deadline. Run unchanged assertions on broken classic and coroutine reference.
+- [ ] Implement per-request timers and any further source-confirmed behavioral corrections. Cover each additional defect with a failing regression.
+- [ ] Run complete IAM/helper suites, ASAN, driver/server and rolling validation; independently review the final comparison and distinguish executed evidence from remaining live-IAM/fault-injection limits.
+- [ ] Update component/test specifications, commit and retain a local bundle. No alternate branch publication.
