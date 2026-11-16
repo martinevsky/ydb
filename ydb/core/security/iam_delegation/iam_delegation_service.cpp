@@ -15,8 +15,8 @@
 #include <ydb/library/ycloud/impl/service_control_service.h>
 
 #include <util/generic/guid.h>
+#include <util/generic/intrlist.h>
 #include <util/string/builder.h>
-#include <deque>
 #include <list>
 #include <map>
 #include <memory>
@@ -38,7 +38,7 @@ class TIamDelegationService : public TActorBootstrapped<TIamDelegationService>, 
 
     using TWaiters = std::list<ui64>;
 
-    struct TRequest {
+    struct TRequest : TIntrusiveListItem<TRequest> {
         ui64 Id = 0;
         ECall Call = ECall::Setup;
         EPhase Phase = EPhase::Credentials;
@@ -155,9 +155,11 @@ private:
     void NotifyBackoffOne() {
         if (!BackoffWaiters.empty()) {
             const auto id = BackoffWaiters.front();
-            // Stage the allocation before removing the live waiter.
-            BackoffNotifications.push_back(id);
-            Requests.at(id).BackoffWaiter.reset();
+            auto& request = Requests.at(id);
+            // Handoff must not allocate after completing the previous owner.
+            // Request destruction unlinks a notification still waiting to run.
+            BackoffNotifications.PushBack(&request);
+            request.BackoffWaiter.reset();
             BackoffWaiters.pop_front();
         }
     }
@@ -381,9 +383,8 @@ private:
     void DrainBackoffNotifications() {
         // These are same-turn notifications, like the reference's Changed
         // continuations. Unrelated events never wake a suspended gate waiter.
-        while (!BackoffNotifications.empty()) {
-            const auto id = BackoffNotifications.front();
-            BackoffNotifications.pop_front();
+        while (!BackoffNotifications.Empty()) {
+            const auto id = BackoffNotifications.PopFront()->Id;
             ProcessRequest(id, [&](TRequest& request) {
                 if (request.Phase == EPhase::Backoff) {
                     ResumeBackoff(request);
@@ -582,7 +583,7 @@ private:
 
     void BeginShutdown() {
         TimerCookie.Detach();
-        BackoffNotifications.clear();
+        BackoffNotifications.Clear();
         BackoffWaiters.clear();
         CredentialWaiters.clear();
         Requests.clear();
@@ -606,7 +607,7 @@ private:
     std::map<ui64, ui64> RpcRequests;
     TWaiters CredentialWaiters;
     TWaiters BackoffWaiters;
-    std::deque<ui64> BackoffNotifications;
+    TIntrusiveList<TRequest> BackoffNotifications;
     ui64 BackoffTimerOwner = 0;
     TSchedulerCookieHolder TimerCookie;
     TMonotonic TimerAt = TMonotonic::Max();
