@@ -100,8 +100,9 @@ public:
                 return;
             default:
                 if (const auto it = RpcRequests.find(ev->Cookie); it != RpcRequests.end()) {
-                    Fail(Requests.at(it->second), Ydb::StatusIds::INTERNAL_ERROR,
-                        "Unexpected IAM response; outcome is unknown");
+                    ProcessRequest(it->second, [&](TRequest& request) {
+                        Fail(request, Ydb::StatusIds::INTERNAL_ERROR, "Unexpected IAM response; outcome is unknown");
+                    });
                 }
                 break;
         }
@@ -113,10 +114,31 @@ private:
     using IActorExceptionHandler::OnUnhandledException;
     bool OnUnhandledException(const std::exception&) override {
         YDB_LOG_ERROR("Unhandled exception in an IAM delegation actor", {"actor", SelfId()});
+        // Per-request failures are contained below. A one-shot failure of the
+        // shared scheduler must not leave unrelated requests without a timer.
+        ArmTimer();
         return true;
     }
 
     static TMonotonic Now() { return TActivationContext::Monotonic(); }
+
+    template<class TAction>
+    void ProcessRequest(ui64 id, TAction&& action) {
+        const auto it = Requests.find(id);
+        if (it == Requests.end()) {
+            return;
+        }
+        try {
+            action(it->second);
+        } catch (const std::exception&) {
+            // Unexpected failures complete this operation, including polls;
+            // they neither replay mutations nor interrupt other callers.
+            if (const auto current = Requests.find(id); current != Requests.end()) {
+                Finish(current->second, TDelegationResult::Error(Ydb::StatusIds::INTERNAL_ERROR,
+                    "Unexpected IAM operation failure"));
+            }
+        }
+    }
 
     void SetPhase(TRequest& request, EPhase phase, TMonotonic deadline) {
         Deadlines.erase({request.WakeupAt, request.Id});
@@ -185,19 +207,22 @@ private:
 
     void Start(ECall call, TActorId replyTo, ui64 cookie, const TDelegationSpec& spec, const TString& subject = {}) {
         const auto id = ++NextRequestId;
-        auto& request = Requests[id];
+        TRequest request;
         request.Id = id;
         request.Call = call;
         request.ReplyTo = replyTo;
         request.ReplyCookie = cookie;
         request.Spec = spec;
         request.SubjectId = subject;
-        if (spec.ServiceAccountId.empty() || spec.CloudId.empty() || spec.ReferrerId.empty()
-                || (call == ECall::Setup && subject.empty())) {
-            Finish(request, TDelegationResult::Error(Ydb::StatusIds::BAD_REQUEST, "Complete IAM binding and setup subject are required"));
-            return;
-        }
-        StartAttempt(request);
+        Requests.emplace(id, std::move(request));
+        ProcessRequest(id, [&](TRequest& pending) {
+            if (spec.ServiceAccountId.empty() || spec.CloudId.empty() || spec.ReferrerId.empty()
+                    || (call == ECall::Setup && subject.empty())) {
+                Finish(pending, TDelegationResult::Error(Ydb::StatusIds::BAD_REQUEST, "Complete IAM binding and setup subject are required"));
+            } else {
+                StartAttempt(pending);
+            }
+        });
     }
 
     void HandleSetup(TEvIamDelegation::TEvSetupDelegation::TPtr& ev) {
@@ -209,8 +234,10 @@ private:
     }
 
     void Advance(TRequest& request, ETrigger trigger) {
-        if (Now() >= request.PollDeadline || (request.Phase != EPhase::Poll && Now() >= request.AttemptDeadline)) {
-            Fail(request, Ydb::StatusIds::TIMEOUT, "IAM operation polling deadline exceeded");
+        if (Now() >= request.PollDeadline || (request.Phase != EPhase::Poll && Now() >= request.AttemptDeadline)
+                || (request.Phase == EPhase::DispatchCredentials && Now() >= request.DispatchDeadline)) {
+            Fail(request, Ydb::StatusIds::TIMEOUT, request.Phase == EPhase::Backoff
+                ? "IAM service retry deadline exceeded" : "IAM operation polling deadline exceeded");
             return;
         }
         switch (request.Phase) {
@@ -252,20 +279,24 @@ private:
 
     void PumpBackoff() {
         while (!BackoffWaiters.empty()) {
-            auto& request = Requests.at(*BackoffWaiters.begin());
-            if (Now() >= request.AttemptDeadline) {
-                Fail(request, Ydb::StatusIds::TIMEOUT, "IAM operation polling deadline exceeded");
-                continue;
-            }
-            const auto version = RetryBackoff.TryAcquire(Now(), Settings.RequestTimeout * 2 + TDuration::Seconds(1));
-            if (!version) {
+            if (Now() < RetryBackoff.GetNextAllowedAt()) {
                 return;
             }
-            request.BackoffVersion = *version;
-            request.DispatchDeadline = Min(request.AttemptDeadline, Now() + Settings.RequestTimeout * 2 + TDuration::Seconds(1));
-            SetPhase(request, EPhase::DispatchCredentials, Min(request.DispatchDeadline, Now() + Settings.RequestTimeout));
-            // Token updates during the shared cooldown must be observed here.
-            Advance(request, ETrigger::Event);
+            ProcessRequest(*BackoffWaiters.begin(), [&](TRequest& request) {
+                if (Now() >= request.AttemptDeadline) {
+                    Fail(request, Ydb::StatusIds::TIMEOUT, "IAM service retry deadline exceeded");
+                    return;
+                }
+                const auto version = RetryBackoff.TryAcquire(Now(), Settings.RequestTimeout * 2 + TDuration::Seconds(1));
+                if (!version) {
+                    return;
+                }
+                request.BackoffVersion = *version;
+                request.DispatchDeadline = Min(request.AttemptDeadline, Now() + Settings.RequestTimeout * 2 + TDuration::Seconds(1));
+                SetPhase(request, EPhase::DispatchCredentials, Min(request.DispatchDeadline, Now() + Settings.RequestTimeout));
+                // Token updates during the shared cooldown must be observed here.
+                Advance(request, ETrigger::Event);
+            });
         }
     }
 
@@ -288,10 +319,18 @@ private:
         request.RpcCookie = ++NextRpcCookie;
         RpcRequests.emplace(request.RpcCookie, request.Id);
         SetPhase(request, EPhase::Reply, Min(request.DispatchDeadline, Now() + Settings.RequestTimeout + TDuration::Seconds(1)));
+        if (Now() >= request.DispatchDeadline) {
+            Fail(request, Ydb::StatusIds::TIMEOUT, "IAM operation polling deadline exceeded");
+            return;
+        }
         Send(client, event.Release(), IEventHandle::FlagTrackDelivery, request.RpcCookie);
     }
 
     void Dispatch(TRequest& request) {
+        if (Now() >= request.DispatchDeadline) {
+            Fail(request, Ydb::StatusIds::TIMEOUT, "IAM operation polling deadline exceeded");
+            return;
+        }
         if (!request.OperationId.empty()) {
             auto event = MakeHolder<TOperationEvents::TEvGetOperationRequest>();
             event->Request.set_operation_id(request.OperationId);
@@ -320,7 +359,13 @@ private:
         if (it == RpcRequests.end()) {
             return; // Late, duplicate or unrelated response.
         }
-        auto& request = Requests.at(it->second);
+        ProcessRequest(it->second, [&](TRequest& request) {
+            ProcessResponse(request, *ev->Get());
+        });
+    }
+
+    template<class TEvent>
+    void ProcessResponse(TRequest& request, const TEvent& event) {
         ClearRpc(request);
         if (Now() >= request.AttemptDeadline) {
             Fail(request, Ydb::StatusIds::TIMEOUT, "IAM operation polling deadline exceeded");
@@ -330,7 +375,7 @@ private:
             Fail(request, Ydb::StatusIds::INTERNAL_ERROR, "Unexpected IAM response; outcome is unknown");
             return;
         }
-        const auto& status = ev->Get()->Status;
+        const auto& status = event.Status;
         if (IamServiceHealth(status) == EIamServiceHealth::Healthy) {
             RetryBackoff.OnSuccess(request.BackoffVersion);
         } else {
@@ -347,7 +392,7 @@ private:
             }
             return;
         }
-        const auto& operation = ev->Get()->Response;
+        const auto& operation = event.Response;
         if (operation.id().empty() || (!request.OperationId.empty() && operation.id() != request.OperationId)) {
             Fail(request, Ydb::StatusIds::INTERNAL_ERROR, "IAM returned a missing or mismatched operation ID; outcome is unknown");
             return;
@@ -378,7 +423,9 @@ private:
             return;
         }
         while (!CredentialWaiters.empty()) {
-            Advance(Requests.at(*CredentialWaiters.begin()), ETrigger::Event);
+            ProcessRequest(*CredentialWaiters.begin(), [&](TRequest& request) {
+                Advance(request, ETrigger::Event);
+            });
         }
     }
 
@@ -398,13 +445,14 @@ private:
             TokenStatus = {TEvTokenManager::TStatus::ECode::ERROR, "token manager is not available"};
             WakeCredentials();
         } else if (const auto it = RpcRequests.find(ev->Cookie); it != RpcRequests.end()) {
-            auto& request = Requests.at(it->second);
-            if (Now() >= request.AttemptDeadline) {
-                Fail(request, Ydb::StatusIds::TIMEOUT, "IAM operation polling deadline exceeded");
-            } else {
-                RetryBackoff.OnFailure(request.BackoffVersion, Now());
-                Fail(request, Ydb::StatusIds::UNAVAILABLE, "IAM client is unavailable; outcome is unknown");
-            }
+            ProcessRequest(it->second, [&](TRequest& request) {
+                if (Now() >= request.AttemptDeadline) {
+                    Fail(request, Ydb::StatusIds::TIMEOUT, "IAM operation polling deadline exceeded");
+                } else {
+                    RetryBackoff.OnFailure(request.BackoffVersion, Now());
+                    Fail(request, Ydb::StatusIds::UNAVAILABLE, "IAM client is unavailable; outcome is unknown");
+                }
+            });
         }
     }
 
@@ -417,11 +465,13 @@ private:
             return;
         }
         TimerCookie.Detach();
-        TimerAt = next;
+        TimerAt = TMonotonic::Max();
         ++TimerGeneration;
         if (next != TMonotonic::Max()) {
+            auto event = MakeHolder<TEvents::TEvWakeup>(TimerGeneration);
             TimerCookie.Reset(ISchedulerCookie::Make2Way());
-            Schedule(next, new TEvents::TEvWakeup(TimerGeneration), TimerCookie.Get());
+            Schedule(next, event.Release(), TimerCookie.Get());
+            TimerAt = next;
         }
     }
 
@@ -432,7 +482,9 @@ private:
         TimerCookie.Detach();
         TimerAt = TMonotonic::Max();
         while (!Deadlines.empty() && Deadlines.begin()->first <= Now()) {
-            Advance(Requests.at(Deadlines.begin()->second), ETrigger::Timer);
+            ProcessRequest(Deadlines.begin()->second, [&](TRequest& request) {
+                Advance(request, ETrigger::Timer);
+            });
         }
     }
 
