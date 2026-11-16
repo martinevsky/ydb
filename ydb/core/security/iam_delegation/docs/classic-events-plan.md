@@ -4,7 +4,7 @@
 
 Goal: provide a complete classic NActors equivalent of PR #53712 at f0689fbf5b9, without coroutine code or coroutine dependencies introduced by this feature.
 
-Architecture: one node-local service owns token subscription, shared standard TBackoff and explicit request records. Request stages are scoped enums. Unique RPC cookies correlate replies; a cancellable, generation-fenced service timer drives ordered request deadlines, polling and the shared recovery gate. No worker actor or timer is required per suspended coroutine because there are no coroutines.
+Architecture: one node-local service owns token subscription, shared standard TBackoff and explicit request records. Request stages are scoped enums. Unique RPC cookies correlate replies; independent generation-fenced request timers drive deadlines and polling, with a separate timer and FIFO notifications for the shared recovery gate. There are no coroutine tasks or worker actors.
 
 Spec: the current component README and existing 52 IAM behavior tests define the observable contract. Preserve public events, configuration, identity, rights hints, redaction, startup behavior and mutation uncertainty. The latest explicit user request overrides the general coroutine preference for this analogue.
 
@@ -53,7 +53,7 @@ Logs, immutable review and patches, traces, and a Git bundle checkpoint are pres
 
 The equivalence audit found that batching all overdue requests in one wake changes a queued successful response into a timeout after an unrelated polling wake. The original completion evidence above describes the pre-correction snapshot, not complete equivalence.
 
-Architecture correction: each request owns a cancellable, generation-fenced event for its current wait. A separate shared timer serves only IAM backoff admission; request timeout events never expire unrelated requests. Preserve original response-first behavior for shorter credential/RPC waits and strict absolute attempt/poll deadlines. Keep standard shared backoff, typed phases and the public API. Restore original log messages and check the absolute attempt deadline before classifying unknown correlated replies.
+Architecture correction: each request owns a cancellable, generation-fenced event for its current wait. A separate shared timer serves only IAM backoff admission; request timeout events never expire unrelated requests. Preserve the logical timer owner, FIFO notification order and same-turn owner handoff. Only actual health notifications or the owning gate wake resume suspended waiters; newly ready callers try admission directly. Preserve original response-first behavior for shorter credential/RPC waits and strict absolute attempt/poll deadlines. Keep standard shared backoff, typed phases and the public API. Restore original log messages and check the absolute attempt deadline before classifying unknown correlated replies.
 
 - [ ] Add deterministic queued-event tests for reply/timeout order, credential readiness behind an unrelated poll wake, retired request timers and wrong-type replies after the attempt deadline. Run unchanged assertions on broken classic and coroutine reference.
 - [ ] Implement per-request timers and any further source-confirmed behavioral corrections. Cover each additional defect with a failing regression.

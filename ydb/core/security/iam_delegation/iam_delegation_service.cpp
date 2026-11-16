@@ -16,8 +16,11 @@
 
 #include <util/generic/guid.h>
 #include <util/string/builder.h>
+#include <deque>
+#include <list>
 #include <map>
-#include <set>
+#include <memory>
+#include <optional>
 
 #define YDB_LOG_THIS_FILE_COMPONENT NKikimrServices::IAM_DELEGATION
 
@@ -33,6 +36,8 @@ class TIamDelegationService : public TActorBootstrapped<TIamDelegationService>, 
     enum class EPhase { Credentials, Backoff, DispatchCredentials, Reply, Poll };
     enum class ETrigger { Event, Timer };
 
+    using TWaiters = std::list<ui64>;
+
     struct TRequest {
         ui64 Id = 0;
         ECall Call = ECall::Setup;
@@ -45,7 +50,10 @@ class TIamDelegationService : public TActorBootstrapped<TIamDelegationService>, 
         TMonotonic PollDeadline = TMonotonic::Max();
         TMonotonic AttemptDeadline = TMonotonic::Max();
         TMonotonic DispatchDeadline = TMonotonic::Max();
-        TMonotonic WakeupAt = TMonotonic::Max();
+        ui64 TimerGeneration = 0;
+        TSchedulerCookieHolder TimerCookie;
+        std::optional<TWaiters::iterator> CredentialWaiter;
+        std::optional<TWaiters::iterator> BackoffWaiter;
         ui64 RpcCookie = 0;
         ui64 BackoffVersion = 0;
 
@@ -101,12 +109,16 @@ public:
             default:
                 if (const auto it = RpcRequests.find(ev->Cookie); it != RpcRequests.end()) {
                     ProcessRequest(it->second, [&](TRequest& request) {
-                        Fail(request, Ydb::StatusIds::INTERNAL_ERROR, "Unexpected IAM response; outcome is unknown");
+                        if (Now() >= request.AttemptDeadline) {
+                            Fail(request, Ydb::StatusIds::TIMEOUT, "IAM operation polling deadline exceeded");
+                        } else {
+                            Fail(request, Ydb::StatusIds::INTERNAL_ERROR, "Unexpected IAM response; outcome is unknown");
+                        }
                     });
                 }
                 break;
         }
-        PumpBackoff();
+        DrainBackoffNotifications();
         ArmTimer();
     }
 
@@ -140,17 +152,75 @@ private:
         }
     }
 
+    void NotifyBackoffOne() {
+        if (!BackoffWaiters.empty()) {
+            const auto id = BackoffWaiters.front();
+            // Stage the allocation before removing the live waiter.
+            BackoffNotifications.push_back(id);
+            Requests.at(id).BackoffWaiter.reset();
+            BackoffWaiters.pop_front();
+        }
+    }
+
+    void NotifyBackoffAll() {
+        while (!BackoffWaiters.empty()) {
+            NotifyBackoffOne();
+        }
+    }
+
+    void ReleaseBackoffOwner() {
+        BackoffTimerOwner = 0;
+        TimerCookie.Detach();
+        TimerAt = TMonotonic::Max();
+        ++TimerGeneration;
+        // Cancellation of the timer-owning wait wakes one successor in this
+        // actor turn. Cancelling another waiter must not open admission.
+        NotifyBackoffOne();
+    }
+
+    void ClearWaiters(TRequest& request) {
+        if (request.CredentialWaiter) {
+            CredentialWaiters.erase(*request.CredentialWaiter);
+            request.CredentialWaiter.reset();
+        }
+        if (request.BackoffWaiter) {
+            BackoffWaiters.erase(*request.BackoffWaiter);
+            request.BackoffWaiter.reset();
+        }
+        if (BackoffTimerOwner == request.Id) {
+            ReleaseBackoffOwner();
+        }
+    }
+
     void SetPhase(TRequest& request, EPhase phase, TMonotonic deadline) {
-        Deadlines.erase({request.WakeupAt, request.Id});
-        CredentialWaiters.erase(request.Id);
-        BackoffWaiters.erase(request.Id);
+        ClearWaiters(request);
+        request.TimerCookie.Detach();
         request.Phase = phase;
-        request.WakeupAt = deadline;
-        Deadlines.emplace(deadline, request.Id);
+        ++request.TimerGeneration;
         if (phase == EPhase::Credentials || phase == EPhase::DispatchCredentials) {
-            CredentialWaiters.insert(request.Id);
-        } else if (phase == EPhase::Backoff) {
-            BackoffWaiters.insert(request.Id);
+            CredentialWaiters.push_back(request.Id);
+            request.CredentialWaiter = std::prev(CredentialWaiters.end());
+        }
+        // Each wait arbitrates against its own mailbox timer. An earlier wake
+        // belonging to another request cannot expire this request's queued reply.
+        auto event = MakeHolder<TEvents::TEvWakeup>(request.TimerGeneration);
+        auto handle = std::make_unique<IEventHandle>(SelfId(), SelfId(), event.Get(), 0, request.Id);
+        event.Release();
+        request.TimerCookie.Reset(ISchedulerCookie::Make2Way());
+        TActivationContext::Schedule(deadline, std::move(handle), request.TimerCookie.Get());
+    }
+
+    void ReportBackoffFailure(ui64 version) {
+        if (RetryBackoff.OnFailure(version, Now()) == TSharedBackoff::EUpdate::Applied) {
+            NotifyBackoffAll();
+        }
+    }
+
+    void ReportBackoffSuccess(ui64 version) {
+        const auto previous = RetryBackoff.GetVersion();
+        RetryBackoff.OnSuccess(version);
+        if (RetryBackoff.GetVersion() != previous) {
+            NotifyBackoffAll();
         }
     }
 
@@ -162,11 +232,18 @@ private:
     }
 
     void Finish(TRequest& request, TDelegationResult result) {
-        if (result.IsSuccess()) {
-            YDB_LOG_INFO("IAM delegation done", {"method", request.MutationMethod()}, {"spec", request.Spec.ToString()});
+        if (request.Call == ECall::Setup) {
+            if (result.IsSuccess()) {
+                YDB_LOG_INFO("SetupDelegation done", {"spec", request.Spec.ToString()});
+            } else {
+                YDB_LOG_WARN("SetupDelegation failed", {"spec", request.Spec.ToString()},
+                    {"status", result.Status}, {"issues", result.Issues.ToOneLineString()});
+            }
+        } else if (result.IsSuccess()) {
+            YDB_LOG_INFO("RevokeDelegation done", {"spec", request.Spec.ToString()});
         } else {
-            YDB_LOG_WARN("IAM delegation failed", {"method", request.MutationMethod()},
-                {"spec", request.Spec.ToString()}, {"status", result.Status}, {"issues", result.Issues.ToOneLineString()});
+            YDB_LOG_WARN("RevokeDelegation failed", {"spec", request.Spec.ToString()},
+                {"status", result.Status}, {"issues", result.Issues.ToOneLineString()});
         }
         if (request.Call == ECall::Setup) {
             Send(request.ReplyTo, new TEvIamDelegation::TEvSetupDelegationResult(std::move(result)), 0, request.ReplyCookie);
@@ -174,9 +251,7 @@ private:
             Send(request.ReplyTo, new TEvIamDelegation::TEvRevokeDelegationResult(std::move(result)), 0, request.ReplyCookie);
         }
         ClearRpc(request);
-        Deadlines.erase({request.WakeupAt, request.Id});
-        CredentialWaiters.erase(request.Id);
-        BackoffWaiters.erase(request.Id);
+        ClearWaiters(request);
         Requests.erase(request.Id);
     }
 
@@ -207,15 +282,19 @@ private:
 
     void Start(ECall call, TActorId replyTo, ui64 cookie, const TDelegationSpec& spec, const TString& subject = {}) {
         const auto id = ++NextRequestId;
-        TRequest request;
+        auto& request = Requests.try_emplace(id).first->second;
         request.Id = id;
         request.Call = call;
         request.ReplyTo = replyTo;
         request.ReplyCookie = cookie;
-        request.Spec = spec;
-        request.SubjectId = subject;
-        Requests.emplace(id, std::move(request));
         ProcessRequest(id, [&](TRequest& pending) {
+            pending.Spec = spec;
+            pending.SubjectId = subject;
+            if (call == ECall::Setup) {
+                YDB_LOG_INFO("SetupDelegation", {"spec", spec.ToString()}, {"subjectId", subject});
+            } else {
+                YDB_LOG_INFO("RevokeDelegation", {"spec", spec.ToString()});
+            }
             if (spec.ServiceAccountId.empty() || spec.CloudId.empty() || spec.ReferrerId.empty()
                     || (call == ECall::Setup && subject.empty())) {
                 Finish(pending, TDelegationResult::Error(Ydb::StatusIds::BAD_REQUEST, "Complete IAM binding and setup subject are required"));
@@ -245,7 +324,7 @@ private:
                 StartAttempt(request);
                 return;
             case EPhase::Reply:
-                RetryBackoff.OnFailure(request.BackoffVersion, Now());
+                ReportBackoffFailure(request.BackoffVersion);
                 Fail(request, Ydb::StatusIds::TIMEOUT, "IAM response was not received; outcome is unknown");
                 return;
             case EPhase::Backoff:
@@ -272,30 +351,43 @@ private:
         }
         if (request.Phase == EPhase::Credentials) {
             SetPhase(request, EPhase::Backoff, request.AttemptDeadline);
+            ResumeBackoff(request);
         } else {
             Dispatch(request);
         }
     }
 
-    void PumpBackoff() {
-        while (!BackoffWaiters.empty()) {
-            if (Now() < RetryBackoff.GetNextAllowedAt()) {
-                return;
+    void ResumeBackoff(TRequest& request) {
+        ClearWaiters(request);
+        const auto version = RetryBackoff.TryAcquire(Now(), Settings.RequestTimeout * 2 + TDuration::Seconds(1));
+        if (!version) {
+            BackoffWaiters.push_back(request.Id);
+            request.BackoffWaiter = std::prev(BackoffWaiters.end());
+            if (!BackoffTimerOwner) {
+                BackoffTimerOwner = request.Id;
+                ArmTimer();
             }
-            ProcessRequest(*BackoffWaiters.begin(), [&](TRequest& request) {
-                if (Now() >= request.AttemptDeadline) {
-                    Fail(request, Ydb::StatusIds::TIMEOUT, "IAM service retry deadline exceeded");
-                    return;
+            return;
+        }
+        // The gate wake may have been queued before the caller's deadline event.
+        // As in the reference, acquire first, then check the absolute dispatch
+        // deadline; even an expired caller has consumed this reservation.
+        request.BackoffVersion = *version;
+        request.DispatchDeadline = Min(request.AttemptDeadline, Now() + Settings.RequestTimeout * 2 + TDuration::Seconds(1));
+        SetPhase(request, EPhase::DispatchCredentials, Min(request.DispatchDeadline, Now() + Settings.RequestTimeout));
+        Advance(request, ETrigger::Event);
+    }
+
+    void DrainBackoffNotifications() {
+        // These are same-turn notifications, like the reference's Changed
+        // continuations. Unrelated events never wake a suspended gate waiter.
+        while (!BackoffNotifications.empty()) {
+            const auto id = BackoffNotifications.front();
+            BackoffNotifications.pop_front();
+            ProcessRequest(id, [&](TRequest& request) {
+                if (request.Phase == EPhase::Backoff) {
+                    ResumeBackoff(request);
                 }
-                const auto version = RetryBackoff.TryAcquire(Now(), Settings.RequestTimeout * 2 + TDuration::Seconds(1));
-                if (!version) {
-                    return;
-                }
-                request.BackoffVersion = *version;
-                request.DispatchDeadline = Min(request.AttemptDeadline, Now() + Settings.RequestTimeout * 2 + TDuration::Seconds(1));
-                SetPhase(request, EPhase::DispatchCredentials, Min(request.DispatchDeadline, Now() + Settings.RequestTimeout));
-                // Token updates during the shared cooldown must be observed here.
-                Advance(request, ETrigger::Event);
             });
         }
     }
@@ -377,9 +469,9 @@ private:
         }
         const auto& status = event.Status;
         if (IamServiceHealth(status) == EIamServiceHealth::Healthy) {
-            RetryBackoff.OnSuccess(request.BackoffVersion);
+            ReportBackoffSuccess(request.BackoffVersion);
         } else {
-            RetryBackoff.OnFailure(request.BackoffVersion, Now());
+            ReportBackoffFailure(request.BackoffVersion);
         }
         if (!status.Ok()) {
             if (status.InternalError) {
@@ -423,7 +515,7 @@ private:
             return;
         }
         while (!CredentialWaiters.empty()) {
-            ProcessRequest(*CredentialWaiters.begin(), [&](TRequest& request) {
+            ProcessRequest(CredentialWaiters.front(), [&](TRequest& request) {
                 Advance(request, ETrigger::Event);
             });
         }
@@ -449,7 +541,7 @@ private:
                 if (Now() >= request.AttemptDeadline) {
                     Fail(request, Ydb::StatusIds::TIMEOUT, "IAM operation polling deadline exceeded");
                 } else {
-                    RetryBackoff.OnFailure(request.BackoffVersion, Now());
+                    ReportBackoffFailure(request.BackoffVersion);
                     Fail(request, Ydb::StatusIds::UNAVAILABLE, "IAM client is unavailable; outcome is unknown");
                 }
             });
@@ -457,10 +549,7 @@ private:
     }
 
     void ArmTimer() {
-        auto next = Deadlines.empty() ? TMonotonic::Max() : Deadlines.begin()->first;
-        if (!BackoffWaiters.empty()) {
-            next = Min(next, RetryBackoff.GetNextAllowedAt());
-        }
+        const auto next = BackoffTimerOwner ? RetryBackoff.GetNextAllowedAt() : TMonotonic::Max();
         if (next == TimerAt) {
             return;
         }
@@ -476,20 +565,27 @@ private:
     }
 
     void HandleWakeup(TEvents::TEvWakeup::TPtr& ev) {
-        if (ev->Get()->Tag != TimerGeneration) {
-            return;
-        }
-        TimerCookie.Detach();
-        TimerAt = TMonotonic::Max();
-        while (!Deadlines.empty() && Deadlines.begin()->first <= Now()) {
-            ProcessRequest(Deadlines.begin()->second, [&](TRequest& request) {
+        if (ev->Cookie) {
+            ProcessRequest(ev->Cookie, [&](TRequest& request) {
+                if (ev->Get()->Tag != request.TimerGeneration) {
+                    return;
+                }
+                request.TimerCookie.Detach();
                 Advance(request, ETrigger::Timer);
+            });
+        } else if (ev->Get()->Tag == TimerGeneration && BackoffTimerOwner) {
+            ProcessRequest(BackoffTimerOwner, [&](TRequest& request) {
+                ResumeBackoff(request);
             });
         }
     }
 
     void BeginShutdown() {
         TimerCookie.Detach();
+        BackoffNotifications.clear();
+        BackoffWaiters.clear();
+        CredentialWaiters.clear();
+        Requests.clear();
         Send(ServiceControlClient, new TEvents::TEvPoison());
         Send(OperationClient, new TEvents::TEvPoison());
         // No actor tasks: PassAway detaches immediately. Container and timer
@@ -508,9 +604,10 @@ private:
     ui64 NextRpcCookie = 0;
     std::map<ui64, TRequest> Requests;
     std::map<ui64, ui64> RpcRequests;
-    std::set<ui64> CredentialWaiters;
-    std::set<ui64> BackoffWaiters;
-    std::set<std::pair<TMonotonic, ui64>> Deadlines;
+    TWaiters CredentialWaiters;
+    TWaiters BackoffWaiters;
+    std::deque<ui64> BackoffNotifications;
+    ui64 BackoffTimerOwner = 0;
     TSchedulerCookieHolder TimerCookie;
     TMonotonic TimerAt = TMonotonic::Max();
     ui64 TimerGeneration = 0;

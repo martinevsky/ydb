@@ -22,10 +22,12 @@ size. The shared backoff does not cap healthy concurrent requests.
 
 Per-request deadlines, caller cookies, operation IDs and phases live in explicit
 request records owned by the service actor. Ordinary events drive token readiness,
-RPC responses, polling and timeouts. One cancellable service timer covers an
-ordered deadline set and the shared backoff; timer generations and unique RPC
-cookies reject stale events. Shutdown releases pending records without sending
-new IAM requests. Local token-provider
+RPC responses, polling and timeouts. Each current request wait owns a cancellable,
+generation-fenced timer: a wake for one request cannot expire another request's
+queued response. Shared backoff retains a logical timer owner and FIFO waiters;
+health changes and owner cancellation notify waiters in the same actor turn.
+Unrelated events do not trigger admission. Unique RPC cookies reject stale replies.
+Shutdown releases pending records without sending new IAM requests. Local token-provider
 failure does not assert an IAM service outage. Credentials are read again after
 cooldown so rotation is observed before dispatch.
 
