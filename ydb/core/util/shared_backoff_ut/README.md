@@ -24,5 +24,5 @@ Waiting and cancellation belong to the service. Its tests in
 `security/iam_delegation/ut/iam_delegation_actor_ut.cpp` exercise token readiness,
 shared admission, exact polling deadlines, stale RPC replies, bulk expiry of
 512 and 4096 waiting requests with a surviving caller, graceful poison and hard
-runtime teardown. The service owns independent cancellable, generation-fenced request timers and a shared gate timer;
+runtime teardown. Each request wait has independent cancellation;
 expiry of any request cannot remove another request's wakeup.

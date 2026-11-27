@@ -2,7 +2,7 @@
 
 The tests exercise the real service actor, using virtual time and intercepted IAM requests. The integration cases in `iam_delegation_ut.cpp` also exercise the real gRPC clients against a local mock server. They do not validate live cloud policy or IAM credentials.
 
-The classic implementation preserves the coroutine reference at `f0689fbf5b93`. `IamEventArbitration` publishes captured real scheduler events and uses `viaActorSystem=true` to queue replies and token updates without running the mailbox inline. The same tests run unchanged against both implementations.
+These scenarios define the shared contract for coroutine and classic event implementations. `IamEventArbitration` publishes captured real scheduler events and uses `viaActorSystem=true` to queue replies and token updates without running the mailbox inline. The same tests run unchanged against both implementations.
 
 | Scenario | Required observable behavior |
 |---|---|
